@@ -29,15 +29,11 @@ jobs:
 
       - name: Create React Native Engine
         run: |
-          npx --yes @react-native-community/cli@latest init universalremote --skip-install
+          npx --yes @react-native-community/cli@latest init universalremote
           
       - name: Merge AI Code with Engine
         run: |
           cp -rf my_ai_code/* universalremote/
-          
-      - name: Install dependencies
-        working-directory: ./universalremote
-        run: npm install --legacy-peer-deps
 
       - name: Grant execute permission for gradlew
         working-directory: ./universalremote/android

@@ -29,11 +29,15 @@ jobs:
 
       - name: Create React Native Engine
         run: |
-          npx --yes @react-native-community/cli@latest init universalremote
+          npx --yes @react-native-community/cli@latest init universalremote --version 0.73.6
           
-      - name: Merge AI Code with Engine
+      - name: Fix Package Name Configuration
         run: |
-          cp -rf my_ai_code/* universalremote/
+          echo "module.exports = { project: { android: { packageName: 'com.universalremote' } } };" > universalremote/react-native.config.js
+          
+      - name: Merge AI Code Safely (Filter out Web files)
+        run: |
+          rsync -av --exclude='package.json' --exclude='package-lock.json' --exclude='node_modules' my_ai_code/ universalremote/
 
       - name: Grant execute permission for gradlew
         working-directory: ./universalremote/android

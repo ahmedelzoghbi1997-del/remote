@@ -37,7 +37,14 @@ jobs:
           
       - name: Merge AI Code Safely (Filter out Web files)
         run: |
+          # مسح الملف الافتراضي
+          rm -f universalremote/App.tsx
+          
+          # نقل الأكواد المخصصة
           rsync -av --exclude='package.json' --exclude='package-lock.json' --exclude='node_modules' my_ai_code/ universalremote/
+          
+          # التأكد من نقل ملف الريموت وتسميته App.js
+          cp -f my_ai_code/App.js universalremote/App.js || true
 
       - name: Grant execute permission for gradlew
         working-directory: ./universalremote/android

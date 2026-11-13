@@ -24,43 +24,50 @@ if (!I18nManager.isRTL) {
 
 const CARRIER_38KHZ = 38000;
 
-function encodeNecToMicroseconds(addressHex, commandHex) {
-  let addr1, finalAddr2;
-  if (addressHex > 0xff) {
-    // دعم لبروتوكول سامسونج (العنوان المزدوج 16-بت)
-    addr1 = (addressHex >> 8) & 0xff;
-    finalAddr2 = addressHex & 0xff;
-  } else {
-    // بروتوكول NEC القياسي للأجهزة الأخرى والتكييف
-    addr1 = addressHex & 0xff;
-    finalAddr2 = ~addr1 & 0xff;
-  }
-
-  const cmd = commandHex & 0xff;
-  const cmdInv = ~cmd & 0xff;
-
-  const frame32 =
-    ((addr1 << 24) >>> 0) |
-    ((finalAddr2 << 16) >>> 0) |
-    ((cmd << 8) >>> 0) |
-    (cmdInv >>> 0);
-
-  const pattern = [9000, 4500];
-  for (let bit = 31; bit >= 0; bit--) {
-    const isOne = ((frame32 >>> bit) & 1) === 1;
+function pushByteLsbFirst(pattern, byteValue) {
+  const b = byteValue & 0xff;
+  for (let bit = 0; bit < 8; bit++) {
+    const isOne = ((b >>> bit) & 1) === 1;
     pattern.push(560);
     pattern.push(isOne ? 1690 : 560);
   }
+}
+
+function encodeSamsungDual0707(commandHex, addressHigh = 0x07, addressLow = 0x07) {
+  const cmd = commandHex & 0xff;
+  const cmdInv = ~cmd & 0xff;
+  const pattern = [4500, 4500];
+  pushByteLsbFirst(pattern, addressHigh);
+  pushByteLsbFirst(pattern, addressLow);
+  pushByteLsbFirst(pattern, cmd);
+  pushByteLsbFirst(pattern, cmdInv);
+  pattern.push(560);
+  return pattern;
+}
+
+function encodeNecToMicroseconds(addressHex, commandHex) {
+  const addr = addressHex & 0xff;
+  const addrInv = ~addr & 0xff;
+  const cmd = commandHex & 0xff;
+  const cmdInv = ~cmd & 0xff;
+
+  const pattern = [9000, 4500];
+  pushByteLsbFirst(pattern, addr);
+  pushByteLsbFirst(pattern, addrInv);
+  pushByteLsbFirst(pattern, cmd);
+  pushByteLsbFirst(pattern, cmdInv);
   pattern.push(560);
   return pattern;
 }
 
 const TV_IR_BRANDS = {
   samsung: {
-    label: 'Samsung TV',
-    address: 0x0707, // الكود السري الخاص بشاشتك E0E0
+    label: 'Samsung (0x0707)',
+    protocol: 'samsung_dual',
+    addressHigh: 0x07,
+    addressLow: 0x07,
     commands: {
-      POWER: 0x02, // أمر 40BF يتوافق برمجياً مع 0x02
+      POWER: 0x02,
       VOL_UP: 0x07,
       VOL_DOWN: 0x0b,
       MUTE: 0x0f,
@@ -78,7 +85,8 @@ const TV_IR_BRANDS = {
     },
   },
   lg: {
-    label: 'LG TV',
+    label: 'LG TV (NEC)',
+    protocol: 'nec',
     address: 0x04,
     commands: {
       POWER: 0x08,
@@ -107,10 +115,13 @@ function buildAcIrPattern(brandKey, acState) {
   const clampedTemp = Math.max(16, Math.min(30, acState.temperature));
   const tempOffset = clampedTemp - 16;
 
+  const modeCode = modeMap[acState.mode] !== undefined ? modeMap[acState.mode] : 1;
+  const fanCode = fanMap[acState.fanSpeed] !== undefined ? fanMap[acState.fanSpeed] : 0;
+
   const stateByte =
     ((acState.power ? 1 : 0) << 7) |
-    ((modeMap[acState.mode] ?? 1) << 4) |
-    ((fanMap[acState.fanSpeed] ?? 0) << 2) |
+    (modeCode << 4) |
+    (fanCode << 2) |
     (acState.swing ? 0x02 : 0x00);
 
   return [
@@ -203,8 +214,11 @@ function App() {
       if (tvTransport === 'ir') {
         const brand = TV_IR_BRANDS[tvBrand];
         const cmdHex = brand.commands[commandKey];
-        const pattern = encodeNecToMicroseconds(brand.address, cmdHex);
-        await transmitIrPattern(pattern, labelAr);
+        const pattern =
+          brand.protocol === 'samsung_dual'
+            ? encodeSamsungDual0707(cmdHex, brand.addressHigh, brand.addressLow)
+            : encodeNecToMicroseconds(brand.address, cmdHex);
+        await transmitIrPattern(pattern, `${labelAr} · ${brand.label}`);
       } else {
         await WifiControl.sendCommand(commandKey);
         setFeedback({
@@ -604,4 +618,350 @@ function App() {
           style={[styles.tabBtn, activeTab === 'ac' && styles.tabBtnActive]}
           onPress={() => setActiveTab('ac')}
         >
-          <Text style={[styles.tabText, activeTab ==
+          <Text style={[styles.tabText, activeTab === 'ac' && styles.tabTextActive]}>
+            ريموت التكييف
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      <Modal visible={showWifiModal} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>إعداد الشاشة الذكية (Wi-Fi)</Text>
+
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={[styles.chipBtn, wifiProtocol === 'android_tv' && styles.chipBtnActive]}
+                onPress={() => {
+                  setWifiProtocol('android_tv');
+                  setTvPort('8080');
+                }}
+              >
+                <Text style={styles.chipText}>Android TV (WS)</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.chipBtn, wifiProtocol === 'roku' && styles.chipBtnActive]}
+                onPress={() => {
+                  setWifiProtocol('roku');
+                  setTvPort('8060');
+                }}
+              >
+                <Text style={styles.chipText}>Roku ECP (REST)</Text>
+              </TouchableOpacity>
+            </View>
+
+            <TextInput
+              style={styles.input}
+              value={tvIp}
+              onChangeText={setTvIp}
+              keyboardType="numeric"
+              placeholder="192.168.1.50"
+              placeholderTextColor="#64748B"
+            />
+            <TextInput
+              style={styles.input}
+              value={tvPort}
+              onChangeText={setTvPort}
+              keyboardType="numeric"
+              placeholder="8080"
+              placeholderTextColor="#64748B"
+            />
+
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={styles.navBtn}
+                onPress={() => setShowWifiModal(false)}
+              >
+                <Text style={styles.btnText}>إلغاء</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.navBtn, styles.modalSaveBtn]}
+                onPress={handleSaveWifi}
+              >
+                <Text style={styles.btnTextBold}>حفظ واتصال</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  root: { flex: 1, backgroundColor: '#0B0D11' },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 18,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E2532',
+  },
+  headerTitle: { color: '#F1F5F9', fontSize: 19, fontWeight: '700' },
+  headerStatus: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  feedbackBar: {
+    marginHorizontal: 18,
+    marginTop: 12,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+  },
+  feedbackIr: { borderColor: '#EF4444', backgroundColor: 'rgba(239,68,68,0.14)' },
+  feedbackWifi: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.14)' },
+  feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
+  feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
+  scrollArea: { flex: 1 },
+  scrollContent: { padding: 18 },
+  sectionStack: { gap: 14 },
+  segmentBox: {
+    flexDirection: 'row',
+    backgroundColor: '#131720',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 4,
+    gap: 4,
+  },
+  segmentBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 9,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  segmentIrActive: { backgroundColor: '#EF4444' },
+  segmentWifiActive: { backgroundColor: '#0EA5E9' },
+  segmentText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
+  rowGap: { flexDirection: 'row', gap: 10 },
+  chipBtn: {
+    flex: 1,
+    minHeight: 44,
+    borderRadius: 10,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chipBtnActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.15)' },
+  chipText: { color: '#F1F5F9', fontSize: 13, fontWeight: '600' },
+  wifiBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    minHeight: 46,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+  },
+  wifiAddressText: { color: '#F1F5F9', fontSize: 13, fontFamily: 'monospace' },
+  wifiEditLabel: { color: '#0EA5E9', fontSize: 13, fontWeight: '700' },
+  powerBtn: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 14,
+    backgroundColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  actionBtn: {
+    flex: 1,
+    minHeight: 50,
+    borderRadius: 14,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  btnText: { color: '#F1F5F9', fontSize: 13, fontWeight: '600' },
+  btnTextBold: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+  dpadCircle: {
+    alignSelf: 'center',
+    width: 220,
+    height: 220,
+    borderRadius: 110,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#232B3A',
+    padding: 12,
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dpadMiddle: {
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  dpadBtn: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#1A202C',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dpadArrow: { color: '#F1F5F9', fontSize: 16 },
+  dpadOkBtn: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  navBtn: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  rockerCard: {
+    flex: 1,
+    backgroundColor: '#131720',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 8,
+    alignItems: 'center',
+    gap: 8,
+  },
+  rockerKey: {
+    width: '100%',
+    minHeight: 48,
+    borderRadius: 12,
+    backgroundColor: '#1A202C',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  rockerSymbol: { color: '#F1F5F9', fontSize: 20, fontWeight: '700' },
+  rockerLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  acLcd: {
+    backgroundColor: '#0F172A',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    padding: 20,
+    alignItems: 'center',
+    gap: 8,
+  },
+  acLcdOff: { opacity: 0.5 },
+  acLcdTop: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' },
+  acMeta: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
+  acTemp: {
+    color: '#F1F5F9',
+    fontSize: 52,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  acFooter: { color: '#0EA5E9', fontSize: 12, fontWeight: '600' },
+  tempStepBtn: {
+    width: 72,
+    height: 58,
+    borderRadius: 14,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acPowerBtn: {
+    flex: 1,
+    height: 58,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acPowerOn: { backgroundColor: '#EF4444' },
+  acPowerOff: { backgroundColor: '#16A34A' },
+  sectionCaption: { color: '#94A3B8', fontSize: 13, fontWeight: '600', textAlign: 'right' },
+  modesWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  modeChip: {
+    width: '31%',
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modeCoolActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.16)' },
+  modeHeatActive: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.16)' },
+  extraCard: {
+    flex: 1,
+    minHeight: 60,
+    borderRadius: 14,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  extraCaption: { color: '#94A3B8', fontSize: 12 },
+  tabBar: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#1E2532',
+    backgroundColor: '#131720',
+    padding: 8,
+    gap: 8,
+  },
+  tabBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tabBtnActive: {
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#0EA5E9',
+  },
+  tabText: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
+  tabTextActive: { color: '#F1F5F9', fontWeight: '700' },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.75)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  modalCard: {
+    backgroundColor: '#131720',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 18,
+    gap: 12,
+  },
+  modalTitle: { color: '#F1F5F9', fontSize: 16, fontWeight: '700', textAlign: 'right' },
+  input: {
+    minHeight: 44,
+    backgroundColor: '#0B0D11',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    color: '#F1F5F9',
+    fontFamily: 'monospace',
+    textAlign: 'left',
+  },
+  modalSaveBtn: { backgroundColor: '#0EA5E9', borderColor: '#0EA5E9' },
+});
+
+export default App;

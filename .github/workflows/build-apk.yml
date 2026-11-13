@@ -37,14 +37,75 @@ jobs:
           
       - name: Merge AI Code Safely (Filter out Web files)
         run: |
-          # مسح الملف الافتراضي
           rm -f universalremote/App.tsx
-          
-          # نقل الأكواد المخصصة
           rsync -av --exclude='package.json' --exclude='package-lock.json' --exclude='node_modules' my_ai_code/ universalremote/
-          
-          # التأكد من نقل ملف الريموت وتسميته App.js
           cp -f my_ai_code/App.js universalremote/App.js || true
+
+      - name: Inject Android Native IR Module & Permissions
+        run: |
+          sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.TRANSMIT_IR" \/>' universalremote/android/app/src/main/AndroidManifest.xml
+          
+          mkdir -p universalremote/android/app/src/main/java/com/universalremote
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/IrManagerModule.kt
+          package com.universalremote
+
+          import android.content.Context
+          import android.hardware.ConsumerIrManager
+          import com.facebook.react.bridge.ReactApplicationContext
+          import com.facebook.react.bridge.ReactContextBaseJavaModule
+          import com.facebook.react.bridge.ReactMethod
+          import com.facebook.react.bridge.Promise
+          import com.facebook.react.bridge.ReadableArray
+          import com.facebook.react.bridge.Arguments
+
+          class IrManagerModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+              private var irManager: ConsumerIrManager? = reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as ConsumerIrManager?
+
+              override fun getName(): String {
+                  return "IrManagerModule"
+              }
+
+              @ReactMethod
+              fun hasIrEmitter(promise: Promise) {
+                  promise.resolve(irManager?.hasIrEmitter() ?: false)
+              }
+
+              @ReactMethod
+              fun transmitIR(pattern: ReadableArray, carrierFrequency: Int, promise: Promise) {
+                  if (irManager?.hasIrEmitter() == true) {
+                      val patternArray = IntArray(pattern.size())
+                      for (i in 0 until pattern.size()) {
+                          patternArray[i] = pattern.getInt(i)
+                      }
+                      irManager?.transmit(carrierFrequency, patternArray)
+                      val result = Arguments.createMap()
+                      result.putInt("carrierFrequency", carrierFrequency)
+                      result.putInt("pulseCount", patternArray.size)
+                      promise.resolve(result)
+                  } else {
+                      promise.reject("NO_IR", "No IR emitter found on this device.")
+                  }
+              }
+          }
+          EOF
+          
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/IrManagerPackage.kt
+          package com.universalremote
+
+          import android.view.View
+          import com.facebook.react.ReactPackage
+          import com.facebook.react.bridge.NativeModule
+          import com.facebook.react.bridge.ReactApplicationContext
+          import com.facebook.react.uimanager.ReactShadowNode
+          import com.facebook.react.uimanager.ViewManager
+
+          class IrManagerPackage : ReactPackage {
+              override fun createViewManagers(reactContext: ReactApplicationContext): MutableList<ViewManager<View, ReactShadowNode<*>>> = mutableListOf()
+              override fun createNativeModules(reactContext: ReactApplicationContext): MutableList<NativeModule> = listOf(IrManagerModule(reactContext)).toMutableList()
+          }
+          EOF
+          
+          sed -i '/PackageList(this).packages.apply {/a \          add(IrManagerPackage())' universalremote/android/app/src/main/java/com/universalremote/MainApplication.kt
 
       - name: Grant execute permission for gradlew
         working-directory: ./universalremote/android

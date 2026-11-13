@@ -1,0 +1,6 @@
+{
+  "name": "الريموت الشامل | Universal Remote Studio",
+  "description": "منصة متكاملة لبناء وتجربة تطبيق ريموت كنترول شامل للأندرويد (React Native + Kotlin ConsumerIrManager + Wi-Fi Smart TV + GitHub Actions CI/CD).",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

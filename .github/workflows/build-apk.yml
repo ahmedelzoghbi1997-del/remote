@@ -29,7 +29,7 @@ jobs:
 
       - name: Create React Native Engine
         run: |
-          npx --yes react-native@0.72.6 init universalremote
+          npx --yes react-native@latest init universalremote --skip-install
           
       - name: Merge AI Code with Engine
         run: |

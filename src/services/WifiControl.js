@@ -10,7 +10,7 @@ const INVIDIOUS_INSTANCES = [
 
 const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
 const STORAGE_LAST_TV_KEY = '@universal_remote_last_tv_config';
-const SAMSUNG_REMOTE_APP_NAME = 'Remote App';
+const SAMSUNG_REMOTE_APP_NAME = 'UniversalRemote'; // 15 حرفاً -> Base64 بدون '=' padding
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 function encodeBase64(input) {
@@ -336,7 +336,7 @@ class WifiControlService {
   _buildWebSocketUrl(portOverride, tokenOverride) {
     const targetPort = Number(portOverride || this.port);
     if (this.protocol === 'samsung_tizen') {
-      const encodedName = encodeBase64(SAMSUNG_REMOTE_APP_NAME);
+      const encodedName = encodeURIComponent(encodeBase64(SAMSUNG_REMOTE_APP_NAME));
       const scheme = targetPort === 8002 ? 'wss' : 'ws';
       const tokenPart = tokenOverride
         ? `&token=${encodeURIComponent(tokenOverride)}`

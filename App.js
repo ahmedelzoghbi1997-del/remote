@@ -1,6 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
+  FlatList,
   I18nManager,
+  Image,
   Modal,
   NativeModules,
   Platform,
@@ -213,13 +216,24 @@ function App() {
     tone: 'neutral',
   });
 
+  // حالة ريموت الشاشة والواي فاي
   const [tvTransport, setTvTransport] = useState('ir');
   const [tvBrand, setTvBrand] = useState('samsung');
-  const [wifiProtocol, setWifiProtocol] = useState('android_tv');
+  const [wifiProtocol, setWifiProtocol] = useState('samsung_tizen');
   const [tvIp, setTvIp] = useState('192.168.1.50');
-  const [tvPort, setTvPort] = useState('8080');
+  const [tvPort, setTvPort] = useState('8001');
+  const [dialPort, setDialPort] = useState('8080');
   const [showWifiModal, setShowWifiModal] = useState(false);
 
+  // حالة البحث والتشغيل المباشر (Cast) ليوتيوب عبر الواي فاي
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [isLaunchingYouTube, setIsLaunchingYouTube] = useState(false);
+  const [castingVideoId, setCastingVideoId] = useState(null);
+  const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
+
+  // حالة ريموت التكييف
   const [acBrand, setAcBrand] = useState('gree');
   const [acState, setAcState] = useState({
     power: true,
@@ -255,6 +269,12 @@ function App() {
     };
   }, []);
 
+  const clearErrorBanner = () => {
+    setFeedback((prev) =>
+      prev.tone === 'neutral' && prev.text === '' ? prev : { text: '', tone: 'neutral' }
+    );
+  };
+
   const transmitIrPattern = async (pattern) => {
     if (Platform.OS !== 'android' || !IrManagerModule) {
       throw new Error('وحدة IrManagerModule متاحة فقط على أجهزة أندرويد.');
@@ -264,9 +284,7 @@ function App() {
       throw new Error('هذا الهاتف لا يحتوي على مستشعر IR Blaster.');
     }
     await IrManagerModule.transmitIR(pattern, CARRIER_38KHZ);
-    setFeedback((prev) =>
-      prev.tone === 'neutral' && prev.text === '' ? prev : { text: '', tone: 'neutral' }
-    );
+    clearErrorBanner();
   };
 
   const handleTvCommand = async (commandKey) => {
@@ -288,9 +306,7 @@ function App() {
         await transmitIrPattern(pattern);
       } else {
         await WifiControl.sendCommand(commandKey);
-        setFeedback((prev) =>
-          prev.tone === 'neutral' && prev.text === '' ? prev : { text: '', tone: 'neutral' }
-        );
+        clearErrorBanner();
       }
     } catch (error) {
       setFeedback({
@@ -303,21 +319,93 @@ function App() {
   };
 
   const handleSaveWifi = async () => {
-    const parsedPort = Number(tvPort) || (wifiProtocol === 'roku' ? 8060 : 8080);
+    const defaultPort =
+      wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8001 : 8080;
+    const defaultDial =
+      wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8080 : 8008;
+
+    const parsedPort = Number(tvPort) || defaultPort;
+    const parsedDialPort = Number(dialPort) || defaultDial;
+
     WifiControl.configure({
       protocol: wifiProtocol,
       ipAddress: tvIp,
       port: parsedPort,
+      dialPort: parsedDialPort,
     });
     setShowWifiModal(false);
     try {
       await WifiControl.connect();
-      setFeedback({ text: '', tone: 'neutral' });
+      clearErrorBanner();
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر الاتصال بالواي فاي',
         tone: 'error',
       });
+    }
+  };
+
+  const handleLaunchYouTube = async () => {
+    setIsLaunchingYouTube(true);
+    try {
+      WifiControl.configure({
+        protocol: wifiProtocol,
+        ipAddress: tvIp,
+        port: Number(tvPort) || undefined,
+        dialPort: Number(dialPort) || undefined,
+      });
+      await WifiControl.launchYouTube();
+      clearErrorBanner();
+    } catch (error) {
+      setFeedback({
+        text: error && error.message ? error.message : 'تعذر فتح تطبيق يوتيوب على الشاشة',
+        tone: 'error',
+      });
+    } finally {
+      setIsLaunchingYouTube(false);
+    }
+  };
+
+  const handleSearchYouTube = async () => {
+    if (!searchQuery.trim()) {
+      setFeedback({ text: 'اكتب عنوان الفيديو للبحث في يوتيوب.', tone: 'error' });
+      return;
+    }
+    setIsSearching(true);
+    setHasSearchedOnce(true);
+    try {
+      const items = await WifiControl.searchYouTubeVideos(searchQuery);
+      setSearchResults(items);
+      clearErrorBanner();
+    } catch (error) {
+      setSearchResults([]);
+      setFeedback({
+        text: error && error.message ? error.message : 'فشل البحث في يوتيوب',
+        tone: 'error',
+      });
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  const handleCastVideo = async (item) => {
+    setCastingVideoId(item.videoId);
+    try {
+      WifiControl.configure({
+        protocol: wifiProtocol,
+        ipAddress: tvIp,
+        port: Number(tvPort) || undefined,
+        dialPort: Number(dialPort) || undefined,
+      });
+      await WifiControl.castYouTubeVideo(item.videoId);
+      clearErrorBanner();
+    } catch (error) {
+      setFeedback({
+        text: error && error.message ? error.message : 'تعذر تشغيل الفيديو على الشاشة',
+        tone: 'error',
+      });
+    } finally {
+      setCastingVideoId(null);
     }
   };
 
@@ -339,6 +427,272 @@ function App() {
 
   const currentFanObj = FAN_SPEEDS.find((f) => f.key === acState.fanSpeed);
   const currentFanLabel = currentFanObj ? currentFanObj.label : 'تلقائي';
+
+  const protocolDisplayLabel =
+    wifiProtocol === 'samsung_tizen'
+      ? 'Samsung Tizen'
+      : wifiProtocol === 'roku'
+      ? 'Roku ECP'
+      : 'Android TV';
+
+  const tvHeaderElement = (
+    <View style={styles.sectionStack}>
+      <View style={styles.segmentBox}>
+        <TouchableOpacity
+          style={[styles.segmentBtn, tvTransport === 'ir' && styles.segmentIrActive]}
+          onPress={() => setTvTransport('ir')}
+        >
+          <Text style={styles.segmentText}>أشعة IR (38kHz)</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.segmentBtn, tvTransport === 'wifi' && styles.segmentWifiActive]}
+          onPress={() => setTvTransport('wifi')}
+        >
+          <Text style={styles.segmentText}>واي فاي (Smart TV)</Text>
+        </TouchableOpacity>
+      </View>
+
+      {tvTransport === 'ir' ? (
+        <View style={styles.rowGap}>
+          {['samsung', 'lg'].map((key) => (
+            <TouchableOpacity
+              key={key}
+              style={[styles.chipBtn, tvBrand === key && styles.chipBtnActive]}
+              onPress={() => setTvBrand(key)}
+            >
+              <Text style={styles.chipText}>{TV_IR_BRANDS[key].label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+      ) : (
+        <TouchableOpacity style={styles.wifiBar} onPress={() => setShowWifiModal(true)}>
+          <Text style={styles.wifiAddressText}>
+            {protocolDisplayLabel} · {tvIp}:{dialPort}
+          </Text>
+          <Text style={styles.wifiEditLabel}>إعداد IP</Text>
+        </TouchableOpacity>
+      )}
+
+      <View style={styles.rowGap}>
+        <TouchableOpacity
+          style={styles.powerBtn}
+          onPress={() => handleTvCommand('POWER')}
+        >
+          <Text style={styles.btnTextBold}>طاقة</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => handleTvCommand('INPUT')}
+        >
+          <Text style={styles.btnText}>المصدر</Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={styles.actionBtn}
+          onPress={() => handleTvCommand('MUTE')}
+        >
+          <Text style={styles.btnText}>كتم</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.dpadCircle}>
+        <RepeatableButton
+          style={styles.dpadBtnUp}
+          repeatIntervalMs={130}
+          onAction={() => handleTvCommand('UP')}
+        >
+          <Text style={styles.dpadArrow}>▲</Text>
+        </RepeatableButton>
+
+        <View style={styles.dpadMiddle}>
+          <RepeatableButton
+            style={styles.dpadBtnStart}
+            repeatIntervalMs={130}
+            onAction={() => handleTvCommand('RIGHT')}
+          >
+            <Text style={styles.dpadArrow}>▶</Text>
+          </RepeatableButton>
+
+          <TouchableOpacity
+            style={styles.dpadOkBtn}
+            activeOpacity={0.8}
+            onPress={() => handleTvCommand('OK')}
+          >
+            <Text style={styles.btnTextBold}>موافق</Text>
+          </TouchableOpacity>
+
+          <RepeatableButton
+            style={styles.dpadBtnEnd}
+            repeatIntervalMs={130}
+            onAction={() => handleTvCommand('LEFT')}
+          >
+            <Text style={styles.dpadArrow}>◀</Text>
+          </RepeatableButton>
+        </View>
+
+        <RepeatableButton
+          style={styles.dpadBtnDown}
+          repeatIntervalMs={130}
+          onAction={() => handleTvCommand('DOWN')}
+        >
+          <Text style={styles.dpadArrow}>▼</Text>
+        </RepeatableButton>
+      </View>
+
+      <View style={styles.rowGap}>
+        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('BACK')}>
+          <Text style={styles.btnText}>رجوع</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('HOME')}>
+          <Text style={styles.btnText}>الرئيسية</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('MENU')}>
+          <Text style={styles.btnText}>القائمة</Text>
+        </TouchableOpacity>
+      </View>
+
+      <View style={styles.rowGap}>
+        <View style={styles.rockerCard}>
+          <RepeatableButton
+            style={styles.rockerKey}
+            repeatIntervalMs={120}
+            onAction={() => handleTvCommand('VOL_UP')}
+          >
+            <Text style={styles.rockerSymbol}>+</Text>
+          </RepeatableButton>
+          <Text style={styles.rockerLabel}>الصوت</Text>
+          <RepeatableButton
+            style={styles.rockerKey}
+            repeatIntervalMs={120}
+            onAction={() => handleTvCommand('VOL_DOWN')}
+          >
+            <Text style={styles.rockerSymbol}>−</Text>
+          </RepeatableButton>
+        </View>
+
+        <View style={styles.rockerCard}>
+          <RepeatableButton
+            style={styles.rockerKey}
+            repeatIntervalMs={150}
+            onAction={() => handleTvCommand('CH_UP')}
+          >
+            <Text style={styles.rockerSymbol}>▲</Text>
+          </RepeatableButton>
+          <Text style={styles.rockerLabel}>القناة</Text>
+          <RepeatableButton
+            style={styles.rockerKey}
+            repeatIntervalMs={150}
+            onAction={() => handleTvCommand('CH_DOWN')}
+          >
+            <Text style={styles.rockerSymbol}>▼</Text>
+          </RepeatableButton>
+        </View>
+      </View>
+
+      <View style={styles.smartAppsSection}>
+        <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
+        <View style={styles.rowGap}>
+          <TouchableOpacity
+            style={styles.youtubeBtn}
+            activeOpacity={0.8}
+            onPress={() =>
+              tvTransport === 'wifi' ? handleLaunchYouTube() : handleTvCommand('YOUTUBE')
+            }
+          >
+            <Text style={styles.btnTextBold}>YouTube</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.netflixBtn}
+            activeOpacity={0.8}
+            onPress={() => handleTvCommand('NETFLIX')}
+          >
+            <Text style={styles.btnTextBold}>Netflix</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {tvTransport === 'wifi' ? (
+        <View style={styles.castPanel}>
+          <View style={styles.castHeaderRow}>
+            <Text style={styles.castPanelTitle}>البحث والتشغيل المباشر (Cast)</Text>
+            <TouchableOpacity
+              style={styles.launchYtBtn}
+              activeOpacity={0.8}
+              onPress={handleLaunchYouTube}
+              disabled={isLaunchingYouTube}
+            >
+              {isLaunchingYouTube ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.launchYtBtnText}>فتح YouTube</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          <Text style={styles.sectionCaption}>بحث يوتيوب</Text>
+          <View style={styles.searchRow}>
+            <TextInput
+              style={styles.searchInput}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder="ابحث عن فيديو لتشغيله على الشاشة..."
+              placeholderTextColor="#64748B"
+              returnKeyType="search"
+              onSubmitEditing={handleSearchYouTube}
+            />
+            <TouchableOpacity
+              style={styles.searchBtn}
+              activeOpacity={0.8}
+              onPress={handleSearchYouTube}
+              disabled={isSearching}
+            >
+              {isSearching ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.btnTextBold}>بحث</Text>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {!isSearching && hasSearchedOnce && searchResults.length === 0 ? (
+            <Text style={styles.emptySearchText}>لم يتم العثور على نتائج مطابقة.</Text>
+          ) : null}
+        </View>
+      ) : null}
+    </View>
+  );
+
+  const renderVideoItem = ({ item }) => {
+    const isCasting = castingVideoId === item.videoId;
+    return (
+      <TouchableOpacity
+        style={[styles.videoCard, isCasting && styles.videoCardActive]}
+        activeOpacity={0.75}
+        onPress={() => handleCastVideo(item)}
+        disabled={Boolean(castingVideoId)}
+      >
+        <Image
+          source={{ uri: item.thumbnailUrl }}
+          style={styles.videoThumb}
+          resizeMode="cover"
+        />
+        <View style={styles.videoInfo}>
+          <Text style={styles.videoTitle} numberOfLines={2}>
+            {item.title}
+          </Text>
+          <View style={styles.videoMetaRow}>
+            <Text style={styles.videoChannel} numberOfLines={1}>
+              {item.channelTitle}
+              {item.durationText ? ` · ${item.durationText}` : ''}
+            </Text>
+            <Text style={styles.videoCastLabel}>
+              {isCasting ? 'جاري البث...' : 'تشغيل على الشاشة'}
+            </Text>
+          </View>
+        </View>
+      </TouchableOpacity>
+    );
+  };
 
   return (
     <SafeAreaView style={styles.root}>
@@ -363,198 +717,24 @@ function App() {
         </View>
       ) : null}
 
-      <ScrollView
-        style={styles.scrollArea}
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
-      >
-        {activeTab === 'tv' ? (
-          <View style={styles.sectionStack}>
-            <View style={styles.segmentBox}>
-              <TouchableOpacity
-                style={[styles.segmentBtn, tvTransport === 'ir' && styles.segmentIrActive]}
-                onPress={() => setTvTransport('ir')}
-              >
-                <Text style={styles.segmentText}>أشعة IR (38kHz)</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[styles.segmentBtn, tvTransport === 'wifi' && styles.segmentWifiActive]}
-                onPress={() => setTvTransport('wifi')}
-              >
-                <Text style={styles.segmentText}>واي فاي (Smart TV)</Text>
-              </TouchableOpacity>
-            </View>
-
-            {tvTransport === 'ir' ? (
-              <View style={styles.rowGap}>
-                {['samsung', 'lg'].map((key) => (
-                  <TouchableOpacity
-                    key={key}
-                    style={[styles.chipBtn, tvBrand === key && styles.chipBtnActive]}
-                    onPress={() => setTvBrand(key)}
-                  >
-                    <Text style={styles.chipText}>{TV_IR_BRANDS[key].label}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            ) : (
-              <TouchableOpacity
-                style={styles.wifiBar}
-                onPress={() => setShowWifiModal(true)}
-              >
-                <Text style={styles.wifiAddressText}>
-                  {wifiProtocol === 'roku' ? 'Roku ECP' : 'Android TV WS'} · {tvIp}:{tvPort}
-                </Text>
-                <Text style={styles.wifiEditLabel}>إعداد IP</Text>
-              </TouchableOpacity>
-            )}
-
-            <View style={styles.rowGap}>
-              <TouchableOpacity
-                style={styles.powerBtn}
-                onPress={() => handleTvCommand('POWER')}
-              >
-                <Text style={styles.btnTextBold}>طاقة</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() => handleTvCommand('INPUT')}
-              >
-                <Text style={styles.btnText}>المصدر</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.actionBtn}
-                onPress={() => handleTvCommand('MUTE')}
-              >
-                <Text style={styles.btnText}>كتم</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.dpadCircle}>
-              <RepeatableButton
-                style={styles.dpadBtnUp}
-                repeatIntervalMs={130}
-                onAction={() => handleTvCommand('UP')}
-              >
-                <Text style={styles.dpadArrow}>▲</Text>
-              </RepeatableButton>
-
-              <View style={styles.dpadMiddle}>
-                <RepeatableButton
-                  style={styles.dpadBtnStart}
-                  repeatIntervalMs={130}
-                  onAction={() => handleTvCommand('RIGHT')}
-                >
-                  <Text style={styles.dpadArrow}>▶</Text>
-                </RepeatableButton>
-
-                <TouchableOpacity
-                  style={styles.dpadOkBtn}
-                  activeOpacity={0.8}
-                  onPress={() => handleTvCommand('OK')}
-                >
-                  <Text style={styles.btnTextBold}>موافق</Text>
-                </TouchableOpacity>
-
-                <RepeatableButton
-                  style={styles.dpadBtnEnd}
-                  repeatIntervalMs={130}
-                  onAction={() => handleTvCommand('LEFT')}
-                >
-                  <Text style={styles.dpadArrow}>◀</Text>
-                </RepeatableButton>
-              </View>
-
-              <RepeatableButton
-                style={styles.dpadBtnDown}
-                repeatIntervalMs={130}
-                onAction={() => handleTvCommand('DOWN')}
-              >
-                <Text style={styles.dpadArrow}>▼</Text>
-              </RepeatableButton>
-            </View>
-
-            <View style={styles.rowGap}>
-              <TouchableOpacity
-                style={styles.navBtn}
-                onPress={() => handleTvCommand('BACK')}
-              >
-                <Text style={styles.btnText}>رجوع</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.navBtn}
-                onPress={() => handleTvCommand('HOME')}
-              >
-                <Text style={styles.btnText}>الرئيسية</Text>
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={styles.navBtn}
-                onPress={() => handleTvCommand('MENU')}
-              >
-                <Text style={styles.btnText}>القائمة</Text>
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.rowGap}>
-              <View style={styles.rockerCard}>
-                <RepeatableButton
-                  style={styles.rockerKey}
-                  repeatIntervalMs={120}
-                  onAction={() => handleTvCommand('VOL_UP')}
-                >
-                  <Text style={styles.rockerSymbol}>+</Text>
-                </RepeatableButton>
-                <Text style={styles.rockerLabel}>الصوت</Text>
-                <RepeatableButton
-                  style={styles.rockerKey}
-                  repeatIntervalMs={120}
-                  onAction={() => handleTvCommand('VOL_DOWN')}
-                >
-                  <Text style={styles.rockerSymbol}>−</Text>
-                </RepeatableButton>
-              </View>
-
-              <View style={styles.rockerCard}>
-                <RepeatableButton
-                  style={styles.rockerKey}
-                  repeatIntervalMs={150}
-                  onAction={() => handleTvCommand('CH_UP')}
-                >
-                  <Text style={styles.rockerSymbol}>▲</Text>
-                </RepeatableButton>
-                <Text style={styles.rockerLabel}>القناة</Text>
-                <RepeatableButton
-                  style={styles.rockerKey}
-                  repeatIntervalMs={150}
-                  onAction={() => handleTvCommand('CH_DOWN')}
-                >
-                  <Text style={styles.rockerSymbol}>▼</Text>
-                </RepeatableButton>
-              </View>
-            </View>
-
-            <View style={styles.smartAppsSection}>
-              <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
-              <View style={styles.rowGap}>
-                <TouchableOpacity
-                  style={styles.youtubeBtn}
-                  activeOpacity={0.8}
-                  onPress={() => handleTvCommand('YOUTUBE')}
-                >
-                  <Text style={styles.btnTextBold}>YouTube</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={styles.netflixBtn}
-                  activeOpacity={0.8}
-                  onPress={() => handleTvCommand('NETFLIX')}
-                >
-                  <Text style={styles.btnTextBold}>Netflix</Text>
-                </TouchableOpacity>
-              </View>
-            </View>
-          </View>
-        ) : (
+      {activeTab === 'tv' ? (
+        <FlatList
+          style={styles.scrollArea}
+          contentContainerStyle={styles.scrollContent}
+          data={tvTransport === 'wifi' ? searchResults : []}
+          keyExtractor={(item) => item.videoId}
+          renderItem={renderVideoItem}
+          ListHeaderComponent={tvHeaderElement}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+          ItemSeparatorComponent={() => <View style={styles.videoSeparator} />}
+        />
+      ) : (
+        <ScrollView
+          style={styles.scrollArea}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={styles.sectionStack}>
             <View style={styles.rowGap}>
               {[
@@ -590,10 +770,11 @@ function App() {
                 onPress={() => {
                   const nextTemp = Math.max(16, acState.temperature - 1);
                   if (nextTemp !== acState.temperature) {
-                    updateAcAndTransmit(
-                      { ...acState, power: true, temperature: nextTemp },
-                      'خفض الحرارة'
-                    );
+                    updateAcAndTransmit({
+                      ...acState,
+                      power: true,
+                      temperature: nextTemp,
+                    });
                   }
                 }}
               >
@@ -607,10 +788,7 @@ function App() {
                 ]}
                 onPress={() => {
                   const nextPower = !acState.power;
-                  updateAcAndTransmit(
-                    { ...acState, power: nextPower },
-                    nextPower ? 'تشغيل المكيف' : 'إطفاء المكيف'
-                  );
+                  updateAcAndTransmit({ ...acState, power: nextPower });
                 }}
               >
                 <Text style={styles.btnTextBold}>
@@ -623,10 +801,11 @@ function App() {
                 onPress={() => {
                   const nextTemp = Math.min(30, acState.temperature + 1);
                   if (nextTemp !== acState.temperature) {
-                    updateAcAndTransmit(
-                      { ...acState, power: true, temperature: nextTemp },
-                      'رفع الحرارة'
-                    );
+                    updateAcAndTransmit({
+                      ...acState,
+                      power: true,
+                      temperature: nextTemp,
+                    });
                   }
                 }}
               >
@@ -647,10 +826,7 @@ function App() {
                         (m.key === 'heat' ? styles.modeHeatActive : styles.modeCoolActive),
                     ]}
                     onPress={() =>
-                      updateAcAndTransmit(
-                        { ...acState, power: true, mode: m.key },
-                        `وضع ${m.label}`
-                      )
+                      updateAcAndTransmit({ ...acState, power: true, mode: m.key })
                     }
                   >
                     <Text style={styles.btnText}>{m.label}</Text>
@@ -665,10 +841,11 @@ function App() {
                 onPress={() => {
                   const idx = FAN_SPEEDS.findIndex((f) => f.key === acState.fanSpeed);
                   const nextFan = FAN_SPEEDS[(idx + 1) % FAN_SPEEDS.length];
-                  updateAcAndTransmit(
-                    { ...acState, power: true, fanSpeed: nextFan.key },
-                    `المروحة: ${nextFan.label}`
-                  );
+                  updateAcAndTransmit({
+                    ...acState,
+                    power: true,
+                    fanSpeed: nextFan.key,
+                  });
                 }}
               >
                 <Text style={styles.extraCaption}>سرعة المروحة</Text>
@@ -679,10 +856,7 @@ function App() {
                 style={styles.extraCard}
                 onPress={() => {
                   const nextSwing = !acState.swing;
-                  updateAcAndTransmit(
-                    { ...acState, power: true, swing: nextSwing },
-                    nextSwing ? 'تفعيل التأرجح' : 'إيقاف التأرجح'
-                  );
+                  updateAcAndTransmit({ ...acState, power: true, swing: nextSwing });
                 }}
               >
                 <Text style={styles.extraCaption}>تأرجح الريش</Text>
@@ -692,8 +866,8 @@ function App() {
               </TouchableOpacity>
             </View>
           </View>
-        )}
-      </ScrollView>
+        </ScrollView>
+      )}
 
       <View style={styles.tabBar}>
         <TouchableOpacity
@@ -717,29 +891,48 @@ function App() {
       <Modal visible={showWifiModal} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>إعداد الشاشة الذكية (Wi-Fi)</Text>
+            <Text style={styles.modalTitle}>إعداد الشاشة الذكية (Wi-Fi / DIAL)</Text>
 
             <View style={styles.rowGap}>
               <TouchableOpacity
-                style={[styles.chipBtn, wifiProtocol === 'android_tv' && styles.chipBtnActive]}
+                style={[
+                  styles.chipBtn,
+                  wifiProtocol === 'samsung_tizen' && styles.chipBtnActive,
+                ]}
+                onPress={() => {
+                  setWifiProtocol('samsung_tizen');
+                  setTvPort('8001');
+                  setDialPort('8080');
+                }}
+              >
+                <Text style={styles.chipText}>Samsung Tizen</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.chipBtn,
+                  wifiProtocol === 'android_tv' && styles.chipBtnActive,
+                ]}
                 onPress={() => {
                   setWifiProtocol('android_tv');
                   setTvPort('8080');
+                  setDialPort('8008');
                 }}
               >
-                <Text style={styles.chipText}>Android TV (WS)</Text>
+                <Text style={styles.chipText}>Android TV</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.chipBtn, wifiProtocol === 'roku' && styles.chipBtnActive]}
                 onPress={() => {
                   setWifiProtocol('roku');
                   setTvPort('8060');
+                  setDialPort('8060');
                 }}
               >
-                <Text style={styles.chipText}>Roku ECP (REST)</Text>
+                <Text style={styles.chipText}>Roku ECP</Text>
               </TouchableOpacity>
             </View>
 
+            <Text style={styles.inputLabel}>عنوان IP المحلي للشاشة</Text>
             <TextInput
               style={styles.input}
               value={tvIp}
@@ -748,14 +941,31 @@ function App() {
               placeholder="192.168.1.50"
               placeholderTextColor="#64748B"
             />
-            <TextInput
-              style={styles.input}
-              value={tvPort}
-              onChangeText={setTvPort}
-              keyboardType="numeric"
-              placeholder="8080"
-              placeholderTextColor="#64748B"
-            />
+
+            <View style={styles.rowGap}>
+              <View style={styles.portField}>
+                <Text style={styles.inputLabel}>منفذ التحكم (WS/REST)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={tvPort}
+                  onChangeText={setTvPort}
+                  keyboardType="numeric"
+                  placeholder="8001"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+              <View style={styles.portField}>
+                <Text style={styles.inputLabel}>منفذ DIAL Cast</Text>
+                <TextInput
+                  style={styles.input}
+                  value={dialPort}
+                  onChangeText={setDialPort}
+                  keyboardType="numeric"
+                  placeholder="8080"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+            </View>
 
             <View style={styles.rowGap}>
               <TouchableOpacity
@@ -801,12 +1011,10 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#1E2532',
   },
-  feedbackIr: { borderColor: '#EF4444', backgroundColor: 'rgba(239,68,68,0.14)' },
-  feedbackWifi: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.14)' },
   feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
   feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { padding: 14 },
+  scrollContent: { padding: 14, paddingBottom: 24 },
   sectionStack: { gap: 12 },
   segmentBox: {
     flexDirection: 'row',
@@ -837,9 +1045,10 @@ const styles = StyleSheet.create({
     borderColor: '#1E2532',
     justifyContent: 'center',
     alignItems: 'center',
+    paddingHorizontal: 6,
   },
   chipBtnActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.15)' },
-  chipText: { color: '#F1F5F9', fontSize: 13, fontWeight: '600' },
+  chipText: { color: '#F1F5F9', fontSize: 12, fontWeight: '600', textAlign: 'center' },
   wifiBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -988,6 +1197,122 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  castPanel: {
+    marginTop: 4,
+    marginBottom: 8,
+    backgroundColor: '#131720',
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 14,
+    gap: 10,
+  },
+  castHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+  },
+  castPanelTitle: {
+    color: '#F1F5F9',
+    fontSize: 14,
+    fontWeight: '700',
+    flex: 1,
+  },
+  launchYtBtn: {
+    minHeight: 40,
+    paddingHorizontal: 14,
+    borderRadius: 10,
+    backgroundColor: '#DC2626',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  launchYtBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  searchRow: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  searchInput: {
+    flex: 1,
+    minHeight: 46,
+    backgroundColor: '#0B0D11',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    color: '#F1F5F9',
+    fontSize: 13,
+    textAlign: 'right',
+  },
+  searchBtn: {
+    minHeight: 46,
+    paddingHorizontal: 18,
+    borderRadius: 12,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  emptySearchText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+    paddingVertical: 8,
+  },
+  videoSeparator: {
+    height: 10,
+  },
+  videoCard: {
+    flexDirection: 'row',
+    backgroundColor: '#131720',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    overflow: 'hidden',
+    minHeight: 84,
+  },
+  videoCardActive: {
+    borderColor: '#0EA5E9',
+    backgroundColor: 'rgba(14,165,233,0.12)',
+  },
+  videoThumb: {
+    width: 124,
+    height: 84,
+    backgroundColor: '#0B0D11',
+  },
+  videoInfo: {
+    flex: 1,
+    padding: 10,
+    justifyContent: 'space-between',
+    gap: 6,
+  },
+  videoTitle: {
+    color: '#F1F5F9',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  videoMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 8,
+  },
+  videoChannel: {
+    color: '#94A3B8',
+    fontSize: 11,
+    flex: 1,
+    textAlign: 'right',
+  },
+  videoCastLabel: {
+    color: '#0EA5E9',
+    fontSize: 11,
+    fontWeight: '700',
+  },
   acLcd: {
     backgroundColor: '#0F172A',
     borderRadius: 18,
@@ -1090,6 +1415,8 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   modalTitle: { color: '#F1F5F9', fontSize: 16, fontWeight: '700', textAlign: 'right' },
+  inputLabel: { color: '#94A3B8', fontSize: 12, textAlign: 'right', marginBottom: 4 },
+  portField: { flex: 1 },
   input: {
     minHeight: 44,
     backgroundColor: '#0B0D11',

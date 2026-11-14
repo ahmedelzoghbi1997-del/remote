@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
   I18nManager,
   Modal,
@@ -146,11 +146,68 @@ const FAN_SPEEDS = [
   { key: 'high', label: 'عالي' },
 ];
 
+function RepeatableButton({
+  onAction,
+  repeatIntervalMs = 130,
+  initialDelayMs = 220,
+  style,
+  activeOpacity = 0.7,
+  hitSlop,
+  children,
+}) {
+  const holdTimerRef = useRef(null);
+  const repeatTimerRef = useRef(null);
+  const latestActionRef = useRef(onAction);
+
+  latestActionRef.current = onAction;
+
+  const clearTimers = () => {
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (repeatTimerRef.current) {
+      clearInterval(repeatTimerRef.current);
+      repeatTimerRef.current = null;
+    }
+  };
+
+  useEffect(() => {
+    return () => clearTimers();
+  }, []);
+
+  const handlePressIn = () => {
+    clearTimers();
+    if (latestActionRef.current) {
+      latestActionRef.current();
+    }
+    holdTimerRef.current = setTimeout(() => {
+      repeatTimerRef.current = setInterval(() => {
+        if (latestActionRef.current) {
+          latestActionRef.current();
+        }
+      }, repeatIntervalMs);
+    }, initialDelayMs);
+  };
+
+  return (
+    <TouchableOpacity
+      style={style}
+      activeOpacity={activeOpacity}
+      hitSlop={hitSlop}
+      onPressIn={handlePressIn}
+      onPressOut={clearTimers}
+    >
+      {children}
+    </TouchableOpacity>
+  );
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState('tv');
   const [hasIrHardware, setHasIrHardware] = useState(null);
   const [feedback, setFeedback] = useState({
-    text: 'جاهز للتحكم بالشاشة والتكييف',
+    text: '',
     tone: 'neutral',
   });
 
@@ -169,6 +226,8 @@ function App() {
     fanSpeed: 'auto',
     swing: true,
   });
+
+  const isSendingRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -194,7 +253,7 @@ function App() {
     };
   }, []);
 
-  const transmitIrPattern = async (pattern, label) => {
+  const transmitIrPattern = async (pattern) => {
     if (Platform.OS !== 'android' || !IrManagerModule) {
       throw new Error('وحدة IrManagerModule متاحة فقط على أجهزة أندرويد.');
     }
@@ -202,14 +261,17 @@ function App() {
     if (!available) {
       throw new Error('هذا الهاتف لا يحتوي على مستشعر IR Blaster.');
     }
-    const res = await IrManagerModule.transmitIR(pattern, CARRIER_38KHZ);
-    setFeedback({
-      text: `IR · ${label} (${res.carrierFrequency} Hz · ${res.pulseCount} نبضة)`,
-      tone: 'ir',
-    });
+    await IrManagerModule.transmitIR(pattern, CARRIER_38KHZ);
+    setFeedback((prev) =>
+      prev.tone === 'neutral' && prev.text === '' ? prev : { text: '', tone: 'neutral' }
+    );
   };
 
-  const handleTvCommand = async (commandKey, labelAr) => {
+  const handleTvCommand = async (commandKey) => {
+    if (isSendingRef.current) {
+      return;
+    }
+    isSendingRef.current = true;
     try {
       if (tvTransport === 'ir') {
         const brand = TV_IR_BRANDS[tvBrand];
@@ -218,19 +280,20 @@ function App() {
           brand.protocol === 'samsung_dual'
             ? encodeSamsungDual0707(cmdHex, brand.addressHigh, brand.addressLow)
             : encodeNecToMicroseconds(brand.address, cmdHex);
-        await transmitIrPattern(pattern, `${labelAr} · ${brand.label}`);
+        await transmitIrPattern(pattern);
       } else {
         await WifiControl.sendCommand(commandKey);
-        setFeedback({
-          text: `Wi-Fi (${wifiProtocol.toUpperCase()}) · تم إرسال "${labelAr}"`,
-          tone: 'wifi',
-        });
+        setFeedback((prev) =>
+          prev.tone === 'neutral' && prev.text === '' ? prev : { text: '', tone: 'neutral' }
+        );
       }
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر تنفيذ الأمر',
         tone: 'error',
       });
+    } finally {
+      isSendingRef.current = false;
     }
   };
 
@@ -244,10 +307,7 @@ function App() {
     setShowWifiModal(false);
     try {
       await WifiControl.connect();
-      setFeedback({
-        text: `متصل بالشاشة الذكية ${tvIp}:${parsedPort}`,
-        tone: 'wifi',
-      });
+      setFeedback({ text: '', tone: 'neutral' });
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر الاتصال بالواي فاي',
@@ -256,11 +316,11 @@ function App() {
     }
   };
 
-  const updateAcAndTransmit = async (nextAcState, actionLabel) => {
+  const updateAcAndTransmit = async (nextAcState) => {
     setAcState(nextAcState);
     try {
       const pattern = buildAcIrPattern(acBrand, nextAcState);
-      await transmitIrPattern(pattern, `${actionLabel} (${nextAcState.temperature}°C)`);
+      await transmitIrPattern(pattern);
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر إرسال أمر التكييف',
@@ -290,18 +350,13 @@ function App() {
         </Text>
       </View>
 
-      <View
-        style={[
-          styles.feedbackBar,
-          feedback.tone === 'ir' && styles.feedbackIr,
-          feedback.tone === 'wifi' && styles.feedbackWifi,
-          feedback.tone === 'error' && styles.feedbackError,
-        ]}
-      >
-        <Text style={styles.feedbackText} numberOfLines={1}>
-          {feedback.text}
-        </Text>
-      </View>
+      {feedback.tone === 'error' && feedback.text ? (
+        <View style={[styles.feedbackBar, styles.feedbackError]}>
+          <Text style={styles.feedbackText} numberOfLines={2}>
+            {feedback.text}
+          </Text>
+        </View>
+      ) : null}
 
       <ScrollView
         style={styles.scrollArea}
@@ -352,79 +407,84 @@ function App() {
             <View style={styles.rowGap}>
               <TouchableOpacity
                 style={styles.powerBtn}
-                onPress={() => handleTvCommand('POWER', 'الطاقة')}
+                onPress={() => handleTvCommand('POWER')}
               >
                 <Text style={styles.btnTextBold}>طاقة</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.actionBtn}
-                onPress={() => handleTvCommand('INPUT', 'تبديل المصدر')}
+                onPress={() => handleTvCommand('INPUT')}
               >
                 <Text style={styles.btnText}>المصدر</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.actionBtn}
-                onPress={() => handleTvCommand('MUTE', 'كتم الصوت')}
+                onPress={() => handleTvCommand('MUTE')}
               >
                 <Text style={styles.btnText}>كتم</Text>
               </TouchableOpacity>
             </View>
 
             <View style={styles.dpadCircle}>
-              <TouchableOpacity
-                style={styles.dpadBtn}
-                onPress={() => handleTvCommand('UP', 'أعلى')}
+              <RepeatableButton
+                style={styles.dpadBtnUp}
+                repeatIntervalMs={130}
+                onAction={() => handleTvCommand('UP')}
               >
                 <Text style={styles.dpadArrow}>▲</Text>
-              </TouchableOpacity>
+              </RepeatableButton>
 
               <View style={styles.dpadMiddle}>
-                <TouchableOpacity
-                  style={styles.dpadBtn}
-                  onPress={() => handleTvCommand('RIGHT', 'يمين')}
+                <RepeatableButton
+                  style={styles.dpadBtnStart}
+                  repeatIntervalMs={130}
+                  onAction={() => handleTvCommand('RIGHT')}
                 >
                   <Text style={styles.dpadArrow}>▶</Text>
-                </TouchableOpacity>
+                </RepeatableButton>
 
                 <TouchableOpacity
                   style={styles.dpadOkBtn}
-                  onPress={() => handleTvCommand('OK', 'موافق')}
+                  activeOpacity={0.8}
+                  onPress={() => handleTvCommand('OK')}
                 >
                   <Text style={styles.btnTextBold}>موافق</Text>
                 </TouchableOpacity>
 
-                <TouchableOpacity
-                  style={styles.dpadBtn}
-                  onPress={() => handleTvCommand('LEFT', 'يسار')}
+                <RepeatableButton
+                  style={styles.dpadBtnEnd}
+                  repeatIntervalMs={130}
+                  onAction={() => handleTvCommand('LEFT')}
                 >
                   <Text style={styles.dpadArrow}>◀</Text>
-                </TouchableOpacity>
+                </RepeatableButton>
               </View>
 
-              <TouchableOpacity
-                style={styles.dpadBtn}
-                onPress={() => handleTvCommand('DOWN', 'أسفل')}
+              <RepeatableButton
+                style={styles.dpadBtnDown}
+                repeatIntervalMs={130}
+                onAction={() => handleTvCommand('DOWN')}
               >
                 <Text style={styles.dpadArrow}>▼</Text>
-              </TouchableOpacity>
+              </RepeatableButton>
             </View>
 
             <View style={styles.rowGap}>
               <TouchableOpacity
                 style={styles.navBtn}
-                onPress={() => handleTvCommand('BACK', 'رجوع')}
+                onPress={() => handleTvCommand('BACK')}
               >
                 <Text style={styles.btnText}>رجوع</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.navBtn}
-                onPress={() => handleTvCommand('HOME', 'الرئيسية')}
+                onPress={() => handleTvCommand('HOME')}
               >
                 <Text style={styles.btnText}>الرئيسية</Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={styles.navBtn}
-                onPress={() => handleTvCommand('MENU', 'القائمة')}
+                onPress={() => handleTvCommand('MENU')}
               >
                 <Text style={styles.btnText}>القائمة</Text>
               </TouchableOpacity>
@@ -432,35 +492,39 @@ function App() {
 
             <View style={styles.rowGap}>
               <View style={styles.rockerCard}>
-                <TouchableOpacity
+                <RepeatableButton
                   style={styles.rockerKey}
-                  onPress={() => handleTvCommand('VOL_UP', 'رفع الصوت')}
+                  repeatIntervalMs={120}
+                  onAction={() => handleTvCommand('VOL_UP')}
                 >
                   <Text style={styles.rockerSymbol}>+</Text>
-                </TouchableOpacity>
+                </RepeatableButton>
                 <Text style={styles.rockerLabel}>الصوت</Text>
-                <TouchableOpacity
+                <RepeatableButton
                   style={styles.rockerKey}
-                  onPress={() => handleTvCommand('VOL_DOWN', 'خفض الصوت')}
+                  repeatIntervalMs={120}
+                  onAction={() => handleTvCommand('VOL_DOWN')}
                 >
                   <Text style={styles.rockerSymbol}>−</Text>
-                </TouchableOpacity>
+                </RepeatableButton>
               </View>
 
               <View style={styles.rockerCard}>
-                <TouchableOpacity
+                <RepeatableButton
                   style={styles.rockerKey}
-                  onPress={() => handleTvCommand('CH_UP', 'القناة التالية')}
+                  repeatIntervalMs={150}
+                  onAction={() => handleTvCommand('CH_UP')}
                 >
                   <Text style={styles.rockerSymbol}>▲</Text>
-                </TouchableOpacity>
+                </RepeatableButton>
                 <Text style={styles.rockerLabel}>القناة</Text>
-                <TouchableOpacity
+                <RepeatableButton
                   style={styles.rockerKey}
-                  onPress={() => handleTvCommand('CH_DOWN', 'القناة السابقة')}
+                  repeatIntervalMs={150}
+                  onAction={() => handleTvCommand('CH_DOWN')}
                 >
                   <Text style={styles.rockerSymbol}>▼</Text>
-                </TouchableOpacity>
+                </RepeatableButton>
               </View>
             </View>
           </View>
@@ -716,8 +780,8 @@ const styles = StyleSheet.create({
   feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
   feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { padding: 18 },
-  sectionStack: { gap: 14 },
+  scrollContent: { padding: 14 },
+  sectionStack: { gap: 12 },
   segmentBox: {
     flexDirection: 'row',
     backgroundColor: '#131720',
@@ -765,7 +829,7 @@ const styles = StyleSheet.create({
   wifiEditLabel: { color: '#0EA5E9', fontSize: 13, fontWeight: '700' },
   powerBtn: {
     flex: 1,
-    minHeight: 50,
+    minHeight: 48,
     borderRadius: 14,
     backgroundColor: '#EF4444',
     justifyContent: 'center',
@@ -773,7 +837,7 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     flex: 1,
-    minHeight: 50,
+    minHeight: 48,
     borderRadius: 14,
     backgroundColor: '#1A202C',
     borderWidth: 1,
@@ -785,38 +849,69 @@ const styles = StyleSheet.create({
   btnTextBold: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
   dpadCircle: {
     alignSelf: 'center',
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#232B3A',
-    padding: 12,
+    width: 248,
+    height: 248,
+    borderRadius: 124,
+    backgroundColor: '#0B0D11',
+    borderWidth: 1.5,
+    borderColor: '#253042',
+    padding: 0,
     justifyContent: 'space-between',
     alignItems: 'center',
+    overflow: 'hidden',
   },
   dpadMiddle: {
     width: '100%',
+    height: 92,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    backgroundColor: '#0B0D11',
+    gap: 2,
   },
-  dpadBtn: {
-    width: 50,
-    height: 50,
-    borderRadius: 25,
+  dpadBtnUp: {
+    width: '100%',
+    height: 76,
+    backgroundColor: '#1A202C',
+    borderBottomWidth: 2,
+    borderBottomColor: '#0B0D11',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dpadBtnDown: {
+    width: '100%',
+    height: 76,
+    backgroundColor: '#1A202C',
+    borderTopWidth: 2,
+    borderTopColor: '#0B0D11',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dpadBtnStart: {
+    flex: 1,
+    height: '100%',
     backgroundColor: '#1A202C',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  dpadArrow: { color: '#F1F5F9', fontSize: 16 },
-  dpadOkBtn: {
-    width: 76,
-    height: 76,
-    borderRadius: 38,
-    backgroundColor: '#0EA5E9',
+  dpadBtnEnd: {
+    flex: 1,
+    height: '100%',
+    backgroundColor: '#1A202C',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  dpadArrow: { color: '#F1F5F9', fontSize: 22 },
+  dpadOkBtn: {
+    width: 92,
+    height: 92,
+    borderRadius: 46,
+    backgroundColor: '#0EA5E9',
+    borderWidth: 4,
+    borderColor: '#0B0D11',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2,
   },
   navBtn: {
     flex: 1,

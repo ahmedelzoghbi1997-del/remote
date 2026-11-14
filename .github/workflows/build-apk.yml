@@ -30,6 +30,7 @@ jobs:
       - name: Create React Native Engine
         run: |
           npx --yes @react-native-community/cli@latest init universalremote --version 0.73.6
+          cd universalremote && npm install @react-native-async-storage/async-storage@1.23.1
           
       - name: Fix Package Name Configuration
         run: |
@@ -43,7 +44,10 @@ jobs:
 
       - name: Inject Android Native IR Module & Permissions
         run: |
-          sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.TRANSMIT_IR" \/>' universalremote/android/app/src/main/AndroidManifest.xml
+          grep -q 'TRANSMIT_IR' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.TRANSMIT_IR" \/>' universalremote/android/app/src/main/AndroidManifest.xml
+          grep -q 'ACCESS_NETWORK_STATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
+          grep -q 'ACCESS_WIFI_STATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
+          grep -q 'usesCleartextTraffic' universalremote/android/app/src/main/AndroidManifest.xml || sed -i 's/<application/<application android:usesCleartextTraffic="true"/' universalremote/android/app/src/main/AndroidManifest.xml
           
           mkdir -p universalremote/android/app/src/main/java/com/universalremote
           cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/IrManagerModule.kt

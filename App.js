@@ -151,6 +151,16 @@ const FAN_SPEEDS = [
   { key: 'high', label: 'عالي' },
 ];
 
+function getSubnetFromIp(ip) {
+  const parts = String(ip || '')
+    .trim()
+    .split('.');
+  if (parts.length >= 3 && parts.slice(0, 3).every((p) => /^\d{1,3}$/.test(p))) {
+    return `${parts[0]}.${parts[1]}.${parts[2]}`;
+  }
+  return '192.168.1';
+}
+
 function RepeatableButton({
   onAction,
   repeatIntervalMs = 130,
@@ -216,14 +226,22 @@ function App() {
     tone: 'neutral',
   });
 
-  // حالة ريموت الشاشة والواي فاي
+  // حالة ريموت الشاشة والواي فاي والاقتران التلقائي
   const [tvTransport, setTvTransport] = useState('ir');
   const [tvBrand, setTvBrand] = useState('samsung');
   const [wifiProtocol, setWifiProtocol] = useState('samsung_tizen');
   const [tvIp, setTvIp] = useState('192.168.1.50');
   const [tvPort, setTvPort] = useState('8001');
   const [dialPort, setDialPort] = useState('8080');
+  const [subnetPrefix, setSubnetPrefix] = useState('192.168.1');
   const [showWifiModal, setShowWifiModal] = useState(false);
+
+  const [wifiStatus, setWifiStatus] = useState(WifiControl.getStatus());
+  const [isDiscovering, setIsDiscovering] = useState(false);
+  const [scanProgress, setScanProgress] = useState({ scanned: 0, total: 254 });
+  const [discoveredTvs, setDiscoveredTvs] = useState([]);
+  const [hasScannedOnce, setHasScannedOnce] = useState(false);
+  const [isConnectingWifi, setIsConnectingWifi] = useState(false);
 
   // حالة البحث والتشغيل المباشر (Cast) ليوتيوب عبر الواي فاي
   const [searchQuery, setSearchQuery] = useState('');
@@ -247,6 +265,24 @@ function App() {
 
   useEffect(() => {
     let mounted = true;
+
+    const unsubscribe = WifiControl.subscribe((status) => {
+      if (mounted) {
+        setWifiStatus(status);
+      }
+    });
+
+    WifiControl.loadSavedConfig().then((saved) => {
+      if (!mounted || !saved) return;
+      if (saved.ipAddress) {
+        setTvIp(saved.ipAddress);
+        setSubnetPrefix(getSubnetFromIp(saved.ipAddress));
+      }
+      if (saved.protocol) setWifiProtocol(saved.protocol);
+      if (saved.port) setTvPort(String(saved.port));
+      if (saved.dialPort) setDialPort(String(saved.dialPort));
+    });
+
     if (Platform.OS === 'android' && IrManagerModule) {
       IrManagerModule.hasIrEmitter()
         .then((supported) => {
@@ -265,6 +301,8 @@ function App() {
 
     return () => {
       mounted = false;
+      unsubscribe();
+      WifiControl.abortDiscovery();
       WifiControl.disconnect();
     };
   }, []);
@@ -318,6 +356,84 @@ function App() {
     }
   };
 
+  const handleScanSmartTvs = async (overrideSubnet) => {
+    if (isDiscovering) {
+      WifiControl.abortDiscovery();
+      setIsDiscovering(false);
+      return;
+    }
+
+    const activeSubnet = getSubnetFromIp(
+      overrideSubnet || `${subnetPrefix}.1` || tvIp
+    );
+    setSubnetPrefix(activeSubnet);
+    setIsDiscovering(true);
+    setHasScannedOnce(true);
+    setDiscoveredTvs([]);
+    setScanProgress({ scanned: 0, total: 254 });
+    clearErrorBanner();
+
+    try {
+      const devices = await WifiControl.discoverSmartTvs({
+        subnetPrefix: activeSubnet,
+        onProgress: ({ scanned, total, foundDevices }) => {
+          setScanProgress({ scanned, total });
+          setDiscoveredTvs(foundDevices);
+        },
+      });
+      setDiscoveredTvs(devices);
+    } catch (error) {
+      setFeedback({
+        text:
+          error && error.message
+            ? error.message
+            : 'تعذر إتمام البحث عن الشاشات في الشبكة المحلية.',
+        tone: 'error',
+      });
+    } finally {
+      setIsDiscovering(false);
+    }
+  };
+
+  const handleSelectDiscoveredTv = async (device) => {
+    WifiControl.abortDiscovery();
+    setIsDiscovering(false);
+
+    const nextPort = String(device.port || (device.protocol === 'roku' ? 8060 : 8001));
+    const nextDial = String(device.dialPort || (device.protocol === 'roku' ? 8060 : 8080));
+
+    setWifiProtocol(device.protocol);
+    setTvIp(device.ip);
+    setTvPort(nextPort);
+    setDialPort(nextDial);
+    setSubnetPrefix(getSubnetFromIp(device.ip));
+
+    WifiControl.configure({
+      protocol: device.protocol,
+      ipAddress: device.ip,
+      port: Number(nextPort),
+      dialPort: Number(nextDial),
+      deviceName: device.name,
+    });
+
+    setShowWifiModal(false);
+    setIsConnectingWifi(true);
+    try {
+      await WifiControl.connect();
+      clearErrorBanner();
+    } catch (error) {
+      setFeedback({
+        text:
+          error && error.message
+            ? error.message
+            : `تم اختيار ${device.name} (${device.ip}) ولكن تعذر الاتصال الفوري.`,
+        tone: 'error',
+      });
+    } finally {
+      setIsConnectingWifi(false);
+    }
+  };
+
   const handleSaveWifi = async () => {
     const defaultPort =
       wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8001 : 8080;
@@ -333,7 +449,9 @@ function App() {
       port: parsedPort,
       dialPort: parsedDialPort,
     });
+    setSubnetPrefix(getSubnetFromIp(tvIp));
     setShowWifiModal(false);
+    setIsConnectingWifi(true);
     try {
       await WifiControl.connect();
       clearErrorBanner();
@@ -342,7 +460,14 @@ function App() {
         text: error && error.message ? error.message : 'تعذر الاتصال بالواي فاي',
         tone: 'error',
       });
+    } finally {
+      setIsConnectingWifi(false);
     }
+  };
+
+  const handleClearSavedToken = async () => {
+    await WifiControl.clearToken(tvIp);
+    clearErrorBanner();
   };
 
   const handleLaunchYouTube = async () => {
@@ -435,6 +560,16 @@ function App() {
       ? 'Roku ECP'
       : 'Android TV';
 
+  const pairingBadgeText = wifiStatus.isConnected
+    ? wifiStatus.hasSavedToken
+      ? 'متصل · Token محفوظ'
+      : 'متصل'
+    : wifiStatus.hasSavedToken
+    ? 'Token محفوظ (اتصال تلقائي)'
+    : wifiStatus.pairingState === 'awaiting_approval'
+    ? 'بانتظار موافقة الشاشة'
+    : 'غير مقترن';
+
   const tvHeaderElement = (
     <View style={styles.sectionStack}>
       <View style={styles.segmentBox}>
@@ -465,12 +600,120 @@ function App() {
           ))}
         </View>
       ) : (
-        <TouchableOpacity style={styles.wifiBar} onPress={() => setShowWifiModal(true)}>
-          <Text style={styles.wifiAddressText}>
-            {protocolDisplayLabel} · {tvIp}:{dialPort}
-          </Text>
-          <Text style={styles.wifiEditLabel}>إعداد IP</Text>
-        </TouchableOpacity>
+        <View style={styles.wifiSectionWrap}>
+          <View style={styles.wifiBar}>
+            <TouchableOpacity
+              style={styles.wifiInfoTouchable}
+              onPress={() => setShowWifiModal(true)}
+            >
+              <View style={styles.wifiStatusHeader}>
+                <View
+                  style={[
+                    styles.statusDot,
+                    wifiStatus.isConnected ? styles.statusDotOn : styles.statusDotIdle,
+                  ]}
+                />
+                <Text style={styles.wifiDeviceTitle} numberOfLines={1}>
+                  {wifiStatus.deviceName || protocolDisplayLabel}
+                </Text>
+              </View>
+              <Text style={styles.wifiAddressText}>
+                {tvIp}:{tvPort} · {pairingBadgeText}
+              </Text>
+            </TouchableOpacity>
+
+            <View style={styles.wifiBarActions}>
+              <TouchableOpacity
+                style={[styles.scanBtn, isDiscovering && styles.scanBtnActive]}
+                activeOpacity={0.8}
+                onPress={() => handleScanSmartTvs()}
+              >
+                {isDiscovering ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.scanBtnText}>البحث عن الشاشات</Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.wifiEditBtn}
+                onPress={() => setShowWifiModal(true)}
+              >
+                <Text style={styles.wifiEditLabel}>إعداد</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {isConnectingWifi ? (
+            <View style={styles.discoveryCard}>
+              <View style={styles.discoveryProgressRow}>
+                <ActivityIndicator size="small" color="#0EA5E9" />
+                <Text style={styles.discoveryStatusText}>
+                  جاري الاقتران والاتصال بـ {tvIp}:{tvPort}...
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          {isDiscovering || hasScannedOnce ? (
+            <View style={styles.discoveryCard}>
+              <View style={styles.discoveryHeader}>
+                <Text style={styles.discoveryTitle}>
+                  {isDiscovering
+                    ? `جاري فحص الشبكة (${subnetPrefix}.1 - 254)... ${scanProgress.scanned}/${scanProgress.total}`
+                    : `الشاشات المكتشفة (${discoveredTvs.length})`}
+                </Text>
+                <TouchableOpacity
+                  onPress={() => {
+                    if (isDiscovering) {
+                      WifiControl.abortDiscovery();
+                      setIsDiscovering(false);
+                    } else {
+                      setHasScannedOnce(false);
+                    }
+                  }}
+                >
+                  <Text style={styles.discoveryCloseText}>
+                    {isDiscovering ? 'إيقاف' : 'إخفاء'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {discoveredTvs.length > 0 ? (
+                <View style={styles.discoveryList}>
+                  {discoveredTvs.map((device) => {
+                    const isSelected = device.ip === tvIp;
+                    return (
+                      <TouchableOpacity
+                        key={`${device.ip}-${device.protocol}`}
+                        style={[
+                          styles.discoveredItem,
+                          isSelected && styles.discoveredItemActive,
+                        ]}
+                        activeOpacity={0.75}
+                        onPress={() => handleSelectDiscoveredTv(device)}
+                      >
+                        <View style={styles.discoveredMeta}>
+                          <Text style={styles.discoveredName}>{device.name}</Text>
+                          <Text style={styles.discoveredSub}>
+                            {device.modelName} · {device.ip}:{device.port}
+                          </Text>
+                        </View>
+                        <Text style={styles.discoveredConnectTag}>
+                          {isSelected && wifiStatus.isConnected ? 'متصل' : 'اتصال'}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ) : !isDiscovering ? (
+                <Text style={styles.emptySearchText}>
+                  لم يتم العثور على شاشات على النطاق {subnetPrefix}.x — تأكد من تشغيل التلفاز أو عدّل النطاق من "إعداد".
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+        </View>
       )}
 
       <View style={styles.rowGap}>
@@ -891,7 +1134,7 @@ function App() {
       <Modal visible={showWifiModal} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>إعداد الشاشة الذكية (Wi-Fi / DIAL)</Text>
+            <Text style={styles.modalTitle}>إعداد الشاشة الذكية (Auto-Discovery & Token)</Text>
 
             <View style={styles.rowGap}>
               <TouchableOpacity
@@ -932,11 +1175,59 @@ function App() {
               </TouchableOpacity>
             </View>
 
+            <View style={styles.modalScanRow}>
+              <View style={styles.portField}>
+                <Text style={styles.inputLabel}>نطاق الشبكة (Subnet)</Text>
+                <TextInput
+                  style={styles.input}
+                  value={subnetPrefix}
+                  onChangeText={setSubnetPrefix}
+                  keyboardType="numeric"
+                  placeholder="192.168.1"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+              <TouchableOpacity
+                style={[styles.modalScanBtn, isDiscovering && styles.scanBtnActive]}
+                onPress={() => handleScanSmartTvs()}
+              >
+                <Text style={styles.btnTextBold}>
+                  {isDiscovering ? 'إيقاف الفحص' : 'البحث عن الشاشات (Scan)'}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {discoveredTvs.length > 0 ? (
+              <View style={styles.modalDiscoveryList}>
+                {discoveredTvs.map((device) => (
+                  <TouchableOpacity
+                    key={`modal-${device.ip}-${device.protocol}`}
+                    style={styles.discoveredItem}
+                    onPress={() => handleSelectDiscoveredTv(device)}
+                  >
+                    <View style={styles.discoveredMeta}>
+                      <Text style={styles.discoveredName}>{device.name}</Text>
+                      <Text style={styles.discoveredSub}>
+                        {device.modelName} · {device.ip}:{device.port}
+                      </Text>
+                    </View>
+                    <Text style={styles.discoveredConnectTag}>اختيار</Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+            ) : null}
+
             <Text style={styles.inputLabel}>عنوان IP المحلي للشاشة</Text>
             <TextInput
               style={styles.input}
               value={tvIp}
-              onChangeText={setTvIp}
+              onChangeText={(val) => {
+                setTvIp(val);
+                const detectedSubnet = getSubnetFromIp(val);
+                if (detectedSubnet !== subnetPrefix && val.split('.').length >= 3) {
+                  setSubnetPrefix(detectedSubnet);
+                }
+              }}
               keyboardType="numeric"
               placeholder="192.168.1.50"
               placeholderTextColor="#64748B"
@@ -944,7 +1235,7 @@ function App() {
 
             <View style={styles.rowGap}>
               <View style={styles.portField}>
-                <Text style={styles.inputLabel}>منفذ التحكم (WS/REST)</Text>
+                <Text style={styles.inputLabel}>منفذ التحكم (8001 / 8002)</Text>
                 <TextInput
                   style={styles.input}
                   value={tvPort}
@@ -966,6 +1257,19 @@ function App() {
                 />
               </View>
             </View>
+
+            {wifiProtocol === 'samsung_tizen' ? (
+              <View style={styles.tokenStatusBox}>
+                <Text style={styles.tokenStatusLabel}>
+                  حالة الاقتران: {wifiStatus.hasSavedToken ? 'Token محفوظ محلياً' : 'سيتم طلب الموافقة عند أول اتصال'}
+                </Text>
+                {wifiStatus.hasSavedToken ? (
+                  <TouchableOpacity onPress={handleClearSavedToken}>
+                    <Text style={styles.clearTokenText}>مسح التوكن</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            ) : null}
 
             <View style={styles.rowGap}>
               <TouchableOpacity
@@ -1049,19 +1353,87 @@ const styles = StyleSheet.create({
   },
   chipBtnActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.15)' },
   chipText: { color: '#F1F5F9', fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  wifiSectionWrap: { gap: 8 },
   wifiBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    minHeight: 46,
-    paddingHorizontal: 14,
-    borderRadius: 10,
+    minHeight: 54,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
+    gap: 8,
   },
-  wifiAddressText: { color: '#F1F5F9', fontSize: 13, fontFamily: 'monospace' },
-  wifiEditLabel: { color: '#0EA5E9', fontSize: 13, fontWeight: '700' },
+  wifiInfoTouchable: { flex: 1, gap: 3 },
+  wifiStatusHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  statusDot: { width: 8, height: 8, borderRadius: 4 },
+  statusDotOn: { backgroundColor: '#22C55E' },
+  statusDotIdle: { backgroundColor: '#64748B' },
+  wifiDeviceTitle: { color: '#F1F5F9', fontSize: 13, fontWeight: '700', flex: 1 },
+  wifiAddressText: { color: '#94A3B8', fontSize: 11, fontFamily: 'monospace' },
+  wifiBarActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  scanBtn: {
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  scanBtnActive: { backgroundColor: '#F59E0B' },
+  scanBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
+  wifiEditBtn: {
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  wifiEditLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '700' },
+  discoveryCard: {
+    backgroundColor: '#131720',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 12,
+    gap: 8,
+  },
+  discoveryProgressRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  discoveryStatusText: { color: '#F1F5F9', fontSize: 12, fontWeight: '600' },
+  discoveryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  discoveryTitle: { color: '#F1F5F9', fontSize: 12, fontWeight: '700', flex: 1 },
+  discoveryCloseText: { color: '#0EA5E9', fontSize: 12, fontWeight: '700' },
+  discoveryList: { gap: 8 },
+  discoveredItem: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#0B0D11',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  discoveredItemActive: {
+    borderColor: '#0EA5E9',
+    backgroundColor: 'rgba(14,165,233,0.12)',
+  },
+  discoveredMeta: { flex: 1, gap: 2 },
+  discoveredName: { color: '#F1F5F9', fontSize: 13, fontWeight: '700', textAlign: 'right' },
+  discoveredSub: { color: '#94A3B8', fontSize: 11, textAlign: 'right' },
+  discoveredConnectTag: { color: '#0EA5E9', fontSize: 12, fontWeight: '700' },
   powerBtn: {
     flex: 1,
     minHeight: 48,
@@ -1428,6 +1800,36 @@ const styles = StyleSheet.create({
     fontFamily: 'monospace',
     textAlign: 'left',
   },
+  modalScanRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: 10,
+  },
+  modalScanBtn: {
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 10,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalDiscoveryList: {
+    maxHeight: 150,
+    gap: 6,
+  },
+  tokenStatusBox: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    backgroundColor: '#0B0D11',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  tokenStatusLabel: { color: '#94A3B8', fontSize: 12, flex: 1, textAlign: 'right' },
+  clearTokenText: { color: '#EF4444', fontSize: 12, fontWeight: '700' },
   modalSaveBtn: { backgroundColor: '#0EA5E9', borderColor: '#0EA5E9' },
 });
 

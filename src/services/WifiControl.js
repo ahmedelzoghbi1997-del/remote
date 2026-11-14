@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+
 const YOUTUBE_API_KEY = 'YOUR_YOUTUBE_API_KEY';
 
 const INVIDIOUS_INSTANCES = [
@@ -5,6 +7,10 @@ const INVIDIOUS_INSTANCES = [
   'https://invidious.nerdvpn.de',
   'https://yewtu.be',
 ];
+
+const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
+const STORAGE_LAST_TV_KEY = '@universal_remote_last_tv_config';
+const SAMSUNG_REMOTE_APP_NAME_B64 = 'VW5pdmVyc2FsUmVtb3Rl'; // UniversalRemote in Base64
 
 const WIFI_KEY_MAP = {
   POWER: { roku: 'Power', androidTv: 'KEYCODE_POWER', tizen: 'KEY_POWER' },
@@ -33,6 +39,23 @@ function formatDurationSeconds(seconds) {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
+function extractSubnetPrefix(ip) {
+  const parts = String(ip || '')
+    .trim()
+    .split('.');
+  if (parts.length >= 3 && parts.slice(0, 3).every((p) => /^\d{1,3}$/.test(p))) {
+    return `${parts[0]}.${parts[1]}.${parts[2]}`;
+  }
+  return '192.168.1';
+}
+
+function extractXmlTagValue(xmlText, tagName) {
+  if (!xmlText) return '';
+  const regex = new RegExp(`<${tagName}[^>]*>([^<]+)</${tagName}>`, 'i');
+  const match = xmlText.match(regex);
+  return match && match[1] ? match[1].trim() : '';
+}
+
 class WifiControlService {
   constructor() {
     this.protocol = 'samsung_tizen'; // 'samsung_tizen' | 'android_tv' | 'roku'
@@ -41,10 +64,16 @@ class WifiControlService {
     this.dialPort = 8080;
     this.ws = null;
     this.isConnected = false;
+    this.pairingState = 'idle'; // 'idle' | 'connecting' | 'awaiting_approval' | 'paired' | 'unauthorized'
+    this.authToken = null;
+    this.deviceName = '';
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     this.commandQueue = [];
     this.listeners = new Set();
+    this.isScanning = false;
+    this.scanAborted = false;
+    this.manualDisconnect = false;
   }
 
   subscribe(listener) {
@@ -60,6 +89,10 @@ class WifiControlService {
       ipAddress: this.ipAddress,
       port: this.port,
       dialPort: this.dialPort,
+      pairingState: this.pairingState,
+      hasSavedToken: Boolean(this.authToken),
+      deviceName: this.deviceName,
+      isScanning: this.isScanning,
     };
   }
 
@@ -80,11 +113,95 @@ class WifiControlService {
     return 8008;
   }
 
-  configure({ protocol, ipAddress, port, dialPort }) {
+  _tokenStorageKey(ip) {
+    return `${STORAGE_TOKEN_PREFIX}${String(ip || this.ipAddress).trim()}`;
+  }
+
+  async getSavedToken(ip = this.ipAddress) {
+    try {
+      const token = await AsyncStorage.getItem(this._tokenStorageKey(ip));
+      const cleanToken = token ? token.trim() : null;
+      if (ip === this.ipAddress) {
+        this.authToken = cleanToken;
+        if (cleanToken && this.pairingState === 'idle') {
+          this.pairingState = 'paired';
+        }
+        this._notify();
+      }
+      return cleanToken;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async saveToken(ip, token) {
+    if (!token) return;
+    const cleanToken = String(token).trim();
+    if (!cleanToken) return;
+    try {
+      await AsyncStorage.setItem(this._tokenStorageKey(ip), cleanToken);
+    } catch (_) {
+      // تجاهل أخطاء التخزين المؤقتة مع الاحتفاظ بالـ Token في الذاكرة
+    }
+    if (ip === this.ipAddress) {
+      this.authToken = cleanToken;
+      this.pairingState = 'paired';
+      this._notify();
+    }
+  }
+
+  async clearToken(ip = this.ipAddress) {
+    try {
+      await AsyncStorage.removeItem(this._tokenStorageKey(ip));
+    } catch (_) {
+      // ignore
+    }
+    if (ip === this.ipAddress) {
+      this.authToken = null;
+      this.pairingState = 'idle';
+      this._notify();
+    }
+  }
+
+  async saveLastTvConfig(config) {
+    try {
+      await AsyncStorage.setItem(STORAGE_LAST_TV_KEY, JSON.stringify(config));
+    } catch (_) {
+      // ignore
+    }
+  }
+
+  async loadSavedConfig() {
+    try {
+      const raw = await AsyncStorage.getItem(STORAGE_LAST_TV_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && parsed.ipAddress) {
+          this.protocol = parsed.protocol || 'samsung_tizen';
+          this.ipAddress = parsed.ipAddress;
+          this.port = Number(parsed.port) || this._defaultPortForProtocol(this.protocol);
+          this.dialPort =
+            Number(parsed.dialPort) || this._defaultDialPortForProtocol(this.protocol);
+          this.deviceName = parsed.deviceName || '';
+        }
+      }
+      if (this.protocol === 'samsung_tizen') {
+        await this.getSavedToken(this.ipAddress);
+      }
+      this._notify();
+      return this.getStatus();
+    } catch (_) {
+      return this.getStatus();
+    }
+  }
+
+  configure({ protocol, ipAddress, port, dialPort, deviceName }) {
     const nextProtocol = protocol || this.protocol;
     const nextIp = (ipAddress || this.ipAddress).trim();
     const nextPort = Number(port) || this._defaultPortForProtocol(nextProtocol);
     const nextDialPort = Number(dialPort) || this._defaultDialPortForProtocol(nextProtocol);
+    const nextDeviceName =
+      deviceName !== undefined ? deviceName : nextIp !== this.ipAddress ? '' : this.deviceName;
 
     const changed =
       nextProtocol !== this.protocol ||
@@ -96,18 +213,64 @@ class WifiControlService {
     this.ipAddress = nextIp;
     this.port = nextPort;
     this.dialPort = nextDialPort;
+    this.deviceName = nextDeviceName;
 
     if (changed) {
+      this.authToken = null;
+      this.pairingState = 'idle';
       this.disconnect();
+      this.saveLastTvConfig({
+        protocol: this.protocol,
+        ipAddress: this.ipAddress,
+        port: this.port,
+        dialPort: this.dialPort,
+        deviceName: this.deviceName,
+      });
+      if (this.protocol === 'samsung_tizen') {
+        this.getSavedToken(this.ipAddress).catch(() => {});
+      }
     }
     this._notify();
   }
 
   async connect() {
+    this.manualDisconnect = false;
     if (this.protocol === 'roku') {
       return this._verifyRokuRest();
     }
-    return this._connectTvSocket();
+
+    if (this.protocol === 'samsung_tizen') {
+      const savedToken = await this.getSavedToken(this.ipAddress);
+      try {
+        return await this._connectTvSocket(this.port, savedToken);
+      } catch (primaryErr) {
+        // تجربة المنفذ البديل تلقائياً بين 8001 (ws) و 8002 (wss) لسامسونج Tizen
+        const fallbackPort = Number(this.port) === 8002 ? 8001 : 8002;
+        if (
+          this.pairingState !== 'unauthorized' &&
+          !this.manualDisconnect
+        ) {
+          try {
+            const res = await this._connectTvSocket(fallbackPort, savedToken);
+            this.port = fallbackPort;
+            this.saveLastTvConfig({
+              protocol: this.protocol,
+              ipAddress: this.ipAddress,
+              port: this.port,
+              dialPort: this.dialPort,
+              deviceName: this.deviceName,
+            });
+            this._notify();
+            return res;
+          } catch (_) {
+            throw primaryErr;
+          }
+        }
+        throw primaryErr;
+      }
+    }
+
+    return this._connectTvSocket(this.port, null);
   }
 
   async _verifyRokuRest() {
@@ -126,10 +289,12 @@ class WifiControlService {
         throw new Error(`HTTP ${response.status}`);
       }
       this.isConnected = true;
+      this.pairingState = 'paired';
       this._notify();
       return { connected: true, protocol: 'roku' };
     } catch (error) {
       this.isConnected = false;
+      this.pairingState = 'idle';
       this._notify();
       throw new Error(`تعذر الاتصال بشاشة Roku على ${this.ipAddress}:${this.port}`);
     } finally {
@@ -137,67 +302,195 @@ class WifiControlService {
     }
   }
 
-  _buildWebSocketUrl() {
+  _buildWebSocketUrl(portOverride, tokenOverride) {
+    const targetPort = Number(portOverride || this.port);
     if (this.protocol === 'samsung_tizen') {
-      return `ws://${this.ipAddress}:${this.port}/api/v2/channels/samsung.remote.control?name=VW5pdmVyc2FsUmVtb3Rl`;
+      const scheme = targetPort === 8002 ? 'wss' : 'ws';
+      const tokenPart = tokenOverride
+        ? `&token=${encodeURIComponent(tokenOverride)}`
+        : '';
+      return `${scheme}://${this.ipAddress}:${targetPort}/api/v2/channels/samsung.remote.control?name=${SAMSUNG_REMOTE_APP_NAME_B64}${tokenPart}`;
     }
-    return `ws://${this.ipAddress}:${this.port}/remote`;
+    return `ws://${this.ipAddress}:${targetPort}/remote`;
   }
 
-  _connectTvSocket() {
+  _connectTvSocket(portOverride = this.port, tokenOverride = this.authToken) {
     return new Promise((resolve, reject) => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.isConnected = true;
         this._notify();
-        resolve({ connected: true, protocol: this.protocol });
+        resolve({ connected: true, protocol: this.protocol, token: this.authToken });
         return;
       }
 
-      const wsUrl = this._buildWebSocketUrl();
+      if (this.ws) {
+        try {
+          this.ws.onopen = null;
+          this.ws.onmessage = null;
+          this.ws.onclose = null;
+          this.ws.onerror = null;
+          this.ws.close();
+        } catch (_) {
+          // ignore
+        }
+        this.ws = null;
+      }
+
+      this.pairingState = tokenOverride ? 'connecting' : 'awaiting_approval';
+      this._notify();
+
+      const wsUrl = this._buildWebSocketUrl(portOverride, tokenOverride);
       const socket = new WebSocket(wsUrl);
       this.ws = socket;
+      let settled = false;
+      let handshakeTimer = null;
 
-      const timeoutId = setTimeout(() => {
+      const finishResolve = (payload) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeoutId);
+        if (handshakeTimer) clearTimeout(handshakeTimer);
+        resolve(payload);
+      };
+
+      const finishReject = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(connectTimeoutId);
+        if (handshakeTimer) clearTimeout(handshakeTimer);
+        reject(err);
+      };
+
+      const connectTimeoutId = setTimeout(() => {
         if (socket.readyState !== WebSocket.OPEN) {
-          socket.close();
-          reject(new Error(`انتهت مهلة اتصال WebSocket على ${wsUrl}`));
+          try {
+            socket.close();
+          } catch (_) {
+            // ignore
+          }
+          this.isConnected = false;
+          this.pairingState = 'idle';
+          this._notify();
+          finishReject(new Error(`انتهت مهلة اتصال WebSocket على ${this.ipAddress}:${portOverride}`));
         }
-      }, 4500);
+      }, 5000);
 
       socket.onopen = () => {
-        clearTimeout(timeoutId);
+        clearTimeout(connectTimeoutId);
         this.isConnected = true;
         this.reconnectAttempts = 0;
         this._notify();
-        this._flushQueue();
-        resolve({ connected: true, protocol: this.protocol });
+
+        if (this.protocol !== 'samsung_tizen') {
+          this.pairingState = 'paired';
+          this._notify();
+          this._flushQueue();
+          finishResolve({ connected: true, protocol: this.protocol });
+          return;
+        }
+
+        // في شاشات Samsung Tizen ننتظر رسالة ms.channel.connect لحفظ الـ Token إن وجد
+        handshakeTimer = setTimeout(() => {
+          if (socket.readyState === WebSocket.OPEN) {
+            if (tokenOverride) {
+              this.pairingState = 'paired';
+            }
+            this._notify();
+            this._flushQueue();
+            finishResolve({
+              connected: true,
+              protocol: this.protocol,
+              token: this.authToken,
+            });
+          }
+        }, 1200);
+      };
+
+      socket.onmessage = async (event) => {
+        if (this.protocol !== 'samsung_tizen') return;
+        let parsed = null;
+        try {
+          parsed = JSON.parse(event.data);
+        } catch (_) {
+          return;
+        }
+        if (!parsed || !parsed.event) return;
+
+        if (parsed.event === 'ms.channel.connect') {
+          const receivedToken = parsed.data && parsed.data.token ? String(parsed.data.token) : null;
+          if (receivedToken) {
+            await this.saveToken(this.ipAddress, receivedToken);
+          } else {
+            this.pairingState = 'paired';
+            this._notify();
+          }
+          this.isConnected = true;
+          this._flushQueue();
+          finishResolve({
+            connected: true,
+            protocol: this.protocol,
+            token: receivedToken || this.authToken,
+          });
+        } else if (parsed.event === 'ms.channel.unauthorized') {
+          this.isConnected = false;
+          this.pairingState = 'unauthorized';
+          // إذا كان هناك Token قديم لم يعد صالحاً نحذفه لطلب اقتران جديد
+          if (tokenOverride) {
+            await this.clearToken(this.ipAddress);
+            this.pairingState = 'unauthorized';
+          }
+          this._notify();
+          finishReject(
+            new Error(
+              'الشاشة تطلب الموافقة على الاقتران — يرجى الضغط على "سماح" (Allow) في شاشة التلفاز.'
+            )
+          );
+        } else if (parsed.event === 'ms.channel.timeOut') {
+          this.isConnected = false;
+          this.pairingState = 'idle';
+          this._notify();
+          finishReject(
+            new Error('انتهت مهلة الموافقة على شاشة التلفاز. أعد المحاولة واضغط "سماح".')
+          );
+        }
       };
 
       socket.onclose = () => {
-        clearTimeout(timeoutId);
+        clearTimeout(connectTimeoutId);
+        if (handshakeTimer) clearTimeout(handshakeTimer);
         this.isConnected = false;
         this._notify();
-        this._scheduleReconnect();
+        if (!settled) {
+          finishReject(
+            new Error(`تم إغلاق الاتصال مع الشاشة (${this.ipAddress}:${portOverride})`)
+          );
+        }
+        if (!this.manualDisconnect && this.pairingState !== 'unauthorized') {
+          this._scheduleReconnect();
+        }
       };
 
       socket.onerror = () => {
-        clearTimeout(timeoutId);
+        clearTimeout(connectTimeoutId);
+        if (handshakeTimer) clearTimeout(handshakeTimer);
         this.isConnected = false;
         this._notify();
-        reject(new Error(`فشل اتصال WebSocket مع الشاشة (${this.ipAddress}:${this.port})`));
+        finishReject(
+          new Error(`فشل اتصال WebSocket مع الشاشة (${this.ipAddress}:${portOverride})`)
+        );
       };
     });
   }
 
   _scheduleReconnect() {
-    if (this.protocol === 'roku') return;
+    if (this.protocol === 'roku' || this.manualDisconnect) return;
     if (this.reconnectAttempts >= this.maxReconnectAttempts) return;
 
     this.reconnectAttempts += 1;
     const delayMs = Math.min(8000, 1000 * Math.pow(2, this.reconnectAttempts - 1));
     setTimeout(() => {
-      if (!this.isConnected && this.protocol !== 'roku') {
-        this._connectTvSocket().catch(() => {});
+      if (!this.isConnected && !this.manualDisconnect && this.protocol !== 'roku') {
+        this._connectTvSocket(this.port, this.authToken).catch(() => {});
       }
     }, delayMs);
   }
@@ -211,14 +504,190 @@ class WifiControlService {
   }
 
   disconnect() {
+    this.manualDisconnect = true;
     if (this.ws) {
+      this.ws.onopen = null;
+      this.ws.onmessage = null;
       this.ws.onclose = null;
-      this.ws.close();
+      this.ws.onerror = null;
+      try {
+        this.ws.close();
+      } catch (_) {
+        // ignore
+      }
       this.ws = null;
     }
     this.isConnected = false;
     this.commandQueue = [];
     this._notify();
+  }
+
+  /**
+   * فحص الشبكة المحلية لاكتشاف الشاشات الذكية (Samsung Tizen / Android TV / Roku)
+   * دون الحاجة لإدخال عنوان IP يدوياً
+   */
+  async _probeHostForTv(ip) {
+    // 1. فحص خدمة Samsung Tizen REST API / SSDP Metadata على المنفذ 8001
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 520);
+      try {
+        const res = await fetch(`http://${ip}:8001/api/v2/`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          const device = data && data.device ? data.device : {};
+          const tokenSupport =
+            device.TokenAuthSupport === 'true' ||
+            device.tokenAuthSupport === true ||
+            device.TokenAuthSupport === true;
+          return {
+            ip,
+            protocol: 'samsung_tizen',
+            port: tokenSupport ? 8002 : 8001,
+            fallbackPort: 8001,
+            dialPort: 8080,
+            name: device.name || data.name || 'Samsung Smart TV',
+            modelName: device.modelName || 'Tizen TV',
+            tokenAuthSupport: Boolean(tokenSupport),
+          };
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (_) {
+      // ليست شاشة سامسونج على المنفذ 8001
+    }
+
+    // 2. فحص Roku ECP على المنفذ 8060
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 450);
+      try {
+        const res = await fetch(`http://${ip}:8060/query/device-info`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const xml = await res.text();
+          return {
+            ip,
+            protocol: 'roku',
+            port: 8060,
+            dialPort: 8060,
+            name:
+              extractXmlTagValue(xml, 'friendly-device-name') ||
+              extractXmlTagValue(xml, 'user-device-name') ||
+              'Roku TV',
+            modelName: extractXmlTagValue(xml, 'model-name') || 'Roku ECP',
+            tokenAuthSupport: false,
+          };
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (_) {
+      // ليست شاشة Roku
+    }
+
+    // 3. فحص Android TV / Chromecast DIAL على المنفذ 8008
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 450);
+      try {
+        const res = await fetch(`http://${ip}:8008/setup/eureka_info`, {
+          method: 'GET',
+          signal: controller.signal,
+        });
+        if (res.ok) {
+          const data = await res.json();
+          return {
+            ip,
+            protocol: 'android_tv',
+            port: 8080,
+            dialPort: 8008,
+            name: (data && data.name) || 'Android TV',
+            modelName: (data && data.model_name) || 'Chromecast / Android TV',
+            tokenAuthSupport: false,
+          };
+        }
+      } finally {
+        clearTimeout(timer);
+      }
+    } catch (_) {
+      // ليست شاشة Android TV على 8008
+    }
+
+    return null;
+  }
+
+  abortDiscovery() {
+    this.scanAborted = true;
+    this.isScanning = false;
+    this._notify();
+  }
+
+  async discoverSmartTvs({ subnetPrefix, onProgress, onDeviceFound } = {}) {
+    const cleanSubnet = extractSubnetPrefix(subnetPrefix || this.ipAddress);
+    this.isScanning = true;
+    this.scanAborted = false;
+    this._notify();
+
+    const candidateIps = [];
+    // إعطاء أولوية للعنوان الحالي إن وجد ضمن نفس الشبكة
+    if (this.ipAddress && this.ipAddress.startsWith(`${cleanSubnet}.`)) {
+      candidateIps.push(this.ipAddress);
+    }
+    for (let host = 1; host <= 254; host += 1) {
+      const ip = `${cleanSubnet}.${host}`;
+      if (ip !== this.ipAddress) {
+        candidateIps.push(ip);
+      }
+    }
+
+    const foundMap = new Map();
+    const total = candidateIps.length;
+    const batchSize = 24;
+    let scanned = 0;
+
+    try {
+      for (let i = 0; i < candidateIps.length; i += batchSize) {
+        if (this.scanAborted) break;
+        const batch = candidateIps.slice(i, i + batchSize);
+        const results = await Promise.all(batch.map((ip) => this._probeHostForTv(ip)));
+
+        for (const device of results) {
+          if (device && !foundMap.has(device.ip)) {
+            foundMap.set(device.ip, device);
+            if (onDeviceFound) {
+              onDeviceFound(device);
+            }
+          }
+        }
+
+        scanned += batch.length;
+        if (onProgress) {
+          onProgress({
+            scanned: Math.min(scanned, total),
+            total,
+            foundDevices: Array.from(foundMap.values()),
+          });
+        }
+      }
+
+      const finalList = Array.from(foundMap.values()).sort((a, b) => {
+        if (a.protocol === 'samsung_tizen' && b.protocol !== 'samsung_tizen') return -1;
+        if (a.protocol !== 'samsung_tizen' && b.protocol === 'samsung_tizen') return 1;
+        return a.ip.localeCompare(b.ip);
+      });
+
+      return finalList;
+    } finally {
+      this.isScanning = false;
+      this._notify();
+    }
   }
 
   _buildWsPayload(mapped) {
@@ -271,7 +740,7 @@ class WifiControlService {
 
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       this.commandQueue.push(payload);
-      await this._connectTvSocket();
+      await this.connect();
     } else {
       this.ws.send(JSON.stringify(payload));
     }
@@ -318,7 +787,6 @@ class WifiControlService {
             `http://${this.ipAddress}:8080/ws/apps/YouTube`,
           ];
 
-    let lastError = null;
     for (const url of candidateUrls) {
       try {
         const res = await this._postWithTimeout(url, {
@@ -328,9 +796,8 @@ class WifiControlService {
         if (res.ok || res.status === 201 || res.status === 204) {
           return { launched: true, endpoint: url };
         }
-        lastError = new Error(`استجابة الشاشة: HTTP ${res.status}`);
-      } catch (err) {
-        lastError = err;
+      } catch (_) {
+        // تجربة المسار التالي
       }
     }
 

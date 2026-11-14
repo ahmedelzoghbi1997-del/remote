@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Deep obsidian dark slate background matching app UI -->
+    <path
+        android:fillColor="#0B0D11"
+        android:pathData="M0,0h108v108h-108z" />
+
+    <!-- Subtle ambient radial depth layers -->
+    <path
+        android:fillColor="#111827"
+        android:fillAlpha="0.85"
+        android:pathData="M54,54m-44,0a44,44 0,1 1,88 0a44,44 0,1 1,-88 0" />
+
+    <path
+        android:fillColor="#0EA5E9"
+        android:fillAlpha="0.08"
+        android:pathData="M54,54m-32,0a32,32 0,1 1,64 0a32,32 0,1 1,-64 0" />
+
+    <!-- Subtle hardware precision concentric ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#1E293B"
+        android:strokeWidth="1"
+        android:pathData="M54,54m-36,0a36,36 0,1 1,72 0a36,36 0,1 1,-72 0" />
+</vector>

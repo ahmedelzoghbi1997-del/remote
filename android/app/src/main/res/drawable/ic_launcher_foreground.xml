@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Outer Wi-Fi signal wave (Sky Cyan) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#38BDF8"
+        android:strokeAlpha="0.85"
+        android:strokeWidth="2.8"
+        android:strokeLineCap="round"
+        android:pathData="M33.7,34.1 A34.5,34.5 0 0,1 74.3,34.1" />
+
+    <!-- Middle Wi-Fi signal wave -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#0EA5E9"
+        android:strokeWidth="3.0"
+        android:strokeLineCap="round"
+        android:pathData="M37.2,38.9 A28.5,28.5 0 0,1 70.8,38.9" />
+
+    <!-- Inner 38kHz IR beam wave (Crimson Red) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#EF4444"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M40.8,43.8 A22.5,22.5 0 0,1 67.2,43.8" />
+
+    <!-- Elevated remote control circular key housing -->
+    <path
+        android:fillColor="#141B26"
+        android:strokeColor="#263347"
+        android:strokeWidth="1.6"
+        android:pathData="M54,62m-17.5,0a17.5,17.5 0,1 1,35 0a17.5,17.5 0,1 1,-35 0" />
+
+    <!-- Inner subtle cyan glow ring inside button -->
+    <path
+        android:fillColor="#0EA5E9"
+        android:fillAlpha="0.10"
+        android:pathData="M54,62m-14.5,0a14.5,14.5 0,1 1,29 0a14.5,14.5 0,1 1,-29 0" />
+
+    <!-- Power button open ring -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#F8FAFC"
+        android:strokeWidth="3.2"
+        android:strokeLineCap="round"
+        android:pathData="M60.5,53.7 A10.5,10.5 0 1,1 47.5,53.7" />
+
+    <!-- Power button vertical stem (IR crimson-white accent) -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#EF4444"
+        android:strokeWidth="3.4"
+        android:strokeLineCap="round"
+        android:pathData="M54,49.5 L54,60.5" />
+</vector>

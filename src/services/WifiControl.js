@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
 
 const YOUTUBE_API_KEY = 'YOUR_YOUTUBE_API_KEY';
 
@@ -255,6 +256,20 @@ class WifiControlService {
 
   async connect() {
     this.manualDisconnect = false;
+    if (Platform.OS === 'web') {
+      this.isConnected = true;
+      this.pairingState = 'paired';
+      if (this.protocol === 'samsung_tizen' && !this.authToken) {
+        await this.saveToken(this.ipAddress, 'mock-web-preview-token');
+      }
+      this._notify();
+      return {
+        connected: true,
+        mocked: true,
+        protocol: this.protocol,
+        token: this.authToken,
+      };
+    }
     if (this.protocol === 'roku') {
       return this._verifyRokuRest();
     }
@@ -671,6 +686,40 @@ class WifiControlService {
     this.scanAborted = false;
     this._notify();
 
+    if (Platform.OS === 'web') {
+      const mockDevices = [
+        {
+          ip: `${cleanSubnet}.50`,
+          protocol: 'samsung_tizen',
+          port: 8002,
+          fallbackPort: 8001,
+          dialPort: 8080,
+          name: 'Samsung QLED 65 (معاينة)',
+          modelName: 'QE65Q80C · Tizen TV',
+          tokenAuthSupport: true,
+        },
+        {
+          ip: `${cleanSubnet}.64`,
+          protocol: 'android_tv',
+          port: 8080,
+          dialPort: 8008,
+          name: 'Living Room Android TV',
+          modelName: 'Google TV / Chromecast',
+          tokenAuthSupport: false,
+        },
+      ];
+      await new Promise((r) => setTimeout(r, 250));
+      if (!this.scanAborted) {
+        mockDevices.forEach((d) => onDeviceFound && onDeviceFound(d));
+        if (onProgress) {
+          onProgress({ scanned: 254, total: 254, foundDevices: mockDevices });
+        }
+      }
+      this.isScanning = false;
+      this._notify();
+      return mockDevices;
+    }
+
     const candidateIps = [];
     if (this.ipAddress && this.ipAddress.startsWith(`${cleanSubnet}.`)) {
       candidateIps.push(this.ipAddress);
@@ -751,6 +800,18 @@ class WifiControlService {
       throw new Error(`الأمر ${commandKey} غير مدعوم عبر الواي فاي.`);
     }
 
+    if (Platform.OS === 'web') {
+      this.isConnected = true;
+      this.pairingState = 'paired';
+      this._notify();
+      return {
+        sent: true,
+        mocked: true,
+        protocol: this.protocol,
+        payload: this._buildWsPayload(mapped),
+      };
+    }
+
     if (this.protocol === 'roku') {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 3000);
@@ -801,6 +862,9 @@ class WifiControlService {
    * فتح تطبيق يوتيوب مباشرة على الشاشة الذكية عبر DIAL / REST
    */
   async launchYouTube() {
+    if (Platform.OS === 'web') {
+      return { launched: true, mocked: true, endpoint: `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube` };
+    }
     if (this.protocol === 'roku') {
       const url = `http://${this.ipAddress}:${this.port}/launch/837`;
       const res = await this._postWithTimeout(url, { method: 'POST' });
@@ -847,6 +911,10 @@ class WifiControlService {
   async castYouTubeVideo(videoId) {
     if (!videoId) {
       throw new Error('معرف الفيديو غير صالح.');
+    }
+
+    if (Platform.OS === 'web') {
+      return { casted: true, mocked: true, videoId };
     }
 
     if (this.protocol === 'roku') {
@@ -962,6 +1030,25 @@ class WifiControlService {
       } catch (_) {
         // الانتقال تلقائياً إلى الخادم البديل
       }
+    }
+
+    if (Platform.OS === 'web') {
+      return [
+        {
+          videoId: 'dQw4w9WgXcQ',
+          title: `${cleanQuery} — عرض تجريبي للمعاينة (YouTube Cast)`,
+          channelTitle: 'معاينة الريموت الشامل',
+          thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg',
+          durationText: '3:33',
+        },
+        {
+          videoId: 'aqz-KE-bpKQ',
+          title: `Big Buck Bunny 4K · ${cleanQuery}`,
+          channelTitle: 'Blender Foundation',
+          thumbnailUrl: 'https://i.ytimg.com/vi/aqz-KE-bpKQ/mqdefault.jpg',
+          durationText: '9:56',
+        },
+      ];
     }
 
     throw new Error('تعذر جلب نتائج البحث حالياً. تحقق من اتصال الإنترنت وأعد المحاولة.');

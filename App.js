@@ -18,9 +18,9 @@ import {
 } from 'react-native';
 import WifiControl from './src/services/WifiControl';
 
-const { IrManagerModule } = NativeModules;
+const IrManagerModule = Platform.OS === 'web' ? null : NativeModules?.IrManagerModule;
 
-if (!I18nManager.isRTL) {
+if (Platform.OS !== 'web' && I18nManager && !I18nManager.isRTL) {
   I18nManager.allowRTL(true);
   I18nManager.forceRTL(true);
 }
@@ -611,7 +611,9 @@ function App() {
       if (saved.dialPort) setDialPort(String(saved.dialPort));
     });
 
-    if (Platform.OS === 'android' && IrManagerModule) {
+    if (Platform.OS === 'web') {
+      setHasIrHardware(true);
+    } else if (Platform.OS === 'android' && IrManagerModule) {
       IrManagerModule.hasIrEmitter()
         .then((supported) => {
           if (mounted) {
@@ -642,6 +644,10 @@ function App() {
   };
 
   const transmitIrPattern = async (pattern) => {
+    if (Platform.OS === 'web') {
+      clearErrorBanner();
+      return { mocked: true, pulseCount: pattern.length, carrierFrequency: CARRIER_38KHZ };
+    }
     if (Platform.OS !== 'android' || !IrManagerModule) {
       throw new Error('وحدة IrManagerModule متاحة فقط على أجهزة أندرويد.');
     }
@@ -1085,48 +1091,50 @@ function App() {
       </View>
 
       {/* الدائرة المركزية الموحدة بدون فواصل حادة (Apple TV / Samsung Touchpad Style) */}
-      <View style={styles.dpadSurface}>
-        <RepeatableButton
-          style={styles.dpadTouchZoneTopBottom}
-          repeatIntervalMs={130}
-          onAction={() => handleTvCommand('UP')}
-        >
-          <RemoteIcon name="chevron_up" color="#D1D1D6" size={22} />
-        </RepeatableButton>
-
-        <View style={styles.dpadMiddleBand}>
+      <View style={styles.dpadOuterContainer}>
+        <View style={styles.dpadSurface}>
           <RepeatableButton
-            style={styles.dpadTouchZoneSide}
+            style={styles.dpadTouchZoneTopBottom}
             repeatIntervalMs={130}
-            onAction={() => handleTvCommand('RIGHT')}
+            onAction={() => handleTvCommand('UP')}
           >
-            <RemoteIcon name="chevron_right" color="#D1D1D6" size={22} />
+            <RemoteIcon name="chevron_up" color="#D1D1D6" size={22} />
           </RepeatableButton>
 
-          <TouchableOpacity
-            style={styles.dpadOkCircle}
-            activeOpacity={0.82}
-            onPress={() => handleTvCommand('OK')}
-          >
-            <Text style={styles.dpadOkText}>OK</Text>
-          </TouchableOpacity>
+          <View style={styles.dpadMiddleBand}>
+            <RepeatableButton
+              style={styles.dpadTouchZoneSide}
+              repeatIntervalMs={130}
+              onAction={() => handleTvCommand('RIGHT')}
+            >
+              <RemoteIcon name="chevron_right" color="#D1D1D6" size={22} />
+            </RepeatableButton>
+
+            <TouchableOpacity
+              style={styles.dpadOkCircle}
+              activeOpacity={0.82}
+              onPress={() => handleTvCommand('OK')}
+            >
+              <Text style={styles.dpadOkText}>OK</Text>
+            </TouchableOpacity>
+
+            <RepeatableButton
+              style={styles.dpadTouchZoneSide}
+              repeatIntervalMs={130}
+              onAction={() => handleTvCommand('LEFT')}
+            >
+              <RemoteIcon name="chevron_left" color="#D1D1D6" size={22} />
+            </RepeatableButton>
+          </View>
 
           <RepeatableButton
-            style={styles.dpadTouchZoneSide}
+            style={styles.dpadTouchZoneTopBottom}
             repeatIntervalMs={130}
-            onAction={() => handleTvCommand('LEFT')}
+            onAction={() => handleTvCommand('DOWN')}
           >
-            <RemoteIcon name="chevron_left" color="#D1D1D6" size={22} />
+            <RemoteIcon name="chevron_down" color="#D1D1D6" size={22} />
           </RepeatableButton>
         </View>
-
-        <RepeatableButton
-          style={styles.dpadTouchZoneTopBottom}
-          repeatIntervalMs={130}
-          onAction={() => handleTvCommand('DOWN')}
-        >
-          <RemoteIcon name="chevron_down" color="#D1D1D6" size={22} />
-        </RepeatableButton>
       </View>
 
       {/* أزرار التنقل السفلية الدائرية بأيقونات (رجوع، الرئيسية، القائمة) */}
@@ -1157,123 +1165,125 @@ function App() {
       </View>
 
       {/* الكبسولات العمودية للصوت والقنوات (Vertical Pill Capsules) */}
-      <View style={styles.pillsRow}>
-        <View style={styles.verticalPill}>
-          <RepeatableButton
-            style={styles.pillHalfBtn}
-            repeatIntervalMs={120}
-            onAction={() => handleTvCommand('VOL_UP')}
-          >
-            <RemoteIcon name="plus" color="#F5F5F7" size={20} />
-          </RepeatableButton>
+      <View style={styles.pillsOuterContainer}>
+        <View style={styles.pillsRow}>
+          <View style={styles.verticalPill}>
+            <RepeatableButton
+              style={styles.pillHalfBtn}
+              repeatIntervalMs={120}
+              onAction={() => handleTvCommand('VOL_UP')}
+            >
+              <RemoteIcon name="plus" color="#F5F5F7" size={20} />
+            </RepeatableButton>
 
-          <View style={styles.pillCenterIconWrap} pointerEvents="none">
-            <RemoteIcon name="volume" color="#8E8E93" size={18} />
+            <View style={styles.pillCenterIconWrap} pointerEvents="none">
+              <RemoteIcon name="volume" color="#8E8E93" size={18} />
+            </View>
+
+            <RepeatableButton
+              style={styles.pillHalfBtn}
+              repeatIntervalMs={120}
+              onAction={() => handleTvCommand('VOL_DOWN')}
+            >
+              <RemoteIcon name="minus" color="#F5F5F7" size={20} />
+            </RepeatableButton>
           </View>
 
-          <RepeatableButton
-            style={styles.pillHalfBtn}
-            repeatIntervalMs={120}
-            onAction={() => handleTvCommand('VOL_DOWN')}
-          >
-            <RemoteIcon name="minus" color="#F5F5F7" size={20} />
-          </RepeatableButton>
-        </View>
+          <View style={styles.verticalPill}>
+            <RepeatableButton
+              style={styles.pillHalfBtn}
+              repeatIntervalMs={150}
+              onAction={() => handleTvCommand('CH_UP')}
+            >
+              <RemoteIcon name="chevron_up" color="#F5F5F7" size={20} />
+            </RepeatableButton>
 
-        <View style={styles.verticalPill}>
-          <RepeatableButton
-            style={styles.pillHalfBtn}
-            repeatIntervalMs={150}
-            onAction={() => handleTvCommand('CH_UP')}
-          >
-            <RemoteIcon name="chevron_up" color="#F5F5F7" size={20} />
-          </RepeatableButton>
+            <View style={styles.pillCenterIconWrap} pointerEvents="none">
+              <RemoteIcon name="channel" color="#8E8E93" size={18} />
+            </View>
 
-          <View style={styles.pillCenterIconWrap} pointerEvents="none">
-            <RemoteIcon name="channel" color="#8E8E93" size={18} />
+            <RepeatableButton
+              style={styles.pillHalfBtn}
+              repeatIntervalMs={150}
+              onAction={() => handleTvCommand('CH_DOWN')}
+            >
+              <RemoteIcon name="chevron_down" color="#F5F5F7" size={20} />
+            </RepeatableButton>
           </View>
-
-          <RepeatableButton
-            style={styles.pillHalfBtn}
-            repeatIntervalMs={150}
-            onAction={() => handleTvCommand('CH_DOWN')}
-          >
-            <RemoteIcon name="chevron_down" color="#F5F5F7" size={20} />
-          </RepeatableButton>
-        </View>
-      </View>
-
-      {/* التطبيقات الذكية */}
-      <View style={styles.smartAppsSection}>
-        <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
-        <View style={styles.rowGap}>
-          <TouchableOpacity
-            style={styles.youtubeBtn}
-            activeOpacity={0.8}
-            onPress={() =>
-              tvTransport === 'wifi' ? handleLaunchYouTube() : handleTvCommand('YOUTUBE')
-            }
-          >
-            <Text style={styles.btnTextBold}>YouTube</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.netflixBtn}
-            activeOpacity={0.8}
-            onPress={() => handleTvCommand('NETFLIX')}
-          >
-            <Text style={styles.btnTextBold}>Netflix</Text>
-          </TouchableOpacity>
         </View>
       </View>
 
       {tvTransport === 'wifi' ? (
-        <View style={styles.castPanel}>
-          <View style={styles.castHeaderRow}>
-            <Text style={styles.castPanelTitle}>البحث والتشغيل المباشر (Cast)</Text>
-            <TouchableOpacity
-              style={styles.launchYtBtn}
-              activeOpacity={0.8}
-              onPress={handleLaunchYouTube}
-              disabled={isLaunchingYouTube}
-            >
-              {isLaunchingYouTube ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Text style={styles.launchYtBtnText}>فتح YouTube</Text>
-              )}
-            </TouchableOpacity>
+        <>
+          {/* التطبيقات الذكية */}
+          <View style={styles.smartAppsSection}>
+            <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={styles.youtubeBtn}
+                activeOpacity={0.8}
+                onPress={handleLaunchYouTube}
+              >
+                <Text style={styles.btnTextBold}>YouTube</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.netflixBtn}
+                activeOpacity={0.8}
+                onPress={() => handleTvCommand('NETFLIX')}
+              >
+                <Text style={styles.btnTextBold}>Netflix</Text>
+              </TouchableOpacity>
+            </View>
           </View>
 
-          <Text style={styles.sectionCaption}>بحث يوتيوب</Text>
-          <View style={styles.searchRow}>
-            <TextInput
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="ابحث عن فيديو لتشغيله على الشاشة..."
-              placeholderTextColor="#636366"
-              returnKeyType="search"
-              onSubmitEditing={handleSearchYouTube}
-            />
-            <TouchableOpacity
-              style={styles.searchBtn}
-              activeOpacity={0.8}
-              onPress={handleSearchYouTube}
-              disabled={isSearching}
-            >
-              {isSearching ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Text style={styles.btnTextBold}>بحث</Text>
-              )}
-            </TouchableOpacity>
-          </View>
+          <View style={styles.castPanel}>
+            <View style={styles.castHeaderRow}>
+              <Text style={styles.castPanelTitle}>البحث والتشغيل المباشر (Cast)</Text>
+              <TouchableOpacity
+                style={styles.launchYtBtn}
+                activeOpacity={0.8}
+                onPress={handleLaunchYouTube}
+                disabled={isLaunchingYouTube}
+              >
+                {isLaunchingYouTube ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.launchYtBtnText}>فتح YouTube</Text>
+                )}
+              </TouchableOpacity>
+            </View>
 
-          {!isSearching && hasSearchedOnce && searchResults.length === 0 ? (
-            <Text style={styles.emptySearchText}>لم يتم العثور على نتائج مطابقة.</Text>
-          ) : null}
-        </View>
+            <Text style={styles.sectionCaption}>بحث يوتيوب</Text>
+            <View style={styles.searchRow}>
+              <TextInput
+                style={styles.searchInput}
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholder="ابحث عن فيديو لتشغيله على الشاشة..."
+                placeholderTextColor="#636366"
+                returnKeyType="search"
+                onSubmitEditing={handleSearchYouTube}
+              />
+              <TouchableOpacity
+                style={styles.searchBtn}
+                activeOpacity={0.8}
+                onPress={handleSearchYouTube}
+                disabled={isSearching}
+              >
+                {isSearching ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.btnTextBold}>بحث</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+
+            {!isSearching && hasSearchedOnce && searchResults.length === 0 ? (
+              <Text style={styles.emptySearchText}>لم يتم العثور على نتائج مطابقة.</Text>
+            ) : null}
+          </View>
+        </>
       ) : null}
     </View>
   );
@@ -1326,7 +1336,9 @@ function App() {
             ]}
           />
           <Text style={styles.headerStatus}>
-            {hasIrHardware === null
+            {Platform.OS === 'web'
+              ? 'معاينة UI'
+              : hasIrHardware === null
               ? 'جاري الفحص...'
               : hasIrHardware
               ? 'IR جاهز'
@@ -1344,17 +1356,23 @@ function App() {
       ) : null}
 
       {activeTab === 'tv' ? (
-        <FlatList
+        <ScrollView
           style={styles.scrollArea}
           contentContainerStyle={styles.scrollContent}
-          data={tvTransport === 'wifi' ? searchResults : []}
-          keyExtractor={(item) => item.videoId}
-          renderItem={renderVideoItem}
-          ListHeaderComponent={tvHeaderElement}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          ItemSeparatorComponent={() => <View style={styles.videoSeparator} />}
-        />
+        >
+          {tvHeaderElement}
+          {tvTransport === 'wifi' && searchResults.length > 0 ? (
+            <View style={styles.videoListWrap}>
+              {searchResults.map((item) => (
+                <View key={item.videoId} style={styles.videoItemSpacing}>
+                  {renderVideoItem({ item })}
+                </View>
+              ))}
+            </View>
+          ) : null}
+        </ScrollView>
       ) : (
         <ScrollView
           style={styles.scrollArea}
@@ -1698,13 +1716,14 @@ function App() {
 
 const styles = StyleSheet.create({
   // لوحة ألوان OLED Black الحديثة المستوحاة من Apple TV و Samsung Smart
-  root: { flex: 1, backgroundColor: '#000000' },
+  root: { flex: 1, width: '100%', backgroundColor: '#000000' },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 20,
     paddingVertical: 14,
+    flexShrink: 0,
   },
   headerTitle: {
     color: '#F5F5F7',
@@ -1729,6 +1748,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 14,
     borderRadius: 12,
     backgroundColor: '#1C1C1E',
+    flexShrink: 0,
   },
   feedbackError: {
     backgroundColor: 'rgba(255,59,48,0.16)',
@@ -1736,9 +1756,14 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255,59,48,0.45)',
   },
   feedbackText: { color: '#F5F5F7', fontSize: 12, textAlign: 'center' },
-  scrollArea: { flex: 1 },
-  scrollContent: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 28 },
-  sectionStack: { gap: 18 },
+  scrollArea: { flex: 1, width: '100%' },
+  scrollContent: {
+    paddingHorizontal: 20,
+    paddingTop: 6,
+    paddingBottom: 32,
+    flexGrow: 1,
+  },
+  sectionStack: { width: '100%', gap: 18 },
 
   // مبدّل الوضع العلوي (IR / Wi-Fi) بأسلوب كبسولة ناعم
   segmentBox: {
@@ -1856,10 +1881,13 @@ const styles = StyleSheet.create({
 
   // صفوف الأزرار الدائرية العلوية والسفلية
   circleControlsRow: {
+    width: '100%',
+    minHeight: 58,
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
     gap: 28,
+    flexShrink: 0,
   },
   powerCircleBtn: {
     width: 58,
@@ -1869,6 +1897,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 4,
+    flexShrink: 0,
   },
   utilityCircleBtn: {
     width: 58,
@@ -1877,36 +1906,48 @@ const styles = StyleSheet.create({
     backgroundColor: '#1C1C1E',
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
   },
 
   // الدائرة المركزية الموحدة بدون أي خطوط فاصلة حادة (Seamless Touchpad D-Pad)
+  dpadOuterContainer: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    flexShrink: 0,
+  },
   dpadSurface: {
-    alignSelf: 'center',
-    width: 256,
-    height: 256,
-    borderRadius: 128,
+    width: 248,
+    minHeight: 248,
+    height: 248,
+    borderRadius: 124,
     backgroundColor: '#161618',
     justifyContent: 'space-between',
     alignItems: 'center',
     overflow: 'hidden',
-    paddingVertical: 4,
-    paddingHorizontal: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 6,
+    flexShrink: 0,
   },
   dpadTouchZoneTopBottom: {
     flex: 1,
+    minHeight: 72,
     width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
   },
   dpadMiddleBand: {
-    flex: 1,
     width: '100%',
+    minHeight: 88,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexShrink: 0,
   },
   dpadTouchZoneSide: {
     flex: 1,
+    minHeight: 84,
     height: '100%',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1921,6 +1962,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 8,
+    flexShrink: 0,
   },
   dpadOkText: {
     color: '#001524',
@@ -1930,7 +1972,15 @@ const styles = StyleSheet.create({
   },
 
   // كبسولات الصوت والقنوات العمودية (Vertical Pill Capsules)
+  pillsOuterContainer: {
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 4,
+    flexShrink: 0,
+  },
   pillsRow: {
+    width: '100%',
     flexDirection: 'row',
     justifyContent: 'center',
     alignItems: 'center',
@@ -1938,23 +1988,28 @@ const styles = StyleSheet.create({
   },
   verticalPill: {
     width: 78,
-    height: 178,
+    minHeight: 172,
     borderRadius: 39,
     backgroundColor: '#1C1C1E',
     alignItems: 'center',
     justifyContent: 'space-between',
     overflow: 'hidden',
+    paddingVertical: 4,
+    flexShrink: 0,
   },
   pillHalfBtn: {
     flex: 1,
+    minHeight: 68,
     width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
   },
   pillCenterIconWrap: {
     height: 24,
+    width: '100%',
     justifyContent: 'center',
     alignItems: 'center',
+    flexShrink: 0,
   },
 
   // التطبيقات الذكية
@@ -2040,6 +2095,8 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 8,
   },
+  videoListWrap: { width: '100%', marginTop: 14, gap: 10 },
+  videoItemSpacing: { width: '100%' },
   videoSeparator: { height: 10 },
   videoCard: {
     flexDirection: 'row',

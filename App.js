@@ -82,6 +82,8 @@ const TV_IR_BRANDS = {
       HOME: 0x79,
       MENU: 0x1a,
       INPUT: 0x01,
+      YOUTUBE: 0x7c,
+      NETFLIX: 0x34,
     },
   },
   lg: {
@@ -276,6 +278,9 @@ function App() {
       if (tvTransport === 'ir') {
         const brand = TV_IR_BRANDS[tvBrand];
         const cmdHex = brand.commands[commandKey];
+        if (cmdHex === undefined) {
+          throw new Error(`الأمر ${commandKey} غير معرف لجهاز ${brand.label}`);
+        }
         const pattern =
           brand.protocol === 'samsung_dual'
             ? encodeSamsungDual0707(cmdHex, brand.addressHigh, brand.addressLow)
@@ -525,6 +530,27 @@ function App() {
                 >
                   <Text style={styles.rockerSymbol}>▼</Text>
                 </RepeatableButton>
+              </View>
+            </View>
+
+            <View style={styles.smartAppsSection}>
+              <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
+              <View style={styles.rowGap}>
+                <TouchableOpacity
+                  style={styles.youtubeBtn}
+                  activeOpacity={0.8}
+                  onPress={() => handleTvCommand('YOUTUBE')}
+                >
+                  <Text style={styles.btnTextBold}>YouTube</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.netflixBtn}
+                  activeOpacity={0.8}
+                  onPress={() => handleTvCommand('NETFLIX')}
+                >
+                  <Text style={styles.btnTextBold}>Netflix</Text>
+                </TouchableOpacity>
               </View>
             </View>
           </View>
@@ -943,6 +969,25 @@ const styles = StyleSheet.create({
   },
   rockerSymbol: { color: '#F1F5F9', fontSize: 20, fontWeight: '700' },
   rockerLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  smartAppsSection: { gap: 8, marginTop: 2 },
+  youtubeBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  netflixBtn: {
+    flex: 1,
+    minHeight: 48,
+    borderRadius: 14,
+    backgroundColor: '#7F1D1D',
+    borderWidth: 1,
+    borderColor: '#991B1B',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   acLcd: {
     backgroundColor: '#0F172A',
     borderRadius: 18,

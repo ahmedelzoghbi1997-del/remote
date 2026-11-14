@@ -14,6 +14,8 @@ const WIFI_KEY_MAP = {
   HOME: { roku: 'Home', androidTv: 'KEYCODE_HOME' },
   MENU: { roku: 'Info', androidTv: 'KEYCODE_MENU' },
   INPUT: { roku: 'InputHDMI1', androidTv: 'KEYCODE_TV_INPUT' },
+  YOUTUBE: { roku: 'Home', androidTv: 'KEYCODE_MEDIA_TOP_MENU' },
+  NETFLIX: { roku: 'Home', androidTv: 'KEYCODE_BUTTON_1' },
 };
 
 class WifiControlService {

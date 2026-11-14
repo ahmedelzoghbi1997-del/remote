@@ -161,12 +161,340 @@ function getSubnetFromIp(ip) {
   return '192.168.1';
 }
 
+/**
+ * أيقونات هندسية فائقة الدقة مبنية بـ View لضمان المظهر العصري المتناسق دون الاعتماد على خطوط خارجية
+ */
+function RemoteIcon({ name, color = '#F5F5F7', size = 22 }) {
+  if (name === 'power') {
+    const ringSize = Math.round(size * 0.86);
+    const stemH = Math.round(size * 0.44);
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View
+          style={{
+            width: ringSize,
+            height: ringSize,
+            borderRadius: ringSize / 2,
+            borderWidth: 2.3,
+            borderColor: color,
+            borderTopColor: 'transparent',
+            position: 'absolute',
+            bottom: 1,
+          }}
+        />
+        <View
+          style={{
+            width: 2.4,
+            height: stemH,
+            borderRadius: 2,
+            backgroundColor: color,
+            position: 'absolute',
+            top: 1,
+          }}
+        />
+      </View>
+    );
+  }
+
+  if (name === 'mute') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View style={iconStyles.speakerRow}>
+          <View
+            style={{
+              width: 5,
+              height: 8,
+              backgroundColor: color,
+              borderTopLeftRadius: 1.5,
+              borderBottomLeftRadius: 1.5,
+            }}
+          />
+          <View
+            style={{
+              width: 0,
+              height: 0,
+              borderTopWidth: 7,
+              borderBottomWidth: 7,
+              borderRightWidth: 6,
+              borderTopColor: 'transparent',
+              borderBottomColor: 'transparent',
+              borderRightColor: color,
+              marginLeft: -1,
+            }}
+          />
+        </View>
+        <View
+          style={{
+            position: 'absolute',
+            width: size * 0.9,
+            height: 2.2,
+            borderRadius: 2,
+            backgroundColor: '#FF453A',
+            transform: [{ rotate: '-42deg' }],
+          }}
+        />
+      </View>
+    );
+  }
+
+  if (name === 'volume') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View style={iconStyles.speakerRow}>
+          <View
+            style={{
+              width: 4,
+              height: 7,
+              backgroundColor: color,
+              borderTopLeftRadius: 1.5,
+              borderBottomLeftRadius: 1.5,
+            }}
+          />
+          <View
+            style={{
+              width: 0,
+              height: 0,
+              borderTopWidth: 6,
+              borderBottomWidth: 6,
+              borderRightWidth: 5,
+              borderTopColor: 'transparent',
+              borderBottomColor: 'transparent',
+              borderRightColor: color,
+              marginLeft: -1,
+            }}
+          />
+          <View
+            style={{
+              width: 4,
+              height: 9,
+              borderRightWidth: 1.8,
+              borderTopRightRadius: 5,
+              borderBottomRightRadius: 5,
+              borderColor: color,
+              marginLeft: 2,
+            }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  if (name === 'channel') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View
+          style={{
+            width: size * 0.84,
+            height: size * 0.58,
+            borderRadius: 3.5,
+            borderWidth: 1.8,
+            borderColor: color,
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          <View
+            style={{
+              width: 4,
+              height: 4,
+              borderRadius: 2,
+              backgroundColor: color,
+              opacity: 0.7,
+            }}
+          />
+        </View>
+        <View
+          style={{
+            width: size * 0.36,
+            height: 1.8,
+            backgroundColor: color,
+            borderRadius: 1,
+            marginTop: 2,
+          }}
+        />
+      </View>
+    );
+  }
+
+  if (name === 'input') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View
+          style={{
+            width: size * 0.85,
+            height: size * 0.64,
+            borderRadius: 4,
+            borderWidth: 2,
+            borderColor: color,
+            justifyContent: 'center',
+            alignItems: 'center',
+          }}
+        >
+          <View
+            style={{
+              width: 7,
+              height: 7,
+              borderTopWidth: 2,
+              borderRightWidth: 2,
+              borderColor: color,
+              transform: [{ rotate: '45deg' }],
+              marginLeft: -2,
+            }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  if (name === 'home') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View
+          style={{
+            width: 11,
+            height: 11,
+            borderTopWidth: 2.2,
+            borderLeftWidth: 2.2,
+            borderColor: color,
+            transform: [{ rotate: '45deg' }],
+            marginBottom: -5,
+          }}
+        />
+        <View
+          style={{
+            width: 13,
+            height: 9,
+            borderLeftWidth: 2,
+            borderRightWidth: 2,
+            borderBottomWidth: 2,
+            borderBottomLeftRadius: 2,
+            borderBottomRightRadius: 2,
+            borderColor: color,
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+          }}
+        >
+          <View
+            style={{
+              width: 4,
+              height: 4,
+              backgroundColor: color,
+              borderTopLeftRadius: 1,
+              borderTopRightRadius: 1,
+            }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  if (name === 'back') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View style={{ flexDirection: 'row', alignItems: 'center' }}>
+          <View
+            style={{
+              width: 8,
+              height: 8,
+              borderBottomWidth: 2.3,
+              borderLeftWidth: 2.3,
+              borderColor: color,
+              transform: [{ rotate: '45deg' }],
+              marginRight: -5,
+            }}
+          />
+          <View
+            style={{
+              width: 11,
+              height: 2.3,
+              backgroundColor: color,
+              borderRadius: 2,
+            }}
+          />
+        </View>
+      </View>
+    );
+  }
+
+  if (name === 'menu') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size, gap: 4 }]}>
+        <View style={{ width: 15, height: 2, borderRadius: 1, backgroundColor: color }} />
+        <View style={{ width: 15, height: 2, borderRadius: 1, backgroundColor: color }} />
+        <View style={{ width: 15, height: 2, borderRadius: 1, backgroundColor: color }} />
+      </View>
+    );
+  }
+
+  if (name === 'plus') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View style={{ width: 14, height: 2.4, borderRadius: 1.5, backgroundColor: color }} />
+        <View
+          style={{
+            position: 'absolute',
+            width: 2.4,
+            height: 14,
+            borderRadius: 1.5,
+            backgroundColor: color,
+          }}
+        />
+      </View>
+    );
+  }
+
+  if (name === 'minus') {
+    return (
+      <View style={[iconStyles.box, { width: size, height: size }]}>
+        <View style={{ width: 14, height: 2.4, borderRadius: 1.5, backgroundColor: color }} />
+      </View>
+    );
+  }
+
+  // أسهم الاتجاهات (chevron_up, chevron_down, chevron_left, chevron_right)
+  const rotationMap = {
+    chevron_up: '-45deg',
+    chevron_right: '45deg',
+    chevron_down: '135deg',
+    chevron_left: '-135deg',
+  };
+  const rotation = rotationMap[name] || '0deg';
+  const armSize = Math.round(size * 0.48);
+
+  return (
+    <View style={[iconStyles.box, { width: size, height: size }]}>
+      <View
+        style={{
+          width: armSize,
+          height: armSize,
+          borderTopWidth: 2.5,
+          borderRightWidth: 2.5,
+          borderColor: color,
+          borderTopRightRadius: 1.5,
+          transform: [{ rotate: rotation }],
+        }}
+      />
+    </View>
+  );
+}
+
+const iconStyles = StyleSheet.create({
+  box: {
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  speakerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+});
+
 function RepeatableButton({
   onAction,
   repeatIntervalMs = 130,
   initialDelayMs = 220,
   style,
-  activeOpacity = 0.7,
+  activeOpacity = 0.6,
   hitSlop,
   children,
 }) {
@@ -231,7 +559,7 @@ function App() {
   const [tvBrand, setTvBrand] = useState('samsung');
   const [wifiProtocol, setWifiProtocol] = useState('samsung_tizen');
   const [tvIp, setTvIp] = useState('192.168.1.50');
-  const [tvPort, setTvPort] = useState('8001');
+  const [tvPort, setTvPort] = useState('8002');
   const [dialPort, setDialPort] = useState('8080');
   const [subnetPrefix, setSubnetPrefix] = useState('192.168.1');
   const [showWifiModal, setShowWifiModal] = useState(false);
@@ -399,7 +727,9 @@ function App() {
     WifiControl.abortDiscovery();
     setIsDiscovering(false);
 
-    const nextPort = String(device.port || (device.protocol === 'roku' ? 8060 : 8001));
+    const nextPort = String(
+      device.port || (device.protocol === 'roku' ? 8060 : device.protocol === 'samsung_tizen' ? 8002 : 8080)
+    );
     const nextDial = String(device.dialPort || (device.protocol === 'roku' ? 8060 : 8080));
 
     setWifiProtocol(device.protocol);
@@ -436,7 +766,7 @@ function App() {
 
   const handleSaveWifi = async () => {
     const defaultPort =
-      wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8001 : 8080;
+      wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8002 : 8080;
     const defaultDial =
       wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8080 : 8008;
 
@@ -572,18 +902,27 @@ function App() {
 
   const tvHeaderElement = (
     <View style={styles.sectionStack}>
+      {/* مبدّل وضع الإرسال بأسلوب كبسولة OLED أنيقة */}
       <View style={styles.segmentBox}>
         <TouchableOpacity
-          style={[styles.segmentBtn, tvTransport === 'ir' && styles.segmentIrActive]}
+          style={[styles.segmentBtn, tvTransport === 'ir' && styles.segmentActive]}
           onPress={() => setTvTransport('ir')}
         >
-          <Text style={styles.segmentText}>أشعة IR (38kHz)</Text>
+          <Text
+            style={[styles.segmentText, tvTransport === 'ir' && styles.segmentTextActive]}
+          >
+            أشعة IR
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.segmentBtn, tvTransport === 'wifi' && styles.segmentWifiActive]}
+          style={[styles.segmentBtn, tvTransport === 'wifi' && styles.segmentActive]}
           onPress={() => setTvTransport('wifi')}
         >
-          <Text style={styles.segmentText}>واي فاي (Smart TV)</Text>
+          <Text
+            style={[styles.segmentText, tvTransport === 'wifi' && styles.segmentTextActive]}
+          >
+            واي فاي (Smart TV)
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -595,7 +934,9 @@ function App() {
               style={[styles.chipBtn, tvBrand === key && styles.chipBtnActive]}
               onPress={() => setTvBrand(key)}
             >
-              <Text style={styles.chipText}>{TV_IR_BRANDS[key].label}</Text>
+              <Text style={[styles.chipText, tvBrand === key && styles.chipTextActive]}>
+                {TV_IR_BRANDS[key].label}
+              </Text>
             </TouchableOpacity>
           ))}
         </View>
@@ -647,7 +988,7 @@ function App() {
           {isConnectingWifi ? (
             <View style={styles.discoveryCard}>
               <View style={styles.discoveryProgressRow}>
-                <ActivityIndicator size="small" color="#0EA5E9" />
+                <ActivityIndicator size="small" color="#0A84FF" />
                 <Text style={styles.discoveryStatusText}>
                   جاري الاقتران والاتصال بـ {tvIp}:{tvPort}...
                 </Text>
@@ -716,121 +1057,153 @@ function App() {
         </View>
       )}
 
-      <View style={styles.rowGap}>
+      {/* الصف العلوي: أزرار دائرية نقية بأيقونات (طاقة، المصدر، كتم) */}
+      <View style={styles.circleControlsRow}>
         <TouchableOpacity
-          style={styles.powerBtn}
+          style={styles.powerCircleBtn}
+          activeOpacity={0.75}
           onPress={() => handleTvCommand('POWER')}
         >
-          <Text style={styles.btnTextBold}>طاقة</Text>
+          <RemoteIcon name="power" color="#FFFFFF" size={24} />
         </TouchableOpacity>
+
         <TouchableOpacity
-          style={styles.actionBtn}
+          style={styles.utilityCircleBtn}
+          activeOpacity={0.75}
           onPress={() => handleTvCommand('INPUT')}
         >
-          <Text style={styles.btnText}>المصدر</Text>
+          <RemoteIcon name="input" color="#E5E5EA" size={22} />
         </TouchableOpacity>
+
         <TouchableOpacity
-          style={styles.actionBtn}
+          style={styles.utilityCircleBtn}
+          activeOpacity={0.75}
           onPress={() => handleTvCommand('MUTE')}
         >
-          <Text style={styles.btnText}>كتم</Text>
+          <RemoteIcon name="mute" color="#E5E5EA" size={22} />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.dpadCircle}>
+      {/* الدائرة المركزية الموحدة بدون فواصل حادة (Apple TV / Samsung Touchpad Style) */}
+      <View style={styles.dpadSurface}>
         <RepeatableButton
-          style={styles.dpadBtnUp}
+          style={styles.dpadTouchZoneTopBottom}
           repeatIntervalMs={130}
           onAction={() => handleTvCommand('UP')}
         >
-          <Text style={styles.dpadArrow}>▲</Text>
+          <RemoteIcon name="chevron_up" color="#D1D1D6" size={22} />
         </RepeatableButton>
 
-        <View style={styles.dpadMiddle}>
+        <View style={styles.dpadMiddleBand}>
           <RepeatableButton
-            style={styles.dpadBtnStart}
+            style={styles.dpadTouchZoneSide}
             repeatIntervalMs={130}
             onAction={() => handleTvCommand('RIGHT')}
           >
-            <Text style={styles.dpadArrow}>▶</Text>
+            <RemoteIcon name="chevron_right" color="#D1D1D6" size={22} />
           </RepeatableButton>
 
           <TouchableOpacity
-            style={styles.dpadOkBtn}
-            activeOpacity={0.8}
+            style={styles.dpadOkCircle}
+            activeOpacity={0.82}
             onPress={() => handleTvCommand('OK')}
           >
-            <Text style={styles.btnTextBold}>موافق</Text>
+            <Text style={styles.dpadOkText}>OK</Text>
           </TouchableOpacity>
 
           <RepeatableButton
-            style={styles.dpadBtnEnd}
+            style={styles.dpadTouchZoneSide}
             repeatIntervalMs={130}
             onAction={() => handleTvCommand('LEFT')}
           >
-            <Text style={styles.dpadArrow}>◀</Text>
+            <RemoteIcon name="chevron_left" color="#D1D1D6" size={22} />
           </RepeatableButton>
         </View>
 
         <RepeatableButton
-          style={styles.dpadBtnDown}
+          style={styles.dpadTouchZoneTopBottom}
           repeatIntervalMs={130}
           onAction={() => handleTvCommand('DOWN')}
         >
-          <Text style={styles.dpadArrow}>▼</Text>
+          <RemoteIcon name="chevron_down" color="#D1D1D6" size={22} />
         </RepeatableButton>
       </View>
 
-      <View style={styles.rowGap}>
-        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('BACK')}>
-          <Text style={styles.btnText}>رجوع</Text>
+      {/* أزرار التنقل السفلية الدائرية بأيقونات (رجوع، الرئيسية، القائمة) */}
+      <View style={styles.circleControlsRow}>
+        <TouchableOpacity
+          style={styles.utilityCircleBtn}
+          activeOpacity={0.75}
+          onPress={() => handleTvCommand('BACK')}
+        >
+          <RemoteIcon name="back" color="#E5E5EA" size={22} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('HOME')}>
-          <Text style={styles.btnText}>الرئيسية</Text>
+
+        <TouchableOpacity
+          style={styles.utilityCircleBtn}
+          activeOpacity={0.75}
+          onPress={() => handleTvCommand('HOME')}
+        >
+          <RemoteIcon name="home" color="#E5E5EA" size={22} />
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('MENU')}>
-          <Text style={styles.btnText}>القائمة</Text>
+
+        <TouchableOpacity
+          style={styles.utilityCircleBtn}
+          activeOpacity={0.75}
+          onPress={() => handleTvCommand('MENU')}
+        >
+          <RemoteIcon name="menu" color="#E5E5EA" size={22} />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.rowGap}>
-        <View style={styles.rockerCard}>
+      {/* الكبسولات العمودية للصوت والقنوات (Vertical Pill Capsules) */}
+      <View style={styles.pillsRow}>
+        <View style={styles.verticalPill}>
           <RepeatableButton
-            style={styles.rockerKey}
+            style={styles.pillHalfBtn}
             repeatIntervalMs={120}
             onAction={() => handleTvCommand('VOL_UP')}
           >
-            <Text style={styles.rockerSymbol}>+</Text>
+            <RemoteIcon name="plus" color="#F5F5F7" size={20} />
           </RepeatableButton>
-          <Text style={styles.rockerLabel}>الصوت</Text>
+
+          <View style={styles.pillCenterIconWrap} pointerEvents="none">
+            <RemoteIcon name="volume" color="#8E8E93" size={18} />
+          </View>
+
           <RepeatableButton
-            style={styles.rockerKey}
+            style={styles.pillHalfBtn}
             repeatIntervalMs={120}
             onAction={() => handleTvCommand('VOL_DOWN')}
           >
-            <Text style={styles.rockerSymbol}>−</Text>
+            <RemoteIcon name="minus" color="#F5F5F7" size={20} />
           </RepeatableButton>
         </View>
 
-        <View style={styles.rockerCard}>
+        <View style={styles.verticalPill}>
           <RepeatableButton
-            style={styles.rockerKey}
+            style={styles.pillHalfBtn}
             repeatIntervalMs={150}
             onAction={() => handleTvCommand('CH_UP')}
           >
-            <Text style={styles.rockerSymbol}>▲</Text>
+            <RemoteIcon name="chevron_up" color="#F5F5F7" size={20} />
           </RepeatableButton>
-          <Text style={styles.rockerLabel}>القناة</Text>
+
+          <View style={styles.pillCenterIconWrap} pointerEvents="none">
+            <RemoteIcon name="channel" color="#8E8E93" size={18} />
+          </View>
+
           <RepeatableButton
-            style={styles.rockerKey}
+            style={styles.pillHalfBtn}
             repeatIntervalMs={150}
             onAction={() => handleTvCommand('CH_DOWN')}
           >
-            <Text style={styles.rockerSymbol}>▼</Text>
+            <RemoteIcon name="chevron_down" color="#F5F5F7" size={20} />
           </RepeatableButton>
         </View>
       </View>
 
+      {/* التطبيقات الذكية */}
       <View style={styles.smartAppsSection}>
         <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
         <View style={styles.rowGap}>
@@ -879,7 +1252,7 @@ function App() {
               value={searchQuery}
               onChangeText={setSearchQuery}
               placeholder="ابحث عن فيديو لتشغيله على الشاشة..."
-              placeholderTextColor="#64748B"
+              placeholderTextColor="#636366"
               returnKeyType="search"
               onSubmitEditing={handleSearchYouTube}
             />
@@ -939,17 +1312,27 @@ function App() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor="#0B0D11" />
+      <StatusBar barStyle="light-content" backgroundColor="#000000" />
 
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>الريموت الشامل</Text>
-        <Text style={styles.headerStatus}>
-          {hasIrHardware === null
-            ? 'جاري فحص IR...'
-            : hasIrHardware
-            ? 'IR Blaster جاهز'
-            : 'وضع Wi-Fi (لا يوجد IR)'}
-        </Text>
+        <Text style={styles.headerTitle}>ريموت</Text>
+        <View style={styles.headerStatusPill}>
+          <View
+            style={[
+              styles.statusDot,
+              hasIrHardware || wifiStatus.isConnected
+                ? styles.statusDotOn
+                : styles.statusDotIdle,
+            ]}
+          />
+          <Text style={styles.headerStatus}>
+            {hasIrHardware === null
+              ? 'جاري الفحص...'
+              : hasIrHardware
+              ? 'IR جاهز'
+              : 'Wi-Fi'}
+          </Text>
+        </View>
       </View>
 
       {feedback.tone === 'error' && feedback.text ? (
@@ -989,7 +1372,9 @@ function App() {
                   style={[styles.chipBtn, acBrand === b.key && styles.chipBtnActive]}
                   onPress={() => setAcBrand(b.key)}
                 >
-                  <Text style={styles.chipText}>{b.label}</Text>
+                  <Text style={[styles.chipText, acBrand === b.key && styles.chipTextActive]}>
+                    {b.label}
+                  </Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -1021,7 +1406,7 @@ function App() {
                   }
                 }}
               >
-                <Text style={styles.rockerSymbol}>−</Text>
+                <RemoteIcon name="minus" color="#F5F5F7" size={22} />
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1034,9 +1419,7 @@ function App() {
                   updateAcAndTransmit({ ...acState, power: nextPower });
                 }}
               >
-                <Text style={styles.btnTextBold}>
-                  {acState.power ? 'إطفاء' : 'تشغيل'}
-                </Text>
+                <RemoteIcon name="power" color="#FFFFFF" size={24} />
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1052,7 +1435,7 @@ function App() {
                   }
                 }}
               >
-                <Text style={styles.rockerSymbol}>+</Text>
+                <RemoteIcon name="plus" color="#F5F5F7" size={22} />
               </TouchableOpacity>
             </View>
 
@@ -1118,7 +1501,7 @@ function App() {
           onPress={() => setActiveTab('tv')}
         >
           <Text style={[styles.tabText, activeTab === 'tv' && styles.tabTextActive]}>
-            ريموت الشاشة
+            الشاشة
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
@@ -1126,7 +1509,7 @@ function App() {
           onPress={() => setActiveTab('ac')}
         >
           <Text style={[styles.tabText, activeTab === 'ac' && styles.tabTextActive]}>
-            ريموت التكييف
+            التكييف
           </Text>
         </TouchableOpacity>
       </View>
@@ -1144,11 +1527,18 @@ function App() {
                 ]}
                 onPress={() => {
                   setWifiProtocol('samsung_tizen');
-                  setTvPort('8001');
+                  setTvPort('8002');
                   setDialPort('8080');
                 }}
               >
-                <Text style={styles.chipText}>Samsung Tizen</Text>
+                <Text
+                  style={[
+                    styles.chipText,
+                    wifiProtocol === 'samsung_tizen' && styles.chipTextActive,
+                  ]}
+                >
+                  Samsung Tizen
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[
@@ -1161,7 +1551,14 @@ function App() {
                   setDialPort('8008');
                 }}
               >
-                <Text style={styles.chipText}>Android TV</Text>
+                <Text
+                  style={[
+                    styles.chipText,
+                    wifiProtocol === 'android_tv' && styles.chipTextActive,
+                  ]}
+                >
+                  Android TV
+                </Text>
               </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.chipBtn, wifiProtocol === 'roku' && styles.chipBtnActive]}
@@ -1171,7 +1568,11 @@ function App() {
                   setDialPort('8060');
                 }}
               >
-                <Text style={styles.chipText}>Roku ECP</Text>
+                <Text
+                  style={[styles.chipText, wifiProtocol === 'roku' && styles.chipTextActive]}
+                >
+                  Roku ECP
+                </Text>
               </TouchableOpacity>
             </View>
 
@@ -1184,7 +1585,7 @@ function App() {
                   onChangeText={setSubnetPrefix}
                   keyboardType="numeric"
                   placeholder="192.168.1"
-                  placeholderTextColor="#64748B"
+                  placeholderTextColor="#636366"
                 />
               </View>
               <TouchableOpacity
@@ -1192,7 +1593,7 @@ function App() {
                 onPress={() => handleScanSmartTvs()}
               >
                 <Text style={styles.btnTextBold}>
-                  {isDiscovering ? 'إيقاف الفحص' : 'البحث عن الشاشات (Scan)'}
+                  {isDiscovering ? 'إيقاف الفحص' : 'البحث عن الشاشات'}
                 </Text>
               </TouchableOpacity>
             </View>
@@ -1230,19 +1631,19 @@ function App() {
               }}
               keyboardType="numeric"
               placeholder="192.168.1.50"
-              placeholderTextColor="#64748B"
+              placeholderTextColor="#636366"
             />
 
             <View style={styles.rowGap}>
               <View style={styles.portField}>
-                <Text style={styles.inputLabel}>منفذ التحكم (8001 / 8002)</Text>
+                <Text style={styles.inputLabel}>منفذ التحكم (8002 / 8001)</Text>
                 <TextInput
                   style={styles.input}
                   value={tvPort}
                   onChangeText={setTvPort}
                   keyboardType="numeric"
-                  placeholder="8001"
-                  placeholderTextColor="#64748B"
+                  placeholder="8002"
+                  placeholderTextColor="#636366"
                 />
               </View>
               <View style={styles.portField}>
@@ -1253,7 +1654,7 @@ function App() {
                   onChangeText={setDialPort}
                   keyboardType="numeric"
                   placeholder="8080"
-                  placeholderTextColor="#64748B"
+                  placeholderTextColor="#636366"
                 />
               </View>
             </View>
@@ -1261,7 +1662,10 @@ function App() {
             {wifiProtocol === 'samsung_tizen' ? (
               <View style={styles.tokenStatusBox}>
                 <Text style={styles.tokenStatusLabel}>
-                  حالة الاقتران: {wifiStatus.hasSavedToken ? 'Token محفوظ محلياً' : 'سيتم طلب الموافقة عند أول اتصال'}
+                  حالة الاقتران:{' '}
+                  {wifiStatus.hasSavedToken
+                    ? 'Token محفوظ محلياً'
+                    : 'سيتم طلب الموافقة عند أول اتصال'}
                 </Text>
                 {wifiStatus.hasSavedToken ? (
                   <TouchableOpacity onPress={handleClearSavedToken}>
@@ -1273,13 +1677,13 @@ function App() {
 
             <View style={styles.rowGap}>
               <TouchableOpacity
-                style={styles.navBtn}
+                style={styles.modalCancelBtn}
                 onPress={() => setShowWifiModal(false)}
               >
                 <Text style={styles.btnText}>إلغاء</Text>
               </TouchableOpacity>
               <TouchableOpacity
-                style={[styles.navBtn, styles.modalSaveBtn]}
+                style={[styles.modalCancelBtn, styles.modalSaveBtn]}
                 onPress={handleSaveWifi}
               >
                 <Text style={styles.btnTextBold}>حفظ واتصال</Text>
@@ -1293,291 +1697,294 @@ function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: '#0B0D11' },
+  // لوحة ألوان OLED Black الحديثة المستوحاة من Apple TV و Samsung Smart
+  root: { flex: 1, backgroundColor: '#000000' },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 18,
+    paddingHorizontal: 20,
     paddingVertical: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: '#1E2532',
   },
-  headerTitle: { color: '#F1F5F9', fontSize: 19, fontWeight: '700' },
-  headerStatus: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  headerTitle: {
+    color: '#F5F5F7',
+    fontSize: 21,
+    fontWeight: '700',
+    letterSpacing: 0.2,
+  },
+  headerStatusPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: '#141416',
+  },
+  headerStatus: { color: '#8E8E93', fontSize: 12, fontWeight: '600' },
   feedbackBar: {
-    marginHorizontal: 18,
-    marginTop: 12,
+    marginHorizontal: 20,
+    marginBottom: 8,
     paddingVertical: 8,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: '#1C1C1E',
   },
-  feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
-  feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
+  feedbackError: {
+    backgroundColor: 'rgba(255,59,48,0.16)',
+    borderWidth: 1,
+    borderColor: 'rgba(255,59,48,0.45)',
+  },
+  feedbackText: { color: '#F5F5F7', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { padding: 14, paddingBottom: 24 },
-  sectionStack: { gap: 12 },
+  scrollContent: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 28 },
+  sectionStack: { gap: 18 },
+
+  // مبدّل الوضع العلوي (IR / Wi-Fi) بأسلوب كبسولة ناعم
   segmentBox: {
     flexDirection: 'row',
-    backgroundColor: '#131720',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    backgroundColor: '#141416',
+    borderRadius: 999,
     padding: 4,
     gap: 4,
   },
   segmentBtn: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 9,
+    minHeight: 40,
+    borderRadius: 999,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  segmentIrActive: { backgroundColor: '#EF4444' },
-  segmentWifiActive: { backgroundColor: '#0EA5E9' },
-  segmentText: { color: '#FFFFFF', fontSize: 13, fontWeight: '700' },
+  segmentActive: { backgroundColor: '#0A84FF' },
+  segmentText: { color: '#8E8E93', fontSize: 13, fontWeight: '600' },
+  segmentTextActive: { color: '#FFFFFF', fontWeight: '700' },
+
   rowGap: { flexDirection: 'row', gap: 10 },
   chipBtn: {
     flex: 1,
-    minHeight: 44,
-    borderRadius: 10,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    minHeight: 40,
+    borderRadius: 999,
+    backgroundColor: '#141416',
     justifyContent: 'center',
     alignItems: 'center',
-    paddingHorizontal: 6,
+    paddingHorizontal: 10,
   },
-  chipBtnActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.15)' },
-  chipText: { color: '#F1F5F9', fontSize: 12, fontWeight: '600', textAlign: 'center' },
-  wifiSectionWrap: { gap: 8 },
+  chipBtnActive: {
+    backgroundColor: 'rgba(10,132,255,0.2)',
+    borderWidth: 1,
+    borderColor: '#0A84FF',
+  },
+  chipText: { color: '#8E8E93', fontSize: 12, fontWeight: '600', textAlign: 'center' },
+  chipTextActive: { color: '#FFFFFF', fontWeight: '700' },
+
+  // شريط Wi-Fi والاكتشاف
+  wifiSectionWrap: { gap: 10 },
   wifiBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     minHeight: 54,
-    paddingHorizontal: 12,
+    paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    borderRadius: 16,
+    backgroundColor: '#141416',
     gap: 8,
   },
   wifiInfoTouchable: { flex: 1, gap: 3 },
   wifiStatusHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  statusDot: { width: 8, height: 8, borderRadius: 4 },
-  statusDotOn: { backgroundColor: '#22C55E' },
-  statusDotIdle: { backgroundColor: '#64748B' },
-  wifiDeviceTitle: { color: '#F1F5F9', fontSize: 13, fontWeight: '700', flex: 1 },
-  wifiAddressText: { color: '#94A3B8', fontSize: 11, fontFamily: 'monospace' },
+  statusDot: { width: 7, height: 7, borderRadius: 4 },
+  statusDotOn: { backgroundColor: '#30D158' },
+  statusDotIdle: { backgroundColor: '#636366' },
+  wifiDeviceTitle: { color: '#F5F5F7', fontSize: 13, fontWeight: '700', flex: 1 },
+  wifiAddressText: { color: '#8E8E93', fontSize: 11, fontFamily: 'monospace' },
   wifiBarActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   scanBtn: {
-    minHeight: 36,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: '#0EA5E9',
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: '#0A84FF',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  scanBtnActive: { backgroundColor: '#F59E0B' },
+  scanBtnActive: { backgroundColor: '#FF9F0A' },
   scanBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
   wifiEditBtn: {
-    minHeight: 36,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: '#1A202C',
-    borderWidth: 1,
-    borderColor: '#252E3E',
+    minHeight: 34,
+    paddingHorizontal: 12,
+    borderRadius: 999,
+    backgroundColor: '#2C2C2E',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  wifiEditLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '700' },
+  wifiEditLabel: { color: '#E5E5EA', fontSize: 12, fontWeight: '600' },
+
   discoveryCard: {
-    backgroundColor: '#131720',
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    padding: 12,
-    gap: 8,
+    backgroundColor: '#141416',
+    borderRadius: 16,
+    padding: 14,
+    gap: 10,
   },
   discoveryProgressRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
-  discoveryStatusText: { color: '#F1F5F9', fontSize: 12, fontWeight: '600' },
+  discoveryStatusText: { color: '#F5F5F7', fontSize: 12, fontWeight: '600' },
   discoveryHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  discoveryTitle: { color: '#F1F5F9', fontSize: 12, fontWeight: '700', flex: 1 },
-  discoveryCloseText: { color: '#0EA5E9', fontSize: 12, fontWeight: '700' },
+  discoveryTitle: { color: '#F5F5F7', fontSize: 12, fontWeight: '700', flex: 1 },
+  discoveryCloseText: { color: '#0A84FF', fontSize: 12, fontWeight: '700' },
   discoveryList: { gap: 8 },
   discoveredItem: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#0B0D11',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
     gap: 8,
   },
   discoveredItemActive: {
-    borderColor: '#0EA5E9',
-    backgroundColor: 'rgba(14,165,233,0.12)',
+    borderWidth: 1,
+    borderColor: '#0A84FF',
+    backgroundColor: 'rgba(10,132,255,0.14)',
   },
   discoveredMeta: { flex: 1, gap: 2 },
-  discoveredName: { color: '#F1F5F9', fontSize: 13, fontWeight: '700', textAlign: 'right' },
-  discoveredSub: { color: '#94A3B8', fontSize: 11, textAlign: 'right' },
-  discoveredConnectTag: { color: '#0EA5E9', fontSize: 12, fontWeight: '700' },
-  powerBtn: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: '#EF4444',
+  discoveredName: { color: '#F5F5F7', fontSize: 13, fontWeight: '700', textAlign: 'right' },
+  discoveredSub: { color: '#8E8E93', fontSize: 11, textAlign: 'right' },
+  discoveredConnectTag: { color: '#0A84FF', fontSize: 12, fontWeight: '700' },
+
+  // صفوف الأزرار الدائرية العلوية والسفلية
+  circleControlsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 28,
+  },
+  powerCircleBtn: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#FF3B30',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+  },
+  utilityCircleBtn: {
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    backgroundColor: '#1C1C1E',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  actionBtn: {
-    flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: '#1A202C',
-    borderWidth: 1,
-    borderColor: '#252E3E',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  btnText: { color: '#F1F5F9', fontSize: 13, fontWeight: '600' },
-  btnTextBold: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
-  dpadCircle: {
+
+  // الدائرة المركزية الموحدة بدون أي خطوط فاصلة حادة (Seamless Touchpad D-Pad)
+  dpadSurface: {
     alignSelf: 'center',
-    width: 248,
-    height: 248,
-    borderRadius: 124,
-    backgroundColor: '#0B0D11',
-    borderWidth: 1.5,
-    borderColor: '#253042',
-    padding: 0,
+    width: 256,
+    height: 256,
+    borderRadius: 128,
+    backgroundColor: '#161618',
     justifyContent: 'space-between',
     alignItems: 'center',
     overflow: 'hidden',
+    paddingVertical: 4,
+    paddingHorizontal: 4,
   },
-  dpadMiddle: {
+  dpadTouchZoneTopBottom: {
+    flex: 1,
     width: '100%',
-    height: 92,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  dpadMiddleBand: {
+    flex: 1,
+    width: '100%',
     flexDirection: 'row',
+    alignItems: 'center',
     justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#0B0D11',
-    gap: 2,
   },
-  dpadBtnUp: {
-    width: '100%',
-    height: 76,
-    backgroundColor: '#1A202C',
-    borderBottomWidth: 2,
-    borderBottomColor: '#0B0D11',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  dpadBtnDown: {
-    width: '100%',
-    height: 76,
-    backgroundColor: '#1A202C',
-    borderTopWidth: 2,
-    borderTopColor: '#0B0D11',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  dpadBtnStart: {
+  dpadTouchZoneSide: {
     flex: 1,
     height: '100%',
-    backgroundColor: '#1A202C',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  dpadBtnEnd: {
+  dpadOkCircle: {
+    width: 82,
+    height: 82,
+    borderRadius: 41,
+    backgroundColor: '#38BDF8',
+    borderWidth: 2,
+    borderColor: '#7DD3FC',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 8,
+  },
+  dpadOkText: {
+    color: '#001524',
+    fontSize: 15,
+    fontWeight: '800',
+    letterSpacing: 0.5,
+  },
+
+  // كبسولات الصوت والقنوات العمودية (Vertical Pill Capsules)
+  pillsRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 32,
+  },
+  verticalPill: {
+    width: 78,
+    height: 178,
+    borderRadius: 39,
+    backgroundColor: '#1C1C1E',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    overflow: 'hidden',
+  },
+  pillHalfBtn: {
     flex: 1,
-    height: '100%',
-    backgroundColor: '#1A202C',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  dpadArrow: { color: '#F1F5F9', fontSize: 22 },
-  dpadOkBtn: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    backgroundColor: '#0EA5E9',
-    borderWidth: 4,
-    borderColor: '#0B0D11',
-    justifyContent: 'center',
-    alignItems: 'center',
-    zIndex: 2,
-  },
-  navBtn: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 12,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  rockerCard: {
-    flex: 1,
-    backgroundColor: '#131720',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    padding: 8,
-    alignItems: 'center',
-    gap: 8,
-  },
-  rockerKey: {
     width: '100%',
-    minHeight: 48,
-    borderRadius: 12,
-    backgroundColor: '#1A202C',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  rockerSymbol: { color: '#F1F5F9', fontSize: 20, fontWeight: '700' },
-  rockerLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  smartAppsSection: { gap: 8, marginTop: 2 },
+  pillCenterIconWrap: {
+    height: 24,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  // التطبيقات الذكية
+  smartAppsSection: { gap: 10, marginTop: 4 },
   youtubeBtn: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: '#EF4444',
+    minHeight: 46,
+    borderRadius: 999,
+    backgroundColor: '#FF3B30',
     justifyContent: 'center',
     alignItems: 'center',
   },
   netflixBtn: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 14,
-    backgroundColor: '#7F1D1D',
+    minHeight: 46,
+    borderRadius: 999,
+    backgroundColor: '#1C1C1E',
     borderWidth: 1,
-    borderColor: '#991B1B',
+    borderColor: '#8E1A1A',
     justifyContent: 'center',
     alignItems: 'center',
   },
+
+  // لوحة البث والبحث في يوتيوب عبر الواي فاي
   castPanel: {
-    marginTop: 4,
-    marginBottom: 8,
-    backgroundColor: '#131720',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    padding: 14,
-    gap: 10,
+    marginTop: 2,
+    backgroundColor: '#141416',
+    borderRadius: 18,
+    padding: 16,
+    gap: 12,
   },
   castHeaderRow: {
     flexDirection: 'row',
@@ -1586,22 +1993,22 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   castPanelTitle: {
-    color: '#F1F5F9',
+    color: '#F5F5F7',
     fontSize: 14,
     fontWeight: '700',
     flex: 1,
   },
   launchYtBtn: {
-    minHeight: 40,
+    minHeight: 36,
     paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: '#DC2626',
+    borderRadius: 999,
+    backgroundColor: '#FF3B30',
     justifyContent: 'center',
     alignItems: 'center',
   },
   launchYtBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '700',
   },
   searchRow: {
@@ -1611,50 +2018,45 @@ const styles = StyleSheet.create({
   },
   searchInput: {
     flex: 1,
-    minHeight: 46,
-    backgroundColor: '#0B0D11',
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    minHeight: 44,
+    backgroundColor: '#1C1C1E',
     borderRadius: 12,
-    paddingHorizontal: 12,
-    color: '#F1F5F9',
+    paddingHorizontal: 14,
+    color: '#F5F5F7',
     fontSize: 13,
     textAlign: 'right',
   },
   searchBtn: {
-    minHeight: 46,
+    minHeight: 44,
     paddingHorizontal: 18,
     borderRadius: 12,
-    backgroundColor: '#0EA5E9',
+    backgroundColor: '#0A84FF',
     justifyContent: 'center',
     alignItems: 'center',
   },
   emptySearchText: {
-    color: '#94A3B8',
+    color: '#8E8E93',
     fontSize: 12,
     textAlign: 'center',
     paddingVertical: 8,
   },
-  videoSeparator: {
-    height: 10,
-  },
+  videoSeparator: { height: 10 },
   videoCard: {
     flexDirection: 'row',
-    backgroundColor: '#131720',
+    backgroundColor: '#141416',
     borderRadius: 14,
-    borderWidth: 1,
-    borderColor: '#1E2532',
     overflow: 'hidden',
     minHeight: 84,
   },
   videoCardActive: {
-    borderColor: '#0EA5E9',
-    backgroundColor: 'rgba(14,165,233,0.12)',
+    borderWidth: 1,
+    borderColor: '#0A84FF',
+    backgroundColor: 'rgba(10,132,255,0.14)',
   },
   videoThumb: {
     width: 124,
     height: 84,
-    backgroundColor: '#0B0D11',
+    backgroundColor: '#1C1C1E',
   },
   videoInfo: {
     flex: 1,
@@ -1663,7 +2065,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   videoTitle: {
-    color: '#F1F5F9',
+    color: '#F5F5F7',
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'right',
@@ -1675,128 +2077,133 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   videoChannel: {
-    color: '#94A3B8',
+    color: '#8E8E93',
     fontSize: 11,
     flex: 1,
     textAlign: 'right',
   },
   videoCastLabel: {
-    color: '#0EA5E9',
+    color: '#38BDF8',
     fontSize: 11,
     fontWeight: '700',
   },
+
+  // واجهة ريموت التكييف بنسق OLED
   acLcd: {
-    backgroundColor: '#0F172A',
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    padding: 20,
+    backgroundColor: '#141416',
+    borderRadius: 22,
+    padding: 22,
     alignItems: 'center',
     gap: 8,
   },
-  acLcdOff: { opacity: 0.5 },
+  acLcdOff: { opacity: 0.45 },
   acLcdTop: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' },
-  acMeta: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
+  acMeta: { color: '#8E8E93', fontSize: 13, fontWeight: '600' },
   acTemp: {
-    color: '#F1F5F9',
-    fontSize: 52,
+    color: '#F5F5F7',
+    fontSize: 54,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
-  acFooter: { color: '#0EA5E9', fontSize: 12, fontWeight: '600' },
+  acFooter: { color: '#38BDF8', fontSize: 12, fontWeight: '600' },
   tempStepBtn: {
-    width: 72,
+    width: 68,
     height: 58,
-    borderRadius: 14,
-    backgroundColor: '#1A202C',
-    borderWidth: 1,
-    borderColor: '#252E3E',
+    borderRadius: 29,
+    backgroundColor: '#1C1C1E',
     justifyContent: 'center',
     alignItems: 'center',
   },
   acPowerBtn: {
     flex: 1,
     height: 58,
-    borderRadius: 14,
+    borderRadius: 29,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  acPowerOn: { backgroundColor: '#EF4444' },
-  acPowerOff: { backgroundColor: '#16A34A' },
-  sectionCaption: { color: '#94A3B8', fontSize: 13, fontWeight: '600', textAlign: 'right' },
+  acPowerOn: { backgroundColor: '#FF3B30' },
+  acPowerOff: { backgroundColor: '#30D158' },
+  sectionCaption: { color: '#8E8E93', fontSize: 12, fontWeight: '600', textAlign: 'right' },
   modesWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   modeChip: {
     width: '31%',
-    minHeight: 46,
-    borderRadius: 12,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    minHeight: 44,
+    borderRadius: 14,
+    backgroundColor: '#141416',
     justifyContent: 'center',
     alignItems: 'center',
   },
-  modeCoolActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.16)' },
-  modeHeatActive: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.16)' },
+  modeCoolActive: {
+    backgroundColor: 'rgba(10,132,255,0.2)',
+    borderWidth: 1,
+    borderColor: '#0A84FF',
+  },
+  modeHeatActive: {
+    backgroundColor: 'rgba(255,159,10,0.2)',
+    borderWidth: 1,
+    borderColor: '#FF9F0A',
+  },
   extraCard: {
     flex: 1,
-    minHeight: 60,
-    borderRadius: 14,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    padding: 10,
+    minHeight: 62,
+    borderRadius: 16,
+    backgroundColor: '#141416',
+    padding: 12,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 4,
   },
-  extraCaption: { color: '#94A3B8', fontSize: 12 },
+  extraCaption: { color: '#8E8E93', fontSize: 12 },
+
+  btnText: { color: '#F5F5F7', fontSize: 13, fontWeight: '600' },
+  btnTextBold: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
+
+  // شريط التبويب السفلي
   tabBar: {
     flexDirection: 'row',
+    backgroundColor: '#0A0A0C',
     borderTopWidth: 1,
-    borderTopColor: '#1E2532',
-    backgroundColor: '#131720',
-    padding: 8,
-    gap: 8,
+    borderTopColor: '#1C1C1E',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    gap: 10,
   },
   tabBtn: {
     flex: 1,
-    minHeight: 48,
-    borderRadius: 12,
+    minHeight: 42,
+    borderRadius: 999,
+    backgroundColor: '#141416',
     justifyContent: 'center',
     alignItems: 'center',
   },
   tabBtnActive: {
-    backgroundColor: '#1A202C',
-    borderWidth: 1,
-    borderColor: '#0EA5E9',
+    backgroundColor: '#0A84FF',
   },
-  tabText: { color: '#94A3B8', fontSize: 14, fontWeight: '600' },
-  tabTextActive: { color: '#F1F5F9', fontWeight: '700' },
+  tabText: { color: '#8E8E93', fontSize: 14, fontWeight: '600' },
+  tabTextActive: { color: '#FFFFFF', fontWeight: '700' },
+
+  // نافذة إعداد الواي فاي
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.75)',
+    backgroundColor: 'rgba(0,0,0,0.82)',
     justifyContent: 'center',
     padding: 20,
   },
   modalCard: {
-    backgroundColor: '#131720',
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    padding: 18,
+    backgroundColor: '#141416',
+    borderRadius: 22,
+    padding: 20,
     gap: 12,
   },
-  modalTitle: { color: '#F1F5F9', fontSize: 16, fontWeight: '700', textAlign: 'right' },
-  inputLabel: { color: '#94A3B8', fontSize: 12, textAlign: 'right', marginBottom: 4 },
+  modalTitle: { color: '#F5F5F7', fontSize: 16, fontWeight: '700', textAlign: 'right' },
+  inputLabel: { color: '#8E8E93', fontSize: 12, textAlign: 'right', marginBottom: 4 },
   portField: { flex: 1 },
   input: {
     minHeight: 44,
-    backgroundColor: '#0B0D11',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    borderRadius: 10,
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
     paddingHorizontal: 12,
-    color: '#F1F5F9',
+    color: '#F5F5F7',
     fontFamily: 'monospace',
     textAlign: 'left',
   },
@@ -1807,9 +2214,9 @@ const styles = StyleSheet.create({
   },
   modalScanBtn: {
     minHeight: 44,
-    paddingHorizontal: 12,
-    borderRadius: 10,
-    backgroundColor: '#0EA5E9',
+    paddingHorizontal: 14,
+    borderRadius: 12,
+    backgroundColor: '#0A84FF',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -1821,16 +2228,22 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    backgroundColor: '#0B0D11',
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: '#1E2532',
+    backgroundColor: '#1C1C1E',
+    borderRadius: 12,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
-  tokenStatusLabel: { color: '#94A3B8', fontSize: 12, flex: 1, textAlign: 'right' },
-  clearTokenText: { color: '#EF4444', fontSize: 12, fontWeight: '700' },
-  modalSaveBtn: { backgroundColor: '#0EA5E9', borderColor: '#0EA5E9' },
+  tokenStatusLabel: { color: '#8E8E93', fontSize: 12, flex: 1, textAlign: 'right' },
+  clearTokenText: { color: '#FF3B30', fontSize: 12, fontWeight: '700' },
+  modalCancelBtn: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 14,
+    backgroundColor: '#1C1C1E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalSaveBtn: { backgroundColor: '#0A84FF' },
 });
 
 export default App;

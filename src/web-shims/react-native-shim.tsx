@@ -86,6 +86,21 @@ function toWebStyle(
           css.fontVariantNumeric = 'tabular-nums';
         }
         break;
+      case 'transform':
+        if (Array.isArray(val)) {
+          css.transform = val
+            .map((t) => {
+              if (!t || typeof t !== 'object') return '';
+              return Object.entries(t)
+                .map(([k, v]) => `${k}(${typeof v === 'number' && !k.includes('scale') ? `${v}px` : v})`)
+                .join(' ');
+            })
+            .filter(Boolean)
+            .join(' ');
+        } else if (typeof val === 'string') {
+          css.transform = val;
+        }
+        break;
       case 'textAlignVertical':
       case 'elevation':
       case 'shadowColor':
@@ -135,12 +150,21 @@ export function StatusBar(_props: { barStyle?: string; backgroundColor?: string 
   return null;
 }
 
-export function View({ style, children }: { style?: RNStyle; children?: React.ReactNode }) {
+export function View({
+  style,
+  pointerEvents,
+  children,
+}: {
+  style?: RNStyle;
+  pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
+  children?: React.ReactNode;
+}) {
   return (
     <div
       style={toWebStyle(style, {
         display: 'flex',
         flexDirection: flattenStyle(style).flexDirection || 'column',
+        ...(pointerEvents === 'none' ? { pointerEvents: 'none' } : {}),
       })}
     >
       {children}
@@ -233,8 +257,10 @@ export function TouchableOpacity({
         border: flat.borderWidth ? undefined : 'none',
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.55 : pressed ? activeOpacity : 1,
-        transition: 'opacity 100ms ease, transform 80ms ease',
-        transform: pressed && !disabled ? 'scale(0.98)' : 'none',
+        transition: 'opacity 100ms ease, transform 80ms ease, background-color 120ms ease',
+        ...(activeOpacity < 1 && !flat.transform
+          ? { transform: pressed && !disabled ? 'scale(0.98)' : 'none' }
+          : {}),
         outline: 'none',
         userSelect: 'none',
         WebkitTapHighlightColor: 'transparent',

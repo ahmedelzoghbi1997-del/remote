@@ -17,6 +17,11 @@ import {
   View,
 } from 'react-native';
 import WifiControl from './src/services/WifiControl';
+import {
+  encodeMideaAcPattern,
+  MIDEA_MAX_TEMP,
+  MIDEA_MIN_TEMP,
+} from './src/protocols/mideaAc';
 
 const IrManagerModule = NativeModules ? NativeModules.IrManagerModule : null;
 
@@ -113,7 +118,11 @@ const TV_IR_BRANDS = {
   },
 };
 
-function buildAcIrPattern(brandKey, acState) {
+function buildAcIrPattern(brandKey, acState, options = {}) {
+  if (brandKey === 'midea') {
+    return encodeMideaAcPattern(acState, options);
+  }
+
   const brandAddress = brandKey === 'carrier' ? 0x4d : 0x58;
   const modeMap = { cool: 1, dry: 2, fan: 3, heat: 4, auto: 0 };
   const fanMap = { auto: 0, low: 1, medium: 2, high: 3 };
@@ -163,6 +172,7 @@ function getSubnetFromIp(ip) {
 
 function RepeatableButton({
   onAction,
+  onActiveChange,
   repeatIntervalMs = 130,
   initialDelayMs = 220,
   style,
@@ -173,8 +183,10 @@ function RepeatableButton({
   const holdTimerRef = useRef(null);
   const repeatTimerRef = useRef(null);
   const latestActionRef = useRef(onAction);
+  const latestActiveChangeRef = useRef(onActiveChange);
 
   latestActionRef.current = onAction;
+  latestActiveChangeRef.current = onActiveChange;
 
   const clearTimers = () => {
     if (holdTimerRef.current) {
@@ -185,6 +197,9 @@ function RepeatableButton({
       clearInterval(repeatTimerRef.current);
       repeatTimerRef.current = null;
     }
+    if (latestActiveChangeRef.current) {
+      latestActiveChangeRef.current(false);
+    }
   };
 
   useEffect(() => {
@@ -193,6 +208,9 @@ function RepeatableButton({
 
   const handlePressIn = () => {
     clearTimers();
+    if (latestActiveChangeRef.current) {
+      latestActiveChangeRef.current(true);
+    }
     if (latestActionRef.current) {
       latestActionRef.current();
     }
@@ -228,7 +246,7 @@ function App() {
 
   // حالة ريموت الشاشة والواي فاي والاقتران التلقائي
   const [tvTransport, setTvTransport] = useState('ir');
-  const [tvBrand, setTvBrand] = useState('samsung');
+  const tvBrand = 'samsung';
   const [wifiProtocol, setWifiProtocol] = useState('samsung_tizen');
   const [tvIp, setTvIp] = useState('192.168.1.50');
   const [tvPort, setTvPort] = useState('8002');
@@ -252,7 +270,7 @@ function App() {
   const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
 
   // حالة ريموت التكييف
-  const [acBrand, setAcBrand] = useState('gree');
+  const [acBrand, setAcBrand] = useState('midea');
   const [acState, setAcState] = useState({
     power: true,
     temperature: 22,
@@ -261,6 +279,7 @@ function App() {
     swing: true,
   });
 
+  const [activeDpadDir, setActiveDpadDir] = useState(null);
   const isSendingRef = useRef(false);
 
   useEffect(() => {
@@ -546,10 +565,10 @@ function App() {
     }
   };
 
-  const updateAcAndTransmit = async (nextAcState) => {
+  const updateAcAndTransmit = async (nextAcState, options = {}) => {
     setAcState(nextAcState);
     try {
-      const pattern = buildAcIrPattern(acBrand, nextAcState);
+      const pattern = buildAcIrPattern(acBrand, nextAcState, options);
       await transmitIrPattern(pattern);
     } catch (error) {
       setFeedback({
@@ -558,6 +577,9 @@ function App() {
       });
     }
   };
+
+  const acMinTemp = acBrand === 'midea' ? MIDEA_MIN_TEMP : 16;
+  const acMaxTemp = acBrand === 'midea' ? MIDEA_MAX_TEMP : 30;
 
   const currentModeObj = AC_MODES.find((m) => m.key === acState.mode);
   const currentModeLabel = currentModeObj ? currentModeObj.label : 'تبريد';
@@ -599,19 +621,7 @@ function App() {
         </TouchableOpacity>
       </View>
 
-      {tvTransport === 'ir' ? (
-        <View style={styles.rowGap}>
-          {['samsung', 'lg'].map((key) => (
-            <TouchableOpacity
-              key={key}
-              style={[styles.chipBtn, tvBrand === key && styles.chipBtnActive]}
-              onPress={() => setTvBrand(key)}
-            >
-              <Text style={styles.chipText}>{TV_IR_BRANDS[key].label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-      ) : (
+      {tvTransport === 'wifi' ? (
         <View style={styles.wifiSectionWrap}>
           <View style={styles.wifiBar}>
             <TouchableOpacity
@@ -726,7 +736,7 @@ function App() {
             </View>
           ) : null}
         </View>
-      )}
+      ) : null}
 
       <View style={styles.rowGap}>
         <TouchableOpacity
@@ -750,47 +760,96 @@ function App() {
       </View>
 
       <View style={styles.dpadCircle}>
-        <RepeatableButton
-          style={styles.dpadBtnUp}
-          repeatIntervalMs={130}
-          onAction={() => handleTvCommand('UP')}
-        >
-          <Text style={styles.dpadArrow}>▲</Text>
-        </RepeatableButton>
-
-        <View style={styles.dpadMiddle}>
+        <View style={styles.dpadRotatedGrid}>
           <RepeatableButton
-            style={styles.dpadBtnStart}
+            style={[
+              styles.dpadSector,
+              styles.dpadSectorUp,
+              activeDpadDir === 'UP' && styles.dpadSectorActive,
+            ]}
+            activeOpacity={1}
             repeatIntervalMs={130}
+            onActiveChange={(active) => setActiveDpadDir(active ? 'UP' : null)}
+            onAction={() => handleTvCommand('UP')}
+          />
+          <RepeatableButton
+            style={[
+              styles.dpadSector,
+              styles.dpadSectorRight,
+              activeDpadDir === 'RIGHT' && styles.dpadSectorActive,
+            ]}
+            activeOpacity={1}
+            repeatIntervalMs={130}
+            onActiveChange={(active) => setActiveDpadDir(active ? 'RIGHT' : null)}
             onAction={() => handleTvCommand('RIGHT')}
-          >
-            <Text style={styles.dpadArrow}>▶</Text>
-          </RepeatableButton>
-
-          <TouchableOpacity
-            style={styles.dpadOkBtn}
-            activeOpacity={0.8}
-            onPress={() => handleTvCommand('OK')}
-          >
-            <Text style={styles.btnTextBold}>موافق</Text>
-          </TouchableOpacity>
-
+          />
           <RepeatableButton
-            style={styles.dpadBtnEnd}
+            style={[
+              styles.dpadSector,
+              styles.dpadSectorDown,
+              activeDpadDir === 'DOWN' && styles.dpadSectorActive,
+            ]}
+            activeOpacity={1}
             repeatIntervalMs={130}
+            onActiveChange={(active) => setActiveDpadDir(active ? 'DOWN' : null)}
+            onAction={() => handleTvCommand('DOWN')}
+          />
+          <RepeatableButton
+            style={[
+              styles.dpadSector,
+              styles.dpadSectorLeft,
+              activeDpadDir === 'LEFT' && styles.dpadSectorActive,
+            ]}
+            activeOpacity={1}
+            repeatIntervalMs={130}
+            onActiveChange={(active) => setActiveDpadDir(active ? 'LEFT' : null)}
             onAction={() => handleTvCommand('LEFT')}
-          >
-            <Text style={styles.dpadArrow}>◀</Text>
-          </RepeatableButton>
+          />
         </View>
 
-        <RepeatableButton
-          style={styles.dpadBtnDown}
-          repeatIntervalMs={130}
-          onAction={() => handleTvCommand('DOWN')}
+        <View style={styles.dpadDotsLayer} pointerEvents="none">
+          <View
+            style={[
+              styles.dpadDot,
+              styles.dpadDotUp,
+              activeDpadDir === 'UP' && styles.dpadDotActive,
+            ]}
+          />
+          <View
+            style={[
+              styles.dpadDot,
+              styles.dpadDotRight,
+              activeDpadDir === 'RIGHT' && styles.dpadDotActive,
+            ]}
+          />
+          <View
+            style={[
+              styles.dpadDot,
+              styles.dpadDotDown,
+              activeDpadDir === 'DOWN' && styles.dpadDotActive,
+            ]}
+          />
+          <View
+            style={[
+              styles.dpadDot,
+              styles.dpadDotLeft,
+              activeDpadDir === 'LEFT' && styles.dpadDotActive,
+            ]}
+          />
+        </View>
+
+        <TouchableOpacity
+          style={[
+            styles.dpadOkBtn,
+            activeDpadDir === 'OK' && styles.dpadOkBtnActive,
+          ]}
+          activeOpacity={0.85}
+          onPressIn={() => setActiveDpadDir('OK')}
+          onPressOut={() => setActiveDpadDir(null)}
+          onPress={() => handleTvCommand('OK')}
         >
-          <Text style={styles.dpadArrow}>▼</Text>
-        </RepeatableButton>
+          <Text style={styles.dpadOkText}>موافق</Text>
+        </TouchableOpacity>
       </View>
 
       <View style={styles.rowGap}>
@@ -843,28 +902,28 @@ function App() {
         </View>
       </View>
 
-      <View style={styles.smartAppsSection}>
-        <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
-        <View style={styles.rowGap}>
-          <TouchableOpacity
-            style={styles.youtubeBtn}
-            activeOpacity={0.8}
-            onPress={() =>
-              tvTransport === 'wifi' ? handleLaunchYouTube() : handleTvCommand('YOUTUBE')
-            }
-          >
-            <Text style={styles.btnTextBold}>YouTube</Text>
-          </TouchableOpacity>
+      {tvTransport === 'wifi' ? (
+        <View style={styles.smartAppsSection}>
+          <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
+          <View style={styles.rowGap}>
+            <TouchableOpacity
+              style={styles.youtubeBtn}
+              activeOpacity={0.8}
+              onPress={() => handleLaunchYouTube()}
+            >
+              <Text style={styles.btnTextBold}>YouTube</Text>
+            </TouchableOpacity>
 
-          <TouchableOpacity
-            style={styles.netflixBtn}
-            activeOpacity={0.8}
-            onPress={() => handleTvCommand('NETFLIX')}
-          >
-            <Text style={styles.btnTextBold}>Netflix</Text>
-          </TouchableOpacity>
+            <TouchableOpacity
+              style={styles.netflixBtn}
+              activeOpacity={0.8}
+              onPress={() => handleTvCommand('NETFLIX')}
+            >
+              <Text style={styles.btnTextBold}>Netflix</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      </View>
+      ) : null}
 
       {tvTransport === 'wifi' ? (
         <View style={styles.castPanel}>
@@ -995,13 +1054,19 @@ function App() {
           <View style={styles.sectionStack}>
             <View style={styles.rowGap}>
               {[
+                { key: 'midea', label: 'Midea AC' },
                 { key: 'gree', label: 'Gree AC' },
                 { key: 'carrier', label: 'Carrier AC' },
               ].map((b) => (
                 <TouchableOpacity
                   key={b.key}
                   style={[styles.chipBtn, acBrand === b.key && styles.chipBtnActive]}
-                  onPress={() => setAcBrand(b.key)}
+                  onPress={() => {
+                    setAcBrand(b.key);
+                    if (b.key === 'midea' && acState.temperature < MIDEA_MIN_TEMP) {
+                      setAcState((prev) => ({ ...prev, temperature: MIDEA_MIN_TEMP }));
+                    }
+                  }}
                 >
                   <Text style={styles.chipText}>{b.label}</Text>
                 </TouchableOpacity>
@@ -1018,6 +1083,7 @@ function App() {
               </Text>
               <Text style={styles.acFooter}>
                 توجيه الهواء: {acState.swing ? 'متحرك' : 'ثابت'} · IR 38kHz
+                {acBrand === 'midea' ? ' · Midea 48-bit' : ''}
               </Text>
             </View>
 
@@ -1025,7 +1091,7 @@ function App() {
               <TouchableOpacity
                 style={styles.tempStepBtn}
                 onPress={() => {
-                  const nextTemp = Math.max(16, acState.temperature - 1);
+                  const nextTemp = Math.max(acMinTemp, acState.temperature - 1);
                   if (nextTemp !== acState.temperature) {
                     updateAcAndTransmit({
                       ...acState,
@@ -1056,7 +1122,7 @@ function App() {
               <TouchableOpacity
                 style={styles.tempStepBtn}
                 onPress={() => {
-                  const nextTemp = Math.min(30, acState.temperature + 1);
+                  const nextTemp = Math.min(acMaxTemp, acState.temperature + 1);
                   if (nextTemp !== acState.temperature) {
                     updateAcAndTransmit({
                       ...acState,
@@ -1113,7 +1179,10 @@ function App() {
                 style={styles.extraCard}
                 onPress={() => {
                   const nextSwing = !acState.swing;
-                  updateAcAndTransmit({ ...acState, power: true, swing: nextSwing });
+                  updateAcAndTransmit(
+                    { ...acState, power: true, swing: nextSwing },
+                    { isSwingToggle: true }
+                  );
                 }}
               >
                 <Text style={styles.extraCaption}>تأرجح الريش</Text>
@@ -1473,66 +1542,79 @@ const styles = StyleSheet.create({
     width: 248,
     height: 248,
     borderRadius: 124,
-    backgroundColor: '#0B0D11',
-    borderWidth: 1.5,
-    borderColor: '#253042',
-    padding: 0,
-    justifyContent: 'space-between',
+    backgroundColor: '#171E2C',
+    borderWidth: 1,
+    borderColor: '#253044',
+    justifyContent: 'center',
     alignItems: 'center',
     overflow: 'hidden',
+    position: 'relative',
+    direction: 'ltr',
+    marginVertical: 4,
   },
-  dpadMiddle: {
-    width: '100%',
-    height: 92,
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: '#0B0D11',
-    gap: 2,
+  dpadRotatedGrid: {
+    position: 'absolute',
+    width: 352,
+    height: 352,
+    top: -52,
+    left: -52,
+    transform: [{ rotate: '45deg' }],
   },
-  dpadBtnUp: {
-    width: '100%',
-    height: 76,
-    backgroundColor: '#1A202C',
-    borderBottomWidth: 2,
-    borderBottomColor: '#0B0D11',
-    justifyContent: 'center',
-    alignItems: 'center',
+  dpadSector: {
+    position: 'absolute',
+    width: 176,
+    height: 176,
+    backgroundColor: 'transparent',
   },
-  dpadBtnDown: {
-    width: '100%',
-    height: 76,
-    backgroundColor: '#1A202C',
-    borderTopWidth: 2,
-    borderTopColor: '#0B0D11',
-    justifyContent: 'center',
-    alignItems: 'center',
+  dpadSectorUp: { top: 0, left: 0 },
+  dpadSectorRight: { top: 0, left: 176 },
+  dpadSectorDown: { top: 176, left: 176 },
+  dpadSectorLeft: { top: 176, left: 0 },
+  dpadSectorActive: {
+    backgroundColor: 'rgba(14, 165, 233, 0.14)',
   },
-  dpadBtnStart: {
-    flex: 1,
-    height: '100%',
-    backgroundColor: '#1A202C',
-    justifyContent: 'center',
-    alignItems: 'center',
+  dpadDotsLayer: {
+    position: 'absolute',
+    width: 248,
+    height: 248,
+    top: 0,
+    left: 0,
+    zIndex: 5,
   },
-  dpadBtnEnd: {
-    flex: 1,
-    height: '100%',
-    backgroundColor: '#1A202C',
-    justifyContent: 'center',
-    alignItems: 'center',
+  dpadDot: {
+    position: 'absolute',
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#64748B',
   },
-  dpadArrow: { color: '#F1F5F9', fontSize: 22 },
+  dpadDotActive: {
+    backgroundColor: '#38BDF8',
+    transform: [{ scale: 1.35 }],
+  },
+  dpadDotUp: { top: 34, left: 120 },
+  dpadDotRight: { right: 34, top: 120 },
+  dpadDotDown: { bottom: 34, left: 120 },
+  dpadDotLeft: { left: 34, top: 120 },
   dpadOkBtn: {
-    width: 92,
-    height: 92,
-    borderRadius: 46,
-    backgroundColor: '#0EA5E9',
-    borderWidth: 4,
-    borderColor: '#0B0D11',
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: '#1E2738',
+    borderWidth: 1,
+    borderColor: '#2E3B52',
     justifyContent: 'center',
     alignItems: 'center',
-    zIndex: 2,
+    zIndex: 10,
+  },
+  dpadOkBtnActive: {
+    backgroundColor: '#0EA5E9',
+    borderColor: '#38BDF8',
+  },
+  dpadOkText: {
+    color: '#F1F5F9',
+    fontSize: 15,
+    fontWeight: '700',
   },
   navBtn: {
     flex: 1,

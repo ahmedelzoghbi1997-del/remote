@@ -40,9 +40,9 @@ export default function App() {
   return (
     <div
       dir="rtl"
-      className="min-h-screen bg-[#07090D] text-slate-100 flex flex-col items-center justify-center p-4 sm:p-6"
+      className="h-dvh w-full overflow-hidden bg-[#07090D] text-slate-100 flex flex-col items-center justify-center p-2 sm:p-4"
     >
-      <div className="w-full max-w-[400px] h-[820px] max-h-[92vh] rounded-[42px] bg-[#0B0D11] border-[6px] border-[#1F2735] shadow-2xl overflow-hidden flex flex-col relative">
+      <div className="w-full max-w-[392px] h-full max-h-[820px] rounded-[36px] sm:rounded-[42px] bg-[#0B0D11] border-[5px] sm:border-[6px] border-[#1F2735] shadow-2xl overflow-hidden flex flex-col relative">
         <PreviewErrorBoundary>
           <MobileRemoteApp />
         </PreviewErrorBoundary>

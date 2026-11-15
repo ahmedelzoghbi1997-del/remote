@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 
 type AnyStyle = Record<string, any> | AnyStyle[] | null | undefined | false;
 
@@ -26,13 +26,36 @@ function px(val: any): any {
   return typeof val === 'number' ? `${val}px` : val;
 }
 
+function resolveAnimatedValue(val: any): any {
+  if (val && typeof val === 'object' && '__isAnimatedValue' in val) {
+    return val.__getValue();
+  }
+  return val;
+}
+
 function toCssStyle(styleInput: AnyStyle, baseStyle?: React.CSSProperties): React.CSSProperties {
   const flat = flattenStyle(styleInput);
   const out: Record<string, any> = { ...(baseStyle || {}) };
   let hasBorderWidth = false;
 
-  for (const [key, rawVal] of Object.entries(flat)) {
+  for (const [key, originalVal] of Object.entries(flat)) {
+    const rawVal = resolveAnimatedValue(originalVal);
     if (rawVal === undefined || rawVal === null) continue;
+
+    if (
+      key === 'shadowColor' ||
+      key === 'shadowOffset' ||
+      key === 'shadowOpacity' ||
+      key === 'shadowRadius' ||
+      key === 'elevation'
+    ) {
+      if (key === 'elevation' && typeof rawVal === 'number' && rawVal > 0 && !out.boxShadow) {
+        const blur = Math.min(24, rawVal * 3);
+        const y = Math.min(10, Math.max(2, Math.round(rawVal * 0.8)));
+        out.boxShadow = `0 ${y}px ${blur}px rgba(0, 0, 0, 0.42)`;
+      }
+      continue;
+    }
 
     if (key === 'flex') {
       if (typeof rawVal === 'number') {
@@ -95,8 +118,9 @@ function toCssStyle(styleInput: AnyStyle, baseStyle?: React.CSSProperties): Reac
       out.transform = rawVal
         .map((t) => {
           if (typeof t === 'string') return t;
-          const [fn, arg] = Object.entries(t)[0] || [];
+          const [fn, rawArg] = Object.entries(t)[0] || [];
           if (!fn) return '';
+          const arg = resolveAnimatedValue(rawArg);
           if (typeof arg === 'number' && fn !== 'scale' && fn !== 'scaleX' && fn !== 'scaleY') {
             return `${fn}(${arg}px)`;
           }
@@ -117,9 +141,6 @@ function toCssStyle(styleInput: AnyStyle, baseStyle?: React.CSSProperties): Reac
       key === 'borderRightWidth'
     ) {
       hasBorderWidth = true;
-    }
-    if (key === 'elevation') {
-      continue;
     }
 
     if (typeof rawVal === 'number' && !UNITLESS_PROPS.has(key)) {
@@ -153,8 +174,163 @@ export const I18nManager = {
 };
 
 export const Vibration = {
-  vibrate: () => {},
-  cancel: () => {},
+  vibrate: (pattern?: number | number[]) => {
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(pattern || 10);
+      }
+    } catch (_) {
+      // ignore on unsupported browsers
+    }
+  },
+  cancel: () => {
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(0);
+      }
+    } catch (_) {
+      // ignore
+    }
+  },
+};
+
+class AnimatedValue {
+  private _value: number;
+  private _listeners: Set<(v: number) => void> = new Set();
+  readonly __isAnimatedValue = true;
+
+  constructor(initial: number) {
+    this._value = initial;
+  }
+
+  __getValue(): number {
+    return this._value;
+  }
+
+  setValue(next: number) {
+    this._value = next;
+    this._listeners.forEach((cb) => cb(next));
+  }
+
+  __subscribe(cb: (v: number) => void) {
+    this._listeners.add(cb);
+    return () => {
+      this._listeners.delete(cb);
+    };
+  }
+
+  interpolate(config: { inputRange: number[]; outputRange: (number | string)[] }) {
+    const self = this;
+    return {
+      __isAnimatedValue: true,
+      __getValue: () => {
+        const val = self._value;
+        const { inputRange, outputRange } = config;
+        if (!inputRange.length) return outputRange[0];
+        if (val <= inputRange[0]) return outputRange[0];
+        if (val >= inputRange[inputRange.length - 1]) return outputRange[outputRange.length - 1];
+        for (let i = 0; i < inputRange.length - 1; i++) {
+          if (val >= inputRange[i] && val <= inputRange[i + 1]) {
+            const ratio = (val - inputRange[i]) / (inputRange[i + 1] - inputRange[i] || 1);
+            const a = outputRange[i];
+            const b = outputRange[i + 1];
+            if (typeof a === 'number' && typeof b === 'number') {
+              return a + (b - a) * ratio;
+            }
+            return ratio < 0.5 ? a : b;
+          }
+        }
+        return outputRange[0];
+      },
+      __subscribe: (cb: (v: number) => void) => self.__subscribe(cb),
+    };
+  }
+}
+
+function collectAnimatedDeps(styleInput: AnyStyle): any[] {
+  const flat = flattenStyle(styleInput);
+  const deps: any[] = [];
+  for (const val of Object.values(flat)) {
+    if (val && typeof val === 'object' && '__subscribe' in val) {
+      deps.push(val);
+    } else if (Array.isArray(val)) {
+      val.forEach((item) => {
+        if (item && typeof item === 'object') {
+          Object.values(item).forEach((inner) => {
+            if (inner && typeof inner === 'object' && '__subscribe' in inner) {
+              deps.push(inner);
+            }
+          });
+        }
+      });
+    }
+  }
+  return deps;
+}
+
+const AnimatedView: React.FC<any> = ({ style, pointerEvents, children, ...rest }) => {
+  const [, setTick] = useState(0);
+
+  useEffect(() => {
+    const deps = collectAnimatedDeps(style);
+    if (deps.length === 0) return;
+    const unsubs = deps.map((dep) => dep.__subscribe(() => setTick((t) => t + 1)));
+    return () => unsubs.forEach((u) => u());
+  }, [style]);
+
+  const css = toCssStyle(style, {
+    ...FLEX_BOX_BASE,
+    transition: 'transform 130ms cubic-bezier(0.16, 1, 0.3, 1), opacity 130ms ease',
+  });
+  if (pointerEvents) {
+    css.pointerEvents = pointerEvents;
+  }
+  return (
+    <div style={css} {...rest}>
+      {children}
+    </div>
+  );
+};
+
+export const Animated = {
+  Value: AnimatedValue,
+  View: AnimatedView,
+  timing(value: AnimatedValue, config: { toValue: number; duration?: number }) {
+    return {
+      start(cb?: (res: { finished: boolean }) => void) {
+        value.setValue(config.toValue);
+        if (cb) cb({ finished: true });
+      },
+      stop() {},
+    };
+  },
+  spring(value: AnimatedValue, config: { toValue: number }) {
+    return {
+      start(cb?: (res: { finished: boolean }) => void) {
+        value.setValue(config.toValue);
+        if (cb) cb({ finished: true });
+      },
+      stop() {},
+    };
+  },
+  parallel(anims: any[]) {
+    return {
+      start(cb?: (res: { finished: boolean }) => void) {
+        anims.forEach((a) => a && a.start && a.start());
+        if (cb) cb({ finished: true });
+      },
+      stop() {},
+    };
+  },
+  sequence(anims: any[]) {
+    return {
+      start(cb?: (res: { finished: boolean }) => void) {
+        anims.forEach((a) => a && a.start && a.start());
+        if (cb) cb({ finished: true });
+      },
+      stop() {},
+    };
+  },
 };
 
 export const StyleSheet = {
@@ -243,15 +419,91 @@ export const Text: React.FC<any> = ({ style, numberOfLines, children, ...rest })
   );
 };
 
-export const TouchableOpacity: React.FC<any> = ({
+export const Pressable: React.FC<any> = ({
   style,
-  activeOpacity = 0.55,
   disabled,
-  accessibilityLabel,
-  accessibilityRole = 'button',
   onPress,
   onPressIn,
   onPressOut,
+  accessibilityLabel,
+  children,
+}) => {
+  const [pressed, setPressed] = useState(false);
+  const pointerDownFiredRef = useRef(false);
+
+  const resolvedStyle =
+    typeof style === 'function' ? style({ pressed: pressed && !disabled }) : style;
+
+  const css = toCssStyle(resolvedStyle, {
+    ...FLEX_BOX_BASE,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    userSelect: 'none',
+    WebkitTapHighlightColor: 'transparent',
+    transition: 'opacity 120ms ease, transform 120ms cubic-bezier(0.16, 1, 0.3, 1), background-color 120ms ease',
+  });
+
+  const resolvedChildren =
+    typeof children === 'function' ? children({ pressed: pressed && !disabled }) : children;
+
+  return (
+    <div
+      role="button"
+      tabIndex={disabled ? -1 : 0}
+      aria-label={accessibilityLabel}
+      aria-disabled={Boolean(disabled)}
+      style={css}
+      onClick={(e) => {
+        if (disabled) return;
+        if (onPress) onPress(e);
+      }}
+      onKeyDown={(e) => {
+        if (disabled) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          if (onPress) onPress(e);
+        }
+      }}
+      onPointerDown={(e) => {
+        if (disabled) return;
+        pointerDownFiredRef.current = true;
+        setPressed(true);
+        if (onPressIn) onPressIn(e);
+      }}
+      onPointerUp={(e) => {
+        if (pointerDownFiredRef.current) {
+          pointerDownFiredRef.current = false;
+          setPressed(false);
+          if (onPressOut) onPressOut(e);
+        }
+      }}
+      onPointerLeave={(e) => {
+        if (pointerDownFiredRef.current) {
+          pointerDownFiredRef.current = false;
+          setPressed(false);
+          if (onPressOut) onPressOut(e);
+        }
+      }}
+      onPointerCancel={(e) => {
+        if (pointerDownFiredRef.current) {
+          pointerDownFiredRef.current = false;
+          setPressed(false);
+          if (onPressOut) onPressOut(e);
+        }
+      }}
+    >
+      {resolvedChildren}
+    </div>
+  );
+};
+
+export const TouchableOpacity: React.FC<any> = ({
+  style,
+  activeOpacity = 0.7,
+  disabled,
+  onPress,
+  onPressIn,
+  onPressOut,
+  accessibilityLabel,
   children,
 }) => {
   const [pressed, setPressed] = useState(false);
@@ -266,19 +518,25 @@ export const TouchableOpacity: React.FC<any> = ({
 
   if (pressed && !disabled) {
     css.opacity = typeof css.opacity === 'number' ? css.opacity * activeOpacity : activeOpacity;
-    css.transform = css.transform ? `${css.transform} scale(0.96)` : 'scale(0.96)';
   }
 
   return (
     <div
-      role={accessibilityRole}
-      aria-label={accessibilityLabel}
+      role="button"
       tabIndex={disabled ? -1 : 0}
+      aria-label={accessibilityLabel}
       aria-disabled={Boolean(disabled)}
       style={css}
       onClick={(e) => {
         if (disabled) return;
         if (onPress) onPress(e);
+      }}
+      onKeyDown={(e) => {
+        if (disabled) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          if (onPress) onPress(e);
+        }
       }}
       onPointerDown={(e) => {
         if (disabled) return;

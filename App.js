@@ -3,11 +3,11 @@ import {
   I18nManager,
   NativeModules,
   Platform,
+  Pressable,
   SafeAreaView,
   StatusBar,
   StyleSheet,
   Text,
-  TouchableOpacity,
   Vibration,
   View,
 } from 'react-native';
@@ -30,28 +30,6 @@ const IrManagerModule = Platform.OS === 'web' ? null : NativeModules?.IrManagerM
 if (Platform.OS !== 'web' && I18nManager && !I18nManager.isRTL) {
   I18nManager.allowRTL(true);
   I18nManager.forceRTL(true);
-}
-
-function triggerHaptic(type = 'impactLight') {
-  try {
-    if (Platform.OS === 'web') return;
-    const nativeHaptic =
-      NativeModules?.RNReactNativeHapticFeedback || NativeModules?.RNHapticFeedback;
-    if (nativeHaptic && typeof nativeHaptic.trigger === 'function') {
-      nativeHaptic.trigger(type, {
-        enableVibrateFallback: true,
-        ignoreAndroidSystemSettings: false,
-      });
-      return;
-    }
-    const duration =
-      type === 'impactMedium' ? 14 : type === 'notificationSuccess' ? 18 : 8;
-    if (Vibration && typeof Vibration.vibrate === 'function') {
-      Vibration.vibrate(duration);
-    }
-  } catch (_) {
-    // تجاهل أي خطأ إذا كان الاهتزاز غير مدعوم
-  }
 }
 
 function getSubnetFromIp(ip) {
@@ -89,14 +67,6 @@ function App() {
   const [hasScannedOnce, setHasScannedOnce] = useState(false);
   const [isConnectingWifi, setIsConnectingWifi] = useState(false);
 
-  // حالة البحث وبث يوتيوب
-  const [isLaunchingYouTube, setIsLaunchingYouTube] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [isSearching, setIsSearching] = useState(false);
-  const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
-  const [searchResults, setSearchResults] = useState([]);
-  const [castingVideoId, setCastingVideoId] = useState(null);
-
   // حالة ريموت التكييف
   const [acBrand, setAcBrand] = useState('gree');
   const [acState, setAcState] = useState({
@@ -107,7 +77,7 @@ function App() {
     swing: true,
   });
 
-  const lastCommandTimeRef = useRef(0);
+  const isSendingRef = useRef(false);
 
   useEffect(() => {
     let mounted = true;
@@ -151,27 +121,19 @@ function App() {
       mounted = false;
       unsubscribe();
       WifiControl.abortDiscovery();
+      WifiControl.disconnect();
     };
   }, []);
 
-  // التبديل التلقائي إلى Wi-Fi إذا كان الهاتف لا يدعم IR
-  useEffect(() => {
-    if (hasIrHardware === false) {
-      setTvTransport('wifi');
-    }
-  }, [hasIrHardware]);
-
-  // إخفاء شريط التنبيه تلقائياً بعد 1200ms
-  useEffect(() => {
-    if (!feedback.text) return undefined;
-    const timer = setTimeout(() => {
-      setFeedback({ text: '', tone: 'neutral' });
-    }, 1200);
-    return () => clearTimeout(timer);
-  }, [feedback]);
+  const clearErrorBanner = () => {
+    setFeedback((prev) =>
+      prev.tone === 'neutral' && prev.text === '' ? prev : { text: '', tone: 'neutral' }
+    );
+  };
 
   const transmitIrPattern = async (pattern) => {
     if (Platform.OS === 'web') {
+      clearErrorBanner();
       return { mocked: true, pulseCount: pattern.length, carrierFrequency: CARRIER_38KHZ };
     }
     if (Platform.OS !== 'android' || !IrManagerModule) {
@@ -182,18 +144,14 @@ function App() {
       throw new Error('هذا الهاتف لا يحتوي على مستشعر IR Blaster.');
     }
     await IrManagerModule.transmitIR(pattern, CARRIER_38KHZ);
+    clearErrorBanner();
   };
 
   const handleTvCommand = async (commandKey) => {
-    triggerHaptic(commandKey === 'POWER' ? 'impactMedium' : 'impactLight');
-    const now = Date.now();
-    if (now - lastCommandTimeRef.current < 80) {
-      // السماح بالضغطات المتكررة فوراً مع تجنب النقر المزدوج اللحظي فقط
-      lastCommandTimeRef.current = now;
-    } else {
-      lastCommandTimeRef.current = now;
+    if (isSendingRef.current) {
+      return;
     }
-
+    isSendingRef.current = true;
     try {
       if (tvTransport === 'ir') {
         const brand = TV_IR_BRANDS[tvBrand];
@@ -208,18 +166,19 @@ function App() {
         await transmitIrPattern(pattern);
       } else {
         await WifiControl.sendCommand(commandKey);
+        clearErrorBanner();
       }
-      setFeedback({ text: 'تم إرسال الأمر', tone: 'success' });
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر تنفيذ الأمر',
         tone: 'error',
       });
+    } finally {
+      isSendingRef.current = false;
     }
   };
 
   const handleScanSmartTvs = async (overrideSubnet) => {
-    triggerHaptic('impactLight');
     if (isDiscovering) {
       WifiControl.abortDiscovery();
       setIsDiscovering(false);
@@ -227,13 +186,14 @@ function App() {
     }
 
     const activeSubnet = getSubnetFromIp(
-      overrideSubnet || tvIp || `${subnetPrefix}.1`
+      overrideSubnet || `${subnetPrefix}.1` || tvIp
     );
     setSubnetPrefix(activeSubnet);
     setIsDiscovering(true);
     setHasScannedOnce(true);
     setDiscoveredTvs([]);
     setScanProgress({ scanned: 0, total: 254 });
+    clearErrorBanner();
 
     try {
       const devices = await WifiControl.discoverSmartTvs({
@@ -258,7 +218,6 @@ function App() {
   };
 
   const handleSelectDiscoveredTv = async (device) => {
-    triggerHaptic('impactLight');
     WifiControl.abortDiscovery();
     setIsDiscovering(false);
 
@@ -285,8 +244,7 @@ function App() {
     setIsConnectingWifi(true);
     try {
       await WifiControl.connect();
-      triggerHaptic('notificationSuccess');
-      setFeedback({ text: 'تم الاتصال بالشاشة', tone: 'success' });
+      clearErrorBanner();
     } catch (error) {
       setFeedback({
         text:
@@ -301,7 +259,6 @@ function App() {
   };
 
   const handleSaveWifi = async () => {
-    triggerHaptic('impactLight');
     const defaultPort =
       wifiProtocol === 'roku' ? 8060 : wifiProtocol === 'samsung_tizen' ? 8002 : 8080;
     const defaultDial =
@@ -321,8 +278,7 @@ function App() {
     setIsConnectingWifi(true);
     try {
       await WifiControl.connect();
-      triggerHaptic('notificationSuccess');
-      setFeedback({ text: 'تم الاتصال بالشاشة', tone: 'success' });
+      clearErrorBanner();
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر الاتصال بالواي فاي',
@@ -334,70 +290,15 @@ function App() {
   };
 
   const handleClearSavedToken = async () => {
-    triggerHaptic('impactLight');
     await WifiControl.clearToken(tvIp);
-    setFeedback({ text: 'تم مسح التوكن', tone: 'success' });
-  };
-
-  const handleLaunchYouTube = async () => {
-    triggerHaptic('impactLight');
-    setIsLaunchingYouTube(true);
-    try {
-      await WifiControl.launchYouTube();
-      triggerHaptic('notificationSuccess');
-      setFeedback({ text: 'تم إرسال الأمر', tone: 'success' });
-    } catch (error) {
-      setFeedback({
-        text: error && error.message ? error.message : 'تعذر فتح تطبيق يوتيوب',
-        tone: 'error',
-      });
-    } finally {
-      setIsLaunchingYouTube(false);
-    }
-  };
-
-  const handleSearchYouTube = async () => {
-    triggerHaptic('impactLight');
-    setIsSearching(true);
-    setHasSearchedOnce(true);
-    try {
-      const results = await WifiControl.searchYouTubeVideos(searchQuery);
-      setSearchResults(results);
-    } catch (error) {
-      setFeedback({
-        text: error && error.message ? error.message : 'تعذر البحث في يوتيوب',
-        tone: 'error',
-      });
-    } finally {
-      setIsSearching(false);
-    }
-  };
-
-  const handleCastVideo = async (video) => {
-    if (!video || !video.videoId) return;
-    triggerHaptic('impactLight');
-    setCastingVideoId(video.videoId);
-    try {
-      await WifiControl.castYouTubeVideo(video.videoId);
-      triggerHaptic('notificationSuccess');
-      setFeedback({ text: 'تم إرسال الأمر', tone: 'success' });
-    } catch (error) {
-      setFeedback({
-        text: error && error.message ? error.message : 'تعذر بث الفيديو على الشاشة',
-        tone: 'error',
-      });
-    } finally {
-      setCastingVideoId(null);
-    }
+    clearErrorBanner();
   };
 
   const updateAcAndTransmit = async (nextAcState) => {
-    triggerHaptic(nextAcState.power !== acState.power ? 'impactMedium' : 'impactLight');
     setAcState(nextAcState);
     try {
       const pattern = buildAcIrPattern(acBrand, nextAcState);
       await transmitIrPattern(pattern);
-      setFeedback({ text: 'تم إرسال الأمر', tone: 'success' });
     } catch (error) {
       setFeedback({
         text: error && error.message ? error.message : 'تعذر إرسال أمر التكييف',
@@ -406,145 +307,92 @@ function App() {
     }
   };
 
-  const isStatusConnected =
-    tvTransport === 'wifi' ? Boolean(wifiStatus.isConnected) : Boolean(hasIrHardware);
-  const statusLabel =
-    tvTransport === 'wifi'
-      ? wifiStatus.isConnected
-        ? 'متصل Wi-Fi'
-        : 'غير متصل'
-      : hasIrHardware
-      ? 'IR جاهز'
-      : 'بلا IR';
+  const handleSwitchTab = (tab) => {
+    if (Platform.OS !== 'web') {
+      try {
+        Vibration.vibrate(8);
+      } catch (_) {
+        // ignore
+      }
+    }
+    setActiveTab(tab);
+  };
 
   return (
     <SafeAreaView style={styles.root}>
-      <StatusBar barStyle="light-content" backgroundColor={colors.background} />
+      <StatusBar barStyle="light-content" backgroundColor={colors.bg} />
 
-      {/* [أ] Header مدمج ارتفاع 44: يمين زر طاقة 40×40 + "ريموت"، يسار نقطة 6px + نص 11px */}
       <View style={styles.header}>
-        <View style={styles.headerStart}>
-          <TouchableOpacity
-            style={styles.headerPowerBtn}
-            activeOpacity={0.55}
-            accessibilityLabel="الطاقة"
-            accessibilityRole="button"
-            onPress={() => handleTvCommand('POWER')}
-          >
-            <RemoteIcon name="power" color={colors.textPrimary} size={18} />
-          </TouchableOpacity>
-          <Text style={styles.headerTitle}>ريموت</Text>
-        </View>
-
-        <View style={styles.headerStatus}>
-          <View
-            style={[
-              styles.statusDot,
-              isStatusConnected ? styles.statusDotOn : styles.statusDotOff,
-            ]}
-          />
-          <Text style={styles.statusText}>{statusLabel}</Text>
-        </View>
+        <Text style={styles.headerTitle}>ريموت</Text>
       </View>
 
-      {/* شريط إشعار رفيع ارتفاع 28 لا يزيح التخطيط */}
-      <View style={styles.feedbackSlot}>
-        {feedback.text ? (
-          <View
-            style={[
-              styles.feedbackPill,
-              feedback.tone === 'error' ? styles.feedbackError : styles.feedbackSuccess,
-            ]}
-          >
-            <Text style={styles.feedbackText} numberOfLines={1}>
-              {feedback.text}
-            </Text>
-          </View>
-        ) : null}
-      </View>
+      {feedback.tone === 'error' && feedback.text ? (
+        <View style={[styles.feedbackBar, styles.feedbackError]}>
+          <Text style={styles.feedbackText} numberOfLines={2}>
+            {feedback.text}
+          </Text>
+        </View>
+      ) : null}
 
       <View style={styles.mainContent}>
         {activeTab === 'tv' ? (
           <TvRemote
             tvTransport={tvTransport}
-            setTvTransport={(mode) => {
-              triggerHaptic('impactLight');
-              setTvTransport(mode);
-            }}
             tvBrand={tvBrand}
-            setTvBrand={(brand) => {
-              triggerHaptic('impactLight');
-              setTvBrand(brand);
-            }}
             wifiProtocol={wifiProtocol}
-            tvIp={tvIp}
-            tvPort={tvPort}
             wifiStatus={wifiStatus}
-            isDiscovering={isDiscovering}
-            discoveredTvs={discoveredTvs}
-            hasScannedOnce={hasScannedOnce}
-            onOpenSettings={() => {
-              triggerHaptic('impactLight');
-              setShowWifiModal(true);
-            }}
-            onScanSmartTvs={handleScanSmartTvs}
-            onSelectDiscoveredTv={handleSelectDiscoveredTv}
+            hasIrHardware={hasIrHardware}
+            onOpenSettings={() => setShowWifiModal(true)}
             onTvCommand={handleTvCommand}
-            onLaunchYouTube={handleLaunchYouTube}
-            isLaunchingYouTube={isLaunchingYouTube}
-            searchQuery={searchQuery}
-            setSearchQuery={setSearchQuery}
-            onSearchYouTube={handleSearchYouTube}
-            isSearching={isSearching}
-            hasSearchedOnce={hasSearchedOnce}
-            searchResults={searchResults}
-            castingVideoId={castingVideoId}
-            onCastVideo={handleCastVideo}
           />
         ) : (
           <AcRemote
             acBrand={acBrand}
-            setAcBrand={(brand) => {
-              triggerHaptic('impactLight');
-              setAcBrand(brand);
-            }}
+            setAcBrand={setAcBrand}
             acState={acState}
             updateAcAndTransmit={updateAcAndTransmit}
           />
         )}
       </View>
 
-      {/* [و] شريط التبويب السفلي بارتفاع 52 وحد علوي فقط */}
       <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'tv' && styles.tabBtnActive]}
-          activeOpacity={0.55}
-          accessibilityLabel="الشاشة"
-          accessibilityRole="button"
-          onPress={() => {
-            triggerHaptic('impactLight');
-            setActiveTab('tv');
-          }}
+        <Pressable
+          accessibilityLabel="ريموت الشاشة"
+          style={({ pressed }) => [
+            styles.tabBtn,
+            activeTab === 'tv' && styles.tabBtnActive,
+            pressed && styles.tabPressed,
+          ]}
+          onPress={() => handleSwitchTab('tv')}
         >
+          <RemoteIcon
+            name="tv"
+            size={18}
+            color={activeTab === 'tv' ? colors.white : colors.textSecondary}
+          />
           <Text style={[styles.tabText, activeTab === 'tv' && styles.tabTextActive]}>
             الشاشة
           </Text>
-        </TouchableOpacity>
+        </Pressable>
 
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'ac' && styles.tabBtnActive]}
-          activeOpacity={0.55}
-          accessibilityLabel="التكييف"
-          accessibilityRole="button"
-          onPress={() => {
-            triggerHaptic('impactLight');
-            setActiveTab('ac');
-          }}
+        <Pressable
+          accessibilityLabel="ريموت التكييف"
+          style={({ pressed }) => [
+            styles.tabBtn,
+            activeTab === 'ac' && styles.tabBtnActive,
+            pressed && styles.tabPressed,
+          ]}
+          onPress={() => handleSwitchTab('ac')}
         >
+          <RemoteIcon
+            name="ac"
+            size={18}
+            color={activeTab === 'ac' ? colors.white : colors.textSecondary}
+          />
           <Text style={[styles.tabText, activeTab === 'ac' && styles.tabTextActive]}>
             التكييف
           </Text>
-        </TouchableOpacity>
+        </Pressable>
       </View>
 
       <WifiSheet
@@ -581,127 +429,72 @@ function App() {
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    width: '100%',
-    backgroundColor: colors.background,
-  },
+  root: { flex: 1, width: '100%', backgroundColor: colors.bg },
   header: {
-    height: 44,
-    width: '100%',
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: spacing.md,
-  },
-  headerStart: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  headerPowerBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: radii.capsule,
-    backgroundColor: colors.danger,
-    justifyContent: 'center',
-    alignItems: 'center',
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.xs,
+    paddingBottom: 2,
+    flexShrink: 0,
   },
   headerTitle: {
     color: colors.textPrimary,
     fontSize: fontSizes.title,
     fontWeight: '700',
+    letterSpacing: 0.2,
   },
-  headerStatus: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  statusDot: {
-    width: 6,
-    height: 6,
-    borderRadius: radii.capsule,
-  },
-  statusDotOn: {
-    backgroundColor: colors.accent,
-  },
-  statusDotOff: {
-    backgroundColor: colors.textTertiary,
-  },
-  statusText: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.label,
-    fontWeight: '500',
-    letterSpacing: 0.3,
-  },
-
-  feedbackSlot: {
-    height: 28,
-    width: '100%',
+  feedbackBar: {
+    marginHorizontal: spacing.xl,
+    marginBottom: spacing.xs,
+    paddingVertical: 6,
     paddingHorizontal: spacing.md,
-    justifyContent: 'center',
-  },
-  feedbackPill: {
-    height: 26,
-    borderRadius: radii.button,
-    borderWidth: 1,
-    paddingHorizontal: spacing.md,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  feedbackSuccess: {
-    backgroundColor: colors.accentSoft,
-    borderColor: colors.accent,
+    borderRadius: radii.md,
+    backgroundColor: colors.surfaceHigh,
+    flexShrink: 0,
   },
   feedbackError: {
     backgroundColor: colors.dangerSoft,
-    borderColor: colors.danger,
+    borderWidth: 1,
+    borderColor: colors.dangerBorderSoft,
   },
-  feedbackText: {
-    color: colors.textPrimary,
-    fontSize: fontSizes.label,
-    fontWeight: '500',
-    letterSpacing: 0.3,
-    textAlign: 'center',
-  },
+  feedbackText: { color: colors.textPrimary, fontSize: fontSizes.sm, textAlign: 'center' },
+  mainContent: { flex: 1, width: '100%' },
 
-  mainContent: {
-    flex: 1,
-    width: '100%',
-  },
-
+  // شريط التبويب السفلي بأيقونات مدمجة
   tabBar: {
-    height: 52,
-    width: '100%',
     flexDirection: 'row',
-    backgroundColor: colors.background,
+    backgroundColor: colors.tabBarBg,
     borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingHorizontal: spacing.md,
+    borderTopColor: colors.surfaceHigh,
+    paddingHorizontal: spacing.lg,
     paddingVertical: 6,
-    gap: spacing.sm,
+    gap: 10,
+    flexShrink: 0,
   },
   tabBtn: {
     flex: 1,
-    borderRadius: radii.capsule,
-    backgroundColor: colors.surfaceRaised,
+    minHeight: 48,
+    flexDirection: 'row',
+    gap: spacing.sm,
+    borderRadius: radii.full,
+    backgroundColor: colors.surface,
     borderWidth: 1,
     borderColor: colors.border,
     justifyContent: 'center',
     alignItems: 'center',
   },
   tabBtnActive: {
-    backgroundColor: colors.accentSegment,
+    backgroundColor: colors.accent,
     borderColor: colors.accent,
   },
-  tabText: {
-    color: colors.textSecondary,
-    fontSize: fontSizes.button,
-    fontWeight: '600',
+  tabPressed: {
+    opacity: 0.88,
+    transform: [{ scale: 0.98 }],
   },
-  tabTextActive: {
-    color: colors.textPrimary,
-  },
+  tabText: { color: colors.textSecondary, fontSize: fontSizes.base, fontWeight: '600' },
+  tabTextActive: { color: colors.white, fontWeight: '700' },
 });
 
 export default App;

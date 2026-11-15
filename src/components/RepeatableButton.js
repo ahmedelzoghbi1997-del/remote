@@ -1,20 +1,30 @@
 import React, { useEffect, useRef } from 'react';
-import { TouchableOpacity } from 'react-native';
+import { Animated, Platform, Pressable, Vibration } from 'react-native';
+
+function triggerHaptic(durationMs = 10) {
+  if (Platform.OS === 'web') return;
+  try {
+    Vibration.vibrate(durationMs);
+  } catch (_) {
+    // ignore if vibration permission is unavailable
+  }
+}
 
 function RepeatableButton({
   onAction,
-  repeatIntervalMs = 150,
-  initialDelayMs = 260,
+  repeatIntervalMs = 130,
+  initialDelayMs = 220,
   style,
-  activeOpacity = 0.55,
+  pressedScale = 0.92,
+  hapticMs = 10,
   hitSlop,
   accessibilityLabel,
-  accessibilityRole = 'button',
   children,
 }) {
   const holdTimerRef = useRef(null);
   const repeatTimerRef = useRef(null);
   const latestActionRef = useRef(onAction);
+  const scaleAnim = useRef(new Animated.Value(1)).current;
 
   latestActionRef.current = onAction;
 
@@ -33,32 +43,55 @@ function RepeatableButton({
     return () => clearTimers();
   }, []);
 
+  const animateTo = (toValue) => {
+    Animated.spring(scaleAnim, {
+      toValue,
+      useNativeDriver: true,
+      speed: 40,
+      bounciness: 4,
+    }).start();
+  };
+
   const handlePressIn = () => {
     clearTimers();
+    animateTo(pressedScale);
+    if (hapticMs > 0) {
+      triggerHaptic(hapticMs);
+    }
     if (latestActionRef.current) {
       latestActionRef.current();
     }
-    holdTimerRef.current = setTimeout(() => {
-      repeatTimerRef.current = setInterval(() => {
-        if (latestActionRef.current) {
-          latestActionRef.current();
-        }
-      }, repeatIntervalMs);
-    }, initialDelayMs);
+    if (repeatIntervalMs > 0) {
+      holdTimerRef.current = setTimeout(() => {
+        repeatTimerRef.current = setInterval(() => {
+          if (hapticMs > 0) {
+            triggerHaptic(Math.max(6, Math.round(hapticMs * 0.7)));
+          }
+          if (latestActionRef.current) {
+            latestActionRef.current();
+          }
+        }, repeatIntervalMs);
+      }, initialDelayMs);
+    }
+  };
+
+  const handlePressOut = () => {
+    clearTimers();
+    animateTo(1);
   };
 
   return (
-    <TouchableOpacity
-      style={style}
-      activeOpacity={activeOpacity}
+    <Pressable
+      style={({ pressed }) => [style, pressed && { opacity: 0.86 }]}
       hitSlop={hitSlop}
       accessibilityLabel={accessibilityLabel}
-      accessibilityRole={accessibilityRole}
       onPressIn={handlePressIn}
-      onPressOut={clearTimers}
+      onPressOut={handlePressOut}
     >
-      {children}
-    </TouchableOpacity>
+      <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
+        {children}
+      </Animated.View>
+    </Pressable>
   );
 }
 

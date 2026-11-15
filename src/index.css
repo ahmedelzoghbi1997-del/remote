@@ -25,12 +25,6 @@
   font-variant-numeric: tabular-nums;
 }
 
-@keyframes rn-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 /* Tactile hardware scrollbar */
 ::-webkit-scrollbar {
   width: 8px;

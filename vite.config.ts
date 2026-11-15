@@ -1,48 +1,14 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
-import { transformSync } from 'esbuild';
 import path from 'path';
-import { defineConfig, type Plugin } from 'vite';
-
-function rootAppJsxPlugin(): Plugin {
-  const rootAppPath = path.resolve(__dirname, 'App.js');
-  const rnComponentsDir = path.resolve(__dirname, 'src/components') + path.sep;
-  return {
-    name: 'root-app-js-jsx',
-    enforce: 'pre',
-    transform(code, id) {
-      const cleanId = id.split('?')[0];
-      const resolvedId = path.resolve(cleanId);
-      if (
-        resolvedId === rootAppPath ||
-        (resolvedId.startsWith(rnComponentsDir) && resolvedId.endsWith('.js'))
-      ) {
-        const result = transformSync(code, {
-          loader: 'jsx',
-          jsx: 'automatic',
-          sourcefile: cleanId,
-        });
-        return {
-          code: result.code,
-          map: result.map || null,
-        };
-      }
-      return null;
-    },
-  };
-}
+import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    plugins: [rootAppJsxPlugin(), react(), tailwindcss()],
+    plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
-        'react-native': path.resolve(__dirname, 'src/web-shims/react-native.tsx'),
-        '@react-native-async-storage/async-storage': path.resolve(
-          __dirname,
-          'src/web-shims/async-storage.ts'
-        ),
       },
     },
     server: {

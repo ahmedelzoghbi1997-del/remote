@@ -10,13 +10,11 @@ import {
   CornerUpLeft,
   Fan,
   Home,
-  LogIn,
   Menu,
   Minus,
   Plus,
   Power,
   Radio,
-  SlidersHorizontal,
   Snowflake,
   Sun,
   Tv,
@@ -152,7 +150,6 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
   const [wifiProtocol, setWifiProtocol] = useState<WifiProtocol>('roku');
   const [wifiIp, setWifiIp] = useState('192.168.1.50');
   const [acBrand, setAcBrand] = useState<AcBrand>('gree');
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   // Simulated Virtual TV State
   const [tvState, setTvState] = useState({
@@ -359,200 +356,238 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
           </div>
 
           {/* شاشة التطبيق داخل الهاتف */}
-          <div className="rounded-[24px] bg-[#000000] border border-[#2C2C2E] overflow-hidden flex flex-col relative">
+          <div className="rounded-[24px] bg-[#0B0D11] border border-[#1E2532] overflow-hidden flex flex-col">
             {/* شريط عنوان تطبيق الأندرويد */}
-            <div className="flex items-center justify-between px-4 py-2.5">
-              <span className="font-display font-bold text-base text-[#F5F5F7]">ريموت</span>
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[#1E2532]">
+              <span className="font-display font-bold text-base text-slate-100">الريموت الشامل</span>
+              <span className="text-xs text-slate-400">
+                {activeTab === 'tv' && transport === 'wifi'
+                  ? 'وضع الشبكة المحلية'
+                  : 'ConsumerIrManager'}
+              </span>
+            </div>
+
+            {/* شريط تأكيد آخر أمر */}
+            <div
+              className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs text-center truncate transition-colors ${
+                lastSignal.transport === 'ir' || activeTab === 'ac'
+                  ? 'bg-red-500/10 border-red-500/30 text-red-200'
+                  : 'bg-sky-500/10 border-sky-500/30 text-sky-200'
+              }`}
+            >
+              {lastSignal.commandLabel} · {lastSignal.targetLabel}
             </div>
 
             {/* محتوى التبويب النشط */}
             {activeTab === 'tv' ? (
-              <div className="px-4 py-3 flex flex-col justify-between gap-3">
-                {/* 1) هيدر: كبسولة الجهاز + أيقونة الإعدادات + نص IR/Wi-Fi + زر الطاقة 50px */}
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex flex-col items-start gap-0.5 min-w-0 flex-1">
-                    <button
-                      type="button"
-                      onClick={() => setShowSettingsModal(true)}
-                      className="min-h-[48px] max-w-full px-4 rounded-full bg-[#111114] border border-[#363642] flex items-center gap-2 text-sm font-semibold text-[#F5F5F7] hover:border-[#0A84FF] transition-colors"
-                    >
-                      <span
-                        className={`w-2 h-2 rounded-full shrink-0 ${
-                          transport === 'ir' || tvState.power ? 'bg-[#30D158]' : 'bg-[#636366]'
-                        }`}
-                      />
-                      <span className="truncate">
-                        {transport === 'ir'
-                          ? irBrand === 'samsung'
-                            ? 'Samsung (0x0707)'
-                            : 'LG TV (NEC)'
-                          : wifiProtocol === 'roku'
-                          ? 'Roku ECP'
-                          : 'Android TV'}
-                      </span>
-                      <SlidersHorizontal className="w-3.5 h-3.5 text-[#8E8E93] shrink-0" />
-                    </button>
-                    <span className="text-[11px] font-semibold text-[#8E8E93] px-3">
-                      {transport === 'ir' ? 'IR' : 'Wi-Fi'}
-                    </span>
-                  </div>
-
+              <div className="p-4 space-y-4">
+                {/* مبدل IR / Wi-Fi */}
+                <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#131720] border border-[#1E2532]">
                   <button
                     type="button"
-                    aria-label="طاقة"
-                    onClick={() => sendTvCommand('POWER', 'الطاقة')}
-                    className="w-[50px] h-[50px] rounded-full bg-[#FF3B30] border border-[#FF3B30]/40 hover:opacity-90 active:scale-95 text-white flex items-center justify-center shrink-0 transition-all shadow-lg shadow-black/40"
+                    onClick={() => setTransport('ir')}
+                    className={`min-h-[44px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                      transport === 'ir'
+                        ? 'bg-red-500 text-white'
+                        : 'text-slate-400 hover:text-slate-100'
+                    }`}
                   >
-                    <Power className="w-5 h-5" />
+                    <Radio className="w-3.5 h-3.5" />
+                    <span>أشعة IR</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTransport('wifi')}
+                    className={`min-h-[44px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                      transport === 'wifi'
+                        ? 'bg-sky-500 text-white'
+                        : 'text-slate-400 hover:text-slate-100'
+                    }`}
+                  >
+                    <Wifi className="w-3.5 h-3.5" />
+                    <span>واي فاي</span>
                   </button>
                 </div>
 
-                {/* 2) قرص التنقل الدائري (204px) مع حلقة داخلية وزر OK */}
-                <div className="relative mx-auto w-[204px] h-[204px] rounded-full bg-[#111114] border-[1.5px] border-[#363642] p-1 flex flex-col items-center justify-between shadow-lg shadow-black/40">
-                  <div
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-[30px] rounded-full border border-[#26262E]"
-                  />
+                {/* اختيار الماركة أو البروتوكول */}
+                {transport === 'ir' ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    {(['samsung', 'lg'] as TvIrBrand[]).map((b) => (
+                      <button
+                        key={b}
+                        type="button"
+                        onClick={() => setIrBrand(b)}
+                        className={`min-h-[44px] rounded-xl border text-xs font-semibold transition-colors ${
+                          irBrand === b
+                            ? 'border-sky-500 bg-sky-500/15 text-slate-100'
+                            : 'border-[#1E2532] bg-[#131720] text-slate-400 hover:text-slate-200'
+                        }`}
+                      >
+                        {b === 'samsung' ? 'Samsung TV' : 'LG TV'}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setWifiProtocol((p) => (p === 'roku' ? 'android_tv' : 'roku'))
+                      }
+                      className="min-h-[44px] px-3 rounded-xl border border-[#1E2532] bg-[#131720] text-xs font-semibold text-sky-400 hover:bg-[#1A202C] whitespace-nowrap"
+                    >
+                      {wifiProtocol === 'roku' ? 'Roku ECP' : 'Android TV'}
+                    </button>
+                    <input
+                      type="text"
+                      dir="ltr"
+                      value={wifiIp}
+                      onChange={(e) => setWifiIp(e.target.value)}
+                      aria-label="عنوان IP الشاشة الذكية"
+                      className="flex-1 min-h-[44px] px-3 rounded-xl border border-[#1E2532] bg-[#131720] text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                )}
+
+                {/* صف الطاقة والمصدر والكتم */}
+                <div className="grid grid-cols-3 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => sendTvCommand('POWER', 'الطاقة')}
+                    className="min-h-[48px] rounded-xl bg-red-500 hover:bg-red-600 active:scale-[0.97] text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all"
+                  >
+                    <Power className="w-4 h-4" />
+                    <span>طاقة</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => sendTvCommand('INPUT', 'تبديل المصدر')}
+                    className="min-h-[48px] rounded-xl bg-[#1A202C] hover:bg-[#232B3A] active:scale-[0.97] border border-[#263042] text-slate-100 font-semibold text-xs transition-all"
+                  >
+                    المصدر
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => sendTvCommand('MUTE', 'كتم الصوت')}
+                    className="min-h-[48px] rounded-xl bg-[#1A202C] hover:bg-[#232B3A] active:scale-[0.97] border border-[#263042] text-slate-100 font-semibold text-xs flex items-center justify-center gap-1 transition-all"
+                  >
+                    {tvState.muted ? <VolumeX className="w-4 h-4 text-amber-400" /> : <Volume2 className="w-4 h-4" />}
+                    <span>كتم</span>
+                  </button>
+                </div>
+
+                {/* لوحة D-Pad الدائرية */}
+                <div className="mx-auto w-[208px] h-[208px] rounded-full bg-[#131720] border border-[#232B3A] p-2.5 flex flex-col items-center justify-between">
                   <button
                     type="button"
                     aria-label="أعلى"
                     onClick={() => sendTvCommand('UP', 'أعلى')}
-                    className="relative z-10 w-full min-h-[54px] flex-1 flex items-center justify-center text-[#EBEBF0] hover:text-white active:scale-90 transition-all"
+                    className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
                   >
-                    <ArrowUp className="w-[18px] h-[18px]" />
+                    <ArrowUp className="w-4 h-4" />
                   </button>
-                  <div className="relative z-10 w-full min-h-[72px] flex items-center justify-between">
+                  <div className="w-full flex items-center justify-between">
                     <button
                       type="button"
                       aria-label="يمين"
                       onClick={() => sendTvCommand('RIGHT', 'يمين')}
-                      className="flex-1 min-w-[48px] min-h-[54px] flex items-center justify-center text-[#EBEBF0] hover:text-white active:scale-90 transition-all"
+                      className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
                     >
-                      <ArrowRight className="w-[18px] h-[18px]" />
+                      <ArrowRight className="w-4 h-4" />
                     </button>
                     <button
                       type="button"
                       onClick={() => sendTvCommand('OK', 'موافق')}
-                      className="w-[70px] h-[70px] rounded-full bg-[#0A84FF] border-[3px] border-black hover:opacity-90 active:scale-95 text-white font-extrabold text-sm tracking-wider shrink-0 transition-all shadow-md"
+                      className="w-[72px] h-[72px] rounded-full bg-sky-500 hover:bg-sky-400 active:scale-95 text-white font-bold text-sm transition-all"
                     >
-                      OK
+                      موافق
                     </button>
                     <button
                       type="button"
                       aria-label="يسار"
                       onClick={() => sendTvCommand('LEFT', 'يسار')}
-                      className="flex-1 min-w-[48px] min-h-[54px] flex items-center justify-center text-[#EBEBF0] hover:text-white active:scale-90 transition-all"
+                      className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
                     >
-                      <ArrowLeft className="w-[18px] h-[18px]" />
+                      <ArrowLeft className="w-4 h-4" />
                     </button>
                   </div>
                   <button
                     type="button"
                     aria-label="أسفل"
                     onClick={() => sendTvCommand('DOWN', 'أسفل')}
-                    className="relative z-10 w-full min-h-[54px] flex-1 flex items-center justify-center text-[#EBEBF0] hover:text-white active:scale-90 transition-all"
+                    className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
                   >
-                    <ArrowDown className="w-[18px] h-[18px]" />
+                    <ArrowDown className="w-4 h-4" />
                   </button>
                 </div>
 
-                {/* 3) صف 4 أزرار دائرية 48px مع تسميات دقيقة */}
-                <div className="flex items-center justify-evenly">
-                  {[
-                    { key: 'BACK', label: 'رجوع', icon: CornerUpLeft },
-                    { key: 'HOME', label: 'رئيسية', icon: Home },
-                    { key: 'MENU', label: 'قائمة', icon: Menu },
-                  ].map(({ key, label, icon: IconComp }) => (
-                    <div key={key} className="flex flex-col items-center gap-0.5">
-                      <button
-                        type="button"
-                        aria-label={label}
-                        onClick={() => sendTvCommand(key, label)}
-                        className="w-[48px] h-[48px] rounded-full bg-[#1A1A1F] border border-[#363642] text-[#EBEBF0] flex items-center justify-center active:scale-90 transition-all"
-                      >
-                        <IconComp className="w-[18px] h-[18px]" />
-                      </button>
-                      <span className="text-[11px] font-semibold text-[#8E8E93]">{label}</span>
-                    </div>
-                  ))}
-                  <div className="flex flex-col items-center gap-0.5">
-                    <button
-                      type="button"
-                      aria-label="كتم الصوت"
-                      onClick={() => sendTvCommand('MUTE', 'كتم الصوت')}
-                      className="w-[48px] h-[48px] rounded-full bg-[#1A1A1F] border border-[#363642] text-[#EBEBF0] flex items-center justify-center active:scale-90 transition-all"
-                    >
-                      {tvState.muted ? (
-                        <VolumeX className="w-[18px] h-[18px]" />
-                      ) : (
-                        <Volume2 className="w-[18px] h-[18px]" />
-                      )}
-                    </button>
-                    <span className="text-[11px] font-semibold text-[#8E8E93]">كتم</span>
-                  </div>
+                {/* أزرار التنقل */}
+                <div className="grid grid-cols-3 gap-2.5">
+                  <button
+                    type="button"
+                    onClick={() => sendTvCommand('BACK', 'رجوع')}
+                    className="min-h-[44px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5"
+                  >
+                    <CornerUpLeft className="w-3.5 h-3.5" />
+                    <span>رجوع</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => sendTvCommand('HOME', 'الرئيسية')}
+                    className="min-h-[44px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5"
+                  >
+                    <Home className="w-3.5 h-3.5" />
+                    <span>الرئيسية</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => sendTvCommand('MENU', 'القائمة')}
+                    className="min-h-[44px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5"
+                  >
+                    <Menu className="w-3.5 h-3.5" />
+                    <span>القائمة</span>
+                  </button>
                 </div>
 
-                {/* 4) ذراعا الصوت (يمين) والقنوات (شمال) مع زر المصدر في المنتصف */}
-                <div className="flex items-center justify-evenly">
-                  <div className="w-[72px] h-[140px] rounded-[36px] bg-[#1A1A1F] border border-[#363642] flex flex-col items-center justify-between py-0.5 overflow-hidden">
+                {/* عمودا الصوت والقنوات */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="rounded-2xl bg-[#131720] border border-[#1E2532] p-2 flex flex-col items-center gap-2">
                     <button
                       type="button"
                       aria-label="رفع الصوت"
                       onClick={() => sendTvCommand('VOL_UP', 'رفع الصوت')}
-                      className="w-full min-h-[50px] flex-1 flex items-center justify-center text-[#F5F5F7] active:scale-90"
+                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
                     >
-                      <Plus className="w-[17px] h-[17px]" />
+                      <Plus className="w-4 h-4" />
                     </button>
-                    <div className="flex flex-col items-center gap-0.5 pointer-events-none">
-                      <span className="w-6 h-px bg-[#26262E]" />
-                      <Volume2 className="w-3.5 h-3.5 text-[#8E8E93]" />
-                      <span className="text-[10px] font-semibold text-[#8E8E93]">الصوت</span>
-                      <span className="w-6 h-px bg-[#26262E]" />
-                    </div>
+                    <span className="text-[11px] font-medium text-slate-400">الصوت</span>
                     <button
                       type="button"
                       aria-label="خفض الصوت"
                       onClick={() => sendTvCommand('VOL_DOWN', 'خفض الصوت')}
-                      className="w-full min-h-[50px] flex-1 flex items-center justify-center text-[#F5F5F7] active:scale-90"
+                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
                     >
-                      <Minus className="w-[17px] h-[17px]" />
+                      <Minus className="w-4 h-4" />
                     </button>
                   </div>
 
-                  <div className="flex flex-col items-center gap-0.5">
-                    <button
-                      type="button"
-                      aria-label="تبديل مصدر الإدخال HDMI"
-                      onClick={() => sendTvCommand('INPUT', 'المصدر')}
-                      className="w-[48px] h-[48px] rounded-full bg-[#1A1A1F] border border-[#363642] text-[#EBEBF0] flex items-center justify-center active:scale-90 transition-all"
-                    >
-                      <LogIn className="w-[18px] h-[18px]" />
-                    </button>
-                    <span className="text-[11px] font-semibold text-[#8E8E93]">المصدر</span>
-                  </div>
-
-                  <div className="w-[72px] h-[140px] rounded-[36px] bg-[#1A1A1F] border border-[#363642] flex flex-col items-center justify-between py-0.5 overflow-hidden">
+                  <div className="rounded-2xl bg-[#131720] border border-[#1E2532] p-2 flex flex-col items-center gap-2">
                     <button
                       type="button"
                       aria-label="القناة التالية"
                       onClick={() => sendTvCommand('CH_UP', 'القناة التالية')}
-                      className="w-full min-h-[50px] flex-1 flex items-center justify-center text-[#F5F5F7] active:scale-90"
+                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
                     >
-                      <ChevronUp className="w-[17px] h-[17px]" />
+                      <ChevronUp className="w-4 h-4" />
                     </button>
-                    <div className="flex flex-col items-center gap-0.5 pointer-events-none">
-                      <span className="w-6 h-px bg-[#26262E]" />
-                      <Tv className="w-3.5 h-3.5 text-[#8E8E93]" />
-                      <span className="text-[10px] font-semibold text-[#8E8E93]">القنوات</span>
-                      <span className="w-6 h-px bg-[#26262E]" />
-                    </div>
+                    <span className="text-[11px] font-medium text-slate-400">القناة</span>
                     <button
                       type="button"
                       aria-label="القناة السابقة"
                       onClick={() => sendTvCommand('CH_DOWN', 'القناة السابقة')}
-                      className="w-full min-h-[50px] flex-1 flex items-center justify-center text-[#F5F5F7] active:scale-90"
+                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
                     >
-                      <ChevronDown className="w-[17px] h-[17px]" />
+                      <ChevronDown className="w-4 h-4" />
                     </button>
                   </div>
                 </div>
@@ -566,9 +601,9 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                       key={b}
                       type="button"
                       onClick={() => setAcBrand(b)}
-                      className={`min-h-[48px] rounded-xl border text-xs font-semibold transition-colors ${
+                      className={`min-h-[44px] rounded-xl border text-xs font-semibold transition-colors ${
                         acBrand === b
-                          ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-white'
+                          ? 'border-sky-500 bg-sky-500/15 text-slate-100'
                           : 'border-[#1E2532] bg-[#131720] text-slate-400 hover:text-slate-200'
                       }`}
                     >
@@ -624,7 +659,7 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                       );
                     }}
                     className={`min-h-[54px] rounded-xl font-bold text-sm text-white active:scale-95 transition-all ${
-                      acState.power ? 'bg-[#FF3B30] hover:opacity-90' : 'bg-[#0A84FF] hover:opacity-90'
+                      acState.power ? 'bg-red-500 hover:bg-red-600' : 'bg-emerald-600 hover:bg-emerald-500'
                     }`}
                   >
                     {acState.power ? 'إطفاء' : 'تشغيل'}
@@ -671,9 +706,11 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                           onClick={() =>
                             emitAcState({ ...acState, power: true, mode: m.key }, `وضع ${m.label}`)
                           }
-                          className={`min-h-[48px] rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                          className={`min-h-[44px] rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
                             active
-                              ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-white'
+                              ? m.key === 'heat'
+                                ? 'border-amber-500 bg-amber-500/15 text-amber-200'
+                                : 'border-sky-500 bg-sky-500/15 text-sky-200'
                               : 'border-[#1E2532] bg-[#131720] text-slate-400 hover:text-slate-200'
                           }`}
                         >
@@ -729,125 +766,32 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
             )}
 
             {/* شريط التبويب السفلي */}
-            <div className="grid grid-cols-2 gap-2.5 p-2.5 bg-[#0A0A0C] border-t border-[#1C1C1E]">
+            <div className="grid grid-cols-2 gap-2 p-2.5 bg-[#131720] border-t border-[#1E2532]">
               <button
                 type="button"
                 onClick={() => setActiveTab('tv')}
-                className={`min-h-[48px] rounded-full text-sm font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
+                className={`min-h-[46px] rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
                   activeTab === 'tv'
-                    ? 'bg-[#0A84FF] text-white font-bold'
-                    : 'bg-[#141416] text-[#8E8E93] hover:text-white'
+                    ? 'bg-[#1A202C] border border-sky-500 text-slate-100'
+                    : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <Tv className="w-4 h-4" />
-                <span>الشاشة</span>
+                <span>ريموت الشاشة</span>
               </button>
               <button
                 type="button"
                 onClick={() => setActiveTab('ac')}
-                className={`min-h-[48px] rounded-full text-sm font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
+                className={`min-h-[46px] rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
                   activeTab === 'ac'
-                    ? 'bg-[#0A84FF] text-white font-bold'
-                    : 'bg-[#141416] text-[#8E8E93] hover:text-white'
+                    ? 'bg-[#1A202C] border border-sky-500 text-slate-100'
+                    : 'text-slate-400 hover:text-slate-200'
                 }`}
               >
                 <Snowflake className="w-4 h-4" />
-                <span>التكييف</span>
+                <span>ريموت التكييف</span>
               </button>
             </div>
-
-            {/* نافذة إعدادات الاتصال والماركة (WifiSheet) */}
-            {showSettingsModal && (
-              <div className="absolute inset-0 z-30 bg-black/80 flex items-center justify-center p-4">
-                <div className="w-full rounded-[22px] bg-[#141416] border border-[#2C2C2E] p-4 space-y-3">
-                  <div className="text-sm font-bold text-[#F5F5F7]">إعدادات الشاشة والاتصال</div>
-                  <div className="grid grid-cols-2 gap-1 p-1 rounded-full bg-[#1C1C1E]">
-                    <button
-                      type="button"
-                      onClick={() => setTransport('ir')}
-                      className={`min-h-[48px] rounded-full text-xs font-semibold flex items-center justify-center gap-1.5 ${
-                        transport === 'ir' ? 'bg-[#0A84FF] text-white' : 'text-[#8E8E93]'
-                      }`}
-                    >
-                      <Radio className="w-3.5 h-3.5" />
-                      <span>أشعة IR</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setTransport('wifi')}
-                      className={`min-h-[48px] rounded-full text-xs font-semibold flex items-center justify-center gap-1.5 ${
-                        transport === 'wifi' ? 'bg-[#0A84FF] text-white' : 'text-[#8E8E93]'
-                      }`}
-                    >
-                      <Wifi className="w-3.5 h-3.5" />
-                      <span>واي فاي</span>
-                    </button>
-                  </div>
-
-                  {transport === 'ir' ? (
-                    <div className="grid grid-cols-2 gap-2">
-                      {(['samsung', 'lg'] as TvIrBrand[]).map((b) => (
-                        <button
-                          key={b}
-                          type="button"
-                          onClick={() => setIrBrand(b)}
-                          className={`min-h-[48px] rounded-full border text-xs font-semibold ${
-                            irBrand === b
-                              ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-white'
-                              : 'border-transparent bg-[#1C1C1E] text-[#8E8E93]'
-                          }`}
-                        >
-                          {b === 'samsung' ? 'Samsung (0x0707)' : 'LG TV (NEC)'}
-                        </button>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="space-y-2">
-                      <div className="grid grid-cols-2 gap-2">
-                        <button
-                          type="button"
-                          onClick={() => setWifiProtocol('roku')}
-                          className={`min-h-[48px] rounded-full border text-xs font-semibold ${
-                            wifiProtocol === 'roku'
-                              ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-white'
-                              : 'border-transparent bg-[#1C1C1E] text-[#8E8E93]'
-                          }`}
-                        >
-                          Roku ECP
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => setWifiProtocol('android_tv')}
-                          className={`min-h-[48px] rounded-full border text-xs font-semibold ${
-                            wifiProtocol === 'android_tv'
-                              ? 'border-[#0A84FF] bg-[#0A84FF]/20 text-white'
-                              : 'border-transparent bg-[#1C1C1E] text-[#8E8E93]'
-                          }`}
-                        >
-                          Android TV
-                        </button>
-                      </div>
-                      <input
-                        type="text"
-                        dir="ltr"
-                        value={wifiIp}
-                        onChange={(e) => setWifiIp(e.target.value)}
-                        aria-label="عنوان IP الشاشة الذكية"
-                        className="w-full min-h-[48px] px-3 rounded-xl bg-[#1C1C1E] text-xs font-mono text-[#F5F5F7] focus:outline-none focus:ring-1 focus:ring-[#0A84FF]"
-                      />
-                    </div>
-                  )}
-
-                  <button
-                    type="button"
-                    onClick={() => setShowSettingsModal(false)}
-                    className="w-full min-h-[48px] rounded-xl bg-[#0A84FF] text-white text-sm font-bold"
-                  >
-                    تم
-                  </button>
-                </div>
-              </div>
-            )}
           </div>
         </div>
       </div>

@@ -1,5 +1,7 @@
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
+const IS_WEB = Platform.OS === 'web';
 const YOUTUBE_API_KEY = 'YOUR_YOUTUBE_API_KEY';
 
 const INVIDIOUS_INSTANCES = [
@@ -10,7 +12,7 @@ const INVIDIOUS_INSTANCES = [
 
 const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
 const STORAGE_LAST_TV_KEY = '@universal_remote_last_tv_config';
-const SAMSUNG_REMOTE_APP_NAME = 'UniversalRemote'; // 15 حرفاً -> Base64 بدون '=' padding
+const SAMSUNG_REMOTE_APP_NAME = 'Remote App';
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
 function encodeBase64(input) {
@@ -137,9 +139,50 @@ class WifiControlService {
     return `${STORAGE_TOKEN_PREFIX}${String(ip || this.ipAddress).trim()}`;
   }
 
+  async _storageGet(key) {
+    if (IS_WEB) {
+      try {
+        return typeof window !== 'undefined' && window.localStorage
+          ? window.localStorage.getItem(key)
+          : null;
+      } catch (_) {
+        return null;
+      }
+    }
+    return AsyncStorage.getItem(key);
+  }
+
+  async _storageSet(key, value) {
+    if (IS_WEB) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.setItem(key, value);
+        }
+      } catch (_) {
+        // ignore
+      }
+      return;
+    }
+    return AsyncStorage.setItem(key, value);
+  }
+
+  async _storageRemove(key) {
+    if (IS_WEB) {
+      try {
+        if (typeof window !== 'undefined' && window.localStorage) {
+          window.localStorage.removeItem(key);
+        }
+      } catch (_) {
+        // ignore
+      }
+      return;
+    }
+    return AsyncStorage.removeItem(key);
+  }
+
   async getSavedToken(ip = this.ipAddress) {
     try {
-      const token = await AsyncStorage.getItem(this._tokenStorageKey(ip));
+      const token = await this._storageGet(this._tokenStorageKey(ip));
       const cleanToken = token ? token.trim() : null;
       if (ip === this.ipAddress) {
         this.authToken = cleanToken;
@@ -159,7 +202,7 @@ class WifiControlService {
     const cleanToken = String(token).trim();
     if (!cleanToken) return;
     try {
-      await AsyncStorage.setItem(this._tokenStorageKey(ip), cleanToken);
+      await this._storageSet(this._tokenStorageKey(ip), cleanToken);
     } catch (_) {
       // الاحتفاظ بالـ Token في الذاكرة في حال تعذر التخزين المؤقت
     }
@@ -172,7 +215,7 @@ class WifiControlService {
 
   async clearToken(ip = this.ipAddress) {
     try {
-      await AsyncStorage.removeItem(this._tokenStorageKey(ip));
+      await this._storageRemove(this._tokenStorageKey(ip));
     } catch (_) {
       // ignore
     }
@@ -185,7 +228,7 @@ class WifiControlService {
 
   async saveLastTvConfig(config) {
     try {
-      await AsyncStorage.setItem(STORAGE_LAST_TV_KEY, JSON.stringify(config));
+      await this._storageSet(STORAGE_LAST_TV_KEY, JSON.stringify(config));
     } catch (_) {
       // ignore
     }
@@ -193,7 +236,7 @@ class WifiControlService {
 
   async loadSavedConfig() {
     try {
-      const raw = await AsyncStorage.getItem(STORAGE_LAST_TV_KEY);
+      const raw = await this._storageGet(STORAGE_LAST_TV_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
         if (parsed && parsed.ipAddress) {
@@ -255,6 +298,18 @@ class WifiControlService {
 
   async connect() {
     this.manualDisconnect = false;
+
+    if (IS_WEB) {
+      const mockToken = (await this.getSavedToken(this.ipAddress)) || 'web-preview-token';
+      if (this.protocol === 'samsung_tizen') {
+        await this.saveToken(this.ipAddress, mockToken);
+      }
+      this.isConnected = true;
+      this.pairingState = 'paired';
+      this._notify();
+      return { connected: true, protocol: this.protocol, token: mockToken, mocked: true };
+    }
+
     if (this.protocol === 'roku') {
       return this._verifyRokuRest();
     }
@@ -336,7 +391,7 @@ class WifiControlService {
   _buildWebSocketUrl(portOverride, tokenOverride) {
     const targetPort = Number(portOverride || this.port);
     if (this.protocol === 'samsung_tizen') {
-      const encodedName = encodeURIComponent(encodeBase64(SAMSUNG_REMOTE_APP_NAME));
+      const encodedName = encodeBase64(SAMSUNG_REMOTE_APP_NAME);
       const scheme = targetPort === 8002 ? 'wss' : 'ws';
       const tokenPart = tokenOverride
         ? `&token=${encodeURIComponent(tokenOverride)}`
@@ -671,6 +726,42 @@ class WifiControlService {
     this.scanAborted = false;
     this._notify();
 
+    if (IS_WEB) {
+      const mockDevices = [
+        {
+          ip: `${cleanSubnet}.50`,
+          protocol: 'samsung_tizen',
+          port: 8002,
+          fallbackPort: 8001,
+          dialPort: 8080,
+          name: 'Samsung QLED 65" (معاينة)',
+          modelName: 'QE65Q80C Tizen',
+          tokenAuthSupport: true,
+        },
+        {
+          ip: `${cleanSubnet}.62`,
+          protocol: 'android_tv',
+          port: 8080,
+          dialPort: 8008,
+          name: 'Android TV (معاينة)',
+          modelName: 'Google TV 4K',
+          tokenAuthSupport: false,
+        },
+      ];
+      await new Promise((resolve) => setTimeout(resolve, 350));
+      if (!this.scanAborted) {
+        if (onDeviceFound) {
+          mockDevices.forEach((d) => onDeviceFound(d));
+        }
+        if (onProgress) {
+          onProgress({ scanned: 254, total: 254, foundDevices: mockDevices });
+        }
+      }
+      this.isScanning = false;
+      this._notify();
+      return this.scanAborted ? [] : mockDevices;
+    }
+
     const candidateIps = [];
     if (this.ipAddress && this.ipAddress.startsWith(`${cleanSubnet}.`)) {
       candidateIps.push(this.ipAddress);
@@ -751,6 +842,13 @@ class WifiControlService {
       throw new Error(`الأمر ${commandKey} غير مدعوم عبر الواي فاي.`);
     }
 
+    if (IS_WEB) {
+      this.isConnected = true;
+      this.pairingState = 'paired';
+      this._notify();
+      return { sent: true, mocked: true, protocol: this.protocol, key: commandKey };
+    }
+
     if (this.protocol === 'roku') {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 3000);
@@ -801,6 +899,10 @@ class WifiControlService {
    * فتح تطبيق يوتيوب مباشرة على الشاشة الذكية عبر DIAL / REST
    */
   async launchYouTube() {
+    if (IS_WEB) {
+      return { launched: true, mocked: true, endpoint: `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube` };
+    }
+
     if (this.protocol === 'roku') {
       const url = `http://${this.ipAddress}:${this.port}/launch/837`;
       const res = await this._postWithTimeout(url, { method: 'POST' });
@@ -847,6 +949,10 @@ class WifiControlService {
   async castYouTubeVideo(videoId) {
     if (!videoId) {
       throw new Error('معرف الفيديو غير صالح.');
+    }
+
+    if (IS_WEB) {
+      return { casted: true, videoId, mocked: true };
     }
 
     if (this.protocol === 'roku') {
@@ -962,6 +1068,25 @@ class WifiControlService {
       } catch (_) {
         // الانتقال تلقائياً إلى الخادم البديل
       }
+    }
+
+    if (IS_WEB) {
+      return [
+        {
+          videoId: 'dQw4w9WgXcQ',
+          title: `معاينة نتيجة بحث: ${cleanQuery}`,
+          channelTitle: 'YouTube Preview',
+          thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg',
+          durationText: '3:32',
+        },
+        {
+          videoId: 'aqz-KE-bpKQ',
+          title: `فيديو تجريبي للبث المباشر (${cleanQuery})`,
+          channelTitle: 'Smart TV Cast',
+          thumbnailUrl: 'https://i.ytimg.com/vi/aqz-KE-bpKQ/mqdefault.jpg',
+          durationText: '10:34',
+        },
+      ];
     }
 
     throw new Error('تعذر جلب نتائج البحث حالياً. تحقق من اتصال الإنترنت وأعد المحاولة.');

@@ -1,14 +1,46 @@
 import tailwindcss from '@tailwindcss/vite';
 import react from '@vitejs/plugin-react';
+import { transform as esbuildTransform } from 'esbuild';
 import path from 'path';
-import {defineConfig} from 'vite';
+import { defineConfig, type Plugin } from 'vite';
+
+function rnJsxPlugin(): Plugin {
+  const rootAppJs = path.resolve(__dirname, 'App.js');
+  const wifiServiceJs = path.resolve(__dirname, 'src/services/WifiControl.js');
+
+  return {
+    name: 'rn-jsx-loader',
+    enforce: 'pre',
+    async transform(code, id) {
+      const cleanId = id.split('?')[0];
+      if (cleanId === rootAppJs || cleanId === wifiServiceJs) {
+        const result = await esbuildTransform(code, {
+          loader: 'jsx',
+          jsx: 'automatic',
+          sourcefile: cleanId,
+          sourcemap: true,
+        });
+        return {
+          code: result.code,
+          map: result.map,
+        };
+      }
+      return null;
+    },
+  };
+}
 
 export default defineConfig(() => {
   return {
-    plugins: [react(), tailwindcss()],
+    plugins: [rnJsxPlugin(), react(), tailwindcss()],
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),
+        'react-native': path.resolve(__dirname, 'src/web-shims/react-native-shim.tsx'),
+        '@react-native-async-storage/async-storage': path.resolve(
+          __dirname,
+          'src/web-shims/async-storage-shim.ts'
+        ),
       },
     },
     server: {

@@ -6,12 +6,17 @@ import { defineConfig, type Plugin } from 'vite';
 
 function rootAppJsxPlugin(): Plugin {
   const rootAppPath = path.resolve(__dirname, 'App.js');
+  const rnComponentsDir = path.resolve(__dirname, 'src/components') + path.sep;
   return {
     name: 'root-app-js-jsx',
     enforce: 'pre',
     transform(code, id) {
       const cleanId = id.split('?')[0];
-      if (path.resolve(cleanId) === rootAppPath) {
+      const resolvedId = path.resolve(cleanId);
+      if (
+        resolvedId === rootAppPath ||
+        (resolvedId.startsWith(rnComponentsDir) && resolvedId.endsWith('.js'))
+      ) {
         const result = transformSync(code, {
           loader: 'jsx',
           jsx: 'automatic',

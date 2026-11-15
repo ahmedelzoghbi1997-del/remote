@@ -50,7 +50,7 @@ const WIFI_KEY_MAP = {
   MENU: { roku: 'Info', androidTv: 'KEYCODE_MENU', tizen: 'KEY_MENU' },
   INPUT: { roku: 'InputHDMI1', androidTv: 'KEYCODE_TV_INPUT', tizen: 'KEY_SOURCE' },
   YOUTUBE: { roku: 'Home', androidTv: 'KEYCODE_MEDIA_TOP_MENU', tizen: 'KEY_APPS' },
-  NETFLIX: { roku: 'Home', androidTv: 'KEYCODE_BUTTON_1', tizen: 'KEY_APPS' },
+  NETFLIX: { roku: 'Netflix', androidTv: 'KEYCODE_BUTTON_1', tizen: 'KEY_NETFLIX' },
 };
 
 function formatDurationSeconds(seconds) {

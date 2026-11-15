@@ -152,6 +152,11 @@ export const I18nManager = {
   forceRTL: () => {},
 };
 
+export const Vibration = {
+  vibrate: () => {},
+  cancel: () => {},
+};
+
 export const StyleSheet = {
   create<T extends Record<string, Record<string, any>>>(styles: T): T {
     return styles;
@@ -240,8 +245,10 @@ export const Text: React.FC<any> = ({ style, numberOfLines, children, ...rest })
 
 export const TouchableOpacity: React.FC<any> = ({
   style,
-  activeOpacity = 0.7,
+  activeOpacity = 0.55,
   disabled,
+  accessibilityLabel,
+  accessibilityRole = 'button',
   onPress,
   onPressIn,
   onPressOut,
@@ -259,11 +266,13 @@ export const TouchableOpacity: React.FC<any> = ({
 
   if (pressed && !disabled) {
     css.opacity = typeof css.opacity === 'number' ? css.opacity * activeOpacity : activeOpacity;
+    css.transform = css.transform ? `${css.transform} scale(0.96)` : 'scale(0.96)';
   }
 
   return (
     <div
-      role="button"
+      role={accessibilityRole}
+      aria-label={accessibilityLabel}
       tabIndex={disabled ? -1 : 0}
       aria-disabled={Boolean(disabled)}
       style={css}

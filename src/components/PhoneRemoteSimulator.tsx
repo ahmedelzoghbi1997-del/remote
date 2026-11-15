@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ArrowDown,
   ArrowLeft,
@@ -16,14 +16,9 @@ import {
   Power,
   Radio,
   Snowflake,
-  Sun,
   Tv,
   Volume2,
-  VolumeX,
   Wifi,
-  Wind,
-  Droplets,
-  Sparkles,
 } from 'lucide-react';
 
 interface PhoneRemoteSimulatorProps {
@@ -150,6 +145,7 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
   const [wifiProtocol, setWifiProtocol] = useState<WifiProtocol>('roku');
   const [wifiIp, setWifiIp] = useState('192.168.1.50');
   const [acBrand, setAcBrand] = useState<AcBrand>('gree');
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
 
   // Simulated Virtual TV State
   const [tvState, setTvState] = useState({
@@ -356,244 +352,260 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
           </div>
 
           {/* شاشة التطبيق داخل الهاتف */}
-          <div className="rounded-[24px] bg-[#0B0D11] border border-[#1E2532] overflow-hidden flex flex-col">
-            {/* شريط عنوان تطبيق الأندرويد */}
-            <div className="flex items-center justify-between px-4 py-3 border-b border-[#1E2532]">
-              <span className="font-display font-bold text-base text-slate-100">الريموت الشامل</span>
-              <span className="text-xs text-slate-400">
-                {activeTab === 'tv' && transport === 'wifi'
-                  ? 'وضع الشبكة المحلية'
-                  : 'ConsumerIrManager'}
-              </span>
+          <div className="rounded-[24px] bg-[#000000] border border-[#232326] overflow-hidden flex flex-col relative">
+            {/* [أ] Header مدمج ارتفاع 44 */}
+            <div className="h-[44px] flex items-center justify-between px-3">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  aria-label="الطاقة"
+                  onClick={() =>
+                    activeTab === 'ac'
+                      ? emitAcState(
+                          { ...acState, power: !acState.power },
+                          !acState.power ? 'تشغيل المكيف' : 'إطفاء المكيف'
+                        )
+                      : sendTvCommand('POWER', 'الطاقة')
+                  }
+                  className="w-[40px] h-[40px] rounded-full bg-[#FF453A] active:scale-95 active:opacity-55 text-white flex items-center justify-center shrink-0 transition-all"
+                >
+                  <Power className="w-[18px] h-[18px]" />
+                </button>
+                <span className="font-display font-bold text-[17px] text-white">ريموت</span>
+              </div>
+
+              <div className="flex items-center gap-1.5">
+                <span
+                  className={`w-[6px] h-[6px] rounded-full ${
+                    transport === 'ir' || tvState.power ? 'bg-[#2C8EF8]' : 'bg-[#5A5A5E]'
+                  }`}
+                />
+                <span className="text-[11px] font-medium tracking-[0.3px] text-[#8A8A8E]">
+                  {transport === 'ir' ? 'IR جاهز' : tvState.power ? 'متصل Wi-Fi' : 'غير متصل'}
+                </span>
+              </div>
             </div>
 
-            {/* شريط تأكيد آخر أمر */}
-            <div
-              className={`mx-4 mt-3 px-3 py-2 rounded-lg border text-xs text-center truncate transition-colors ${
-                lastSignal.transport === 'ir' || activeTab === 'ac'
-                  ? 'bg-red-500/10 border-red-500/30 text-red-200'
-                  : 'bg-sky-500/10 border-sky-500/30 text-sky-200'
-              }`}
-            >
-              {lastSignal.commandLabel} · {lastSignal.targetLabel}
+            {/* شريط إشعار رفيع ارتفاع 28 */}
+            <div className="h-[28px] px-3 flex items-center">
+              <div className="w-full h-[24px] rounded-[14px] border border-[#2C8EF8] bg-[#2C8EF8]/12 px-3 flex items-center justify-center">
+                <span className="text-[11px] font-medium text-white truncate">
+                  {lastSignal.commandLabel}
+                </span>
+              </div>
             </div>
 
             {/* محتوى التبويب النشط */}
             {activeTab === 'tv' ? (
-              <div className="p-4 space-y-4">
-                {/* مبدل IR / Wi-Fi */}
-                <div className="grid grid-cols-2 gap-1 p-1 rounded-xl bg-[#131720] border border-[#1E2532]">
+              <div className="px-3 pt-1 pb-3 flex flex-col justify-between gap-3.5">
+                {/* [ب] شريط الوضع (IR / Wi-Fi) — كبسولة مزدوجة ارتفاع 38 */}
+                <div className="h-[38px] rounded-full bg-[#0E0E10] border border-[#232326] p-[3px] grid grid-cols-2 gap-1">
                   <button
                     type="button"
+                    aria-label="وضع الأشعة تحت الحمراء"
                     onClick={() => setTransport('ir')}
-                    className={`min-h-[44px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                    className={`rounded-full text-[11px] tracking-[0.3px] border transition-all active:opacity-55 ${
                       transport === 'ir'
-                        ? 'bg-red-500 text-white'
-                        : 'text-slate-400 hover:text-slate-100'
+                        ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white font-semibold'
+                        : 'border-transparent text-[#8A8A8E] font-medium'
                     }`}
                   >
-                    <Radio className="w-3.5 h-3.5" />
-                    <span>أشعة IR</span>
+                    IR
                   </button>
                   <button
                     type="button"
+                    aria-label="وضع الواي فاي"
                     onClick={() => setTransport('wifi')}
-                    className={`min-h-[44px] rounded-lg text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                    className={`rounded-full text-[11px] tracking-[0.3px] border transition-all active:opacity-55 ${
                       transport === 'wifi'
-                        ? 'bg-sky-500 text-white'
-                        : 'text-slate-400 hover:text-slate-100'
+                        ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white font-semibold'
+                        : 'border-transparent text-[#8A8A8E] font-medium'
                     }`}
                   >
-                    <Wifi className="w-3.5 h-3.5" />
-                    <span>واي فاي</span>
+                    Wi-Fi
                   </button>
                 </div>
 
-                {/* اختيار الماركة أو البروتوكول */}
+                {/* [ج] صف الماركة أو الجهاز — ارتفاع 36 فقط */}
                 {transport === 'ir' ? (
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="h-[36px] grid grid-cols-2 gap-2">
                     {(['samsung', 'lg'] as TvIrBrand[]).map((b) => (
                       <button
                         key={b}
                         type="button"
                         onClick={() => setIrBrand(b)}
-                        className={`min-h-[44px] rounded-xl border text-xs font-semibold transition-colors ${
+                        className={`h-[36px] rounded-full border text-[14px] font-semibold transition-all active:opacity-55 ${
                           irBrand === b
-                            ? 'border-sky-500 bg-sky-500/15 text-slate-100'
-                            : 'border-[#1E2532] bg-[#131720] text-slate-400 hover:text-slate-200'
+                            ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white'
+                            : 'bg-[#161618] border-[#232326] text-[#8A8A8E]'
                         }`}
                       >
-                        {b === 'samsung' ? 'Samsung TV' : 'LG TV'}
+                        {b === 'samsung' ? 'Samsung' : 'LG'}
                       </button>
                     ))}
                   </div>
                 ) : (
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setWifiProtocol((p) => (p === 'roku' ? 'android_tv' : 'roku'))
-                      }
-                      className="min-h-[44px] px-3 rounded-xl border border-[#1E2532] bg-[#131720] text-xs font-semibold text-sky-400 hover:bg-[#1A202C] whitespace-nowrap"
-                    >
-                      {wifiProtocol === 'roku' ? 'Roku ECP' : 'Android TV'}
-                    </button>
-                    <input
-                      type="text"
-                      dir="ltr"
-                      value={wifiIp}
-                      onChange={(e) => setWifiIp(e.target.value)}
-                      aria-label="عنوان IP الشاشة الذكية"
-                      className="flex-1 min-h-[44px] px-3 rounded-xl border border-[#1E2532] bg-[#131720] text-xs font-mono text-slate-200 focus:outline-none focus:border-sky-500"
-                    />
-                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsModal(true)}
+                    className="h-[36px] w-full rounded-full bg-[#161618] border border-[#232326] px-3 flex items-center justify-between gap-2 transition-all active:opacity-55"
+                  >
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`w-[6px] h-[6px] rounded-full shrink-0 ${
+                          tvState.power ? 'bg-[#2C8EF8]' : 'bg-[#5A5A5E]'
+                        }`}
+                      />
+                      <span className="text-[11px] font-medium text-white truncate">
+                        {wifiIp} · {wifiProtocol === 'roku' ? 'Roku ECP' : 'Android TV'}
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-medium text-[#2C8EF8] shrink-0">إعداد</span>
+                  </button>
                 )}
 
-                {/* صف الطاقة والمصدر والكتم */}
-                <div className="grid grid-cols-3 gap-2.5">
-                  <button
-                    type="button"
-                    onClick={() => sendTvCommand('POWER', 'الطاقة')}
-                    className="min-h-[48px] rounded-xl bg-red-500 hover:bg-red-600 active:scale-[0.97] text-white font-semibold text-xs flex items-center justify-center gap-1.5 transition-all"
-                  >
-                    <Power className="w-4 h-4" />
-                    <span>طاقة</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => sendTvCommand('INPUT', 'تبديل المصدر')}
-                    className="min-h-[48px] rounded-xl bg-[#1A202C] hover:bg-[#232B3A] active:scale-[0.97] border border-[#263042] text-slate-100 font-semibold text-xs transition-all"
-                  >
-                    المصدر
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => sendTvCommand('MUTE', 'كتم الصوت')}
-                    className="min-h-[48px] rounded-xl bg-[#1A202C] hover:bg-[#232B3A] active:scale-[0.97] border border-[#263042] text-slate-100 font-semibold text-xs flex items-center justify-center gap-1 transition-all"
-                  >
-                    {tvState.muted ? <VolumeX className="w-4 h-4 text-amber-400" /> : <Volume2 className="w-4 h-4" />}
-                    <span>كتم</span>
-                  </button>
-                </div>
-
-                {/* لوحة D-Pad الدائرية */}
-                <div className="mx-auto w-[208px] h-[208px] rounded-full bg-[#131720] border border-[#232B3A] p-2.5 flex flex-col items-center justify-between">
-                  <button
-                    type="button"
-                    aria-label="أعلى"
-                    onClick={() => sendTvCommand('UP', 'أعلى')}
-                    className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
-                  >
-                    <ArrowUp className="w-4 h-4" />
-                  </button>
-                  <div className="w-full flex items-center justify-between">
-                    <button
-                      type="button"
-                      aria-label="يمين"
-                      onClick={() => sendTvCommand('RIGHT', 'يمين')}
-                      className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
-                    >
-                      <ArrowRight className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => sendTvCommand('OK', 'موافق')}
-                      className="w-[72px] h-[72px] rounded-full bg-sky-500 hover:bg-sky-400 active:scale-95 text-white font-bold text-sm transition-all"
-                    >
-                      موافق
-                    </button>
-                    <button
-                      type="button"
-                      aria-label="يسار"
-                      onClick={() => sendTvCommand('LEFT', 'يسار')}
-                      className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
-                    >
-                      <ArrowLeft className="w-4 h-4" />
-                    </button>
+                {/* [د] الكتلة المركزية: [صوت 60×186] [D-Pad 200×200] [قناة 60×186] */}
+                <div className="flex items-center justify-center gap-[12px]">
+                  {/* كبسولة الصوت (يمين في RTL) */}
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] font-medium tracking-[0.3px] text-[#8A8A8E]">
+                      صوت
+                    </span>
+                    <div className="w-[60px] h-[186px] rounded-[30px] bg-[#161618] border border-[#232326] flex flex-col items-center justify-between overflow-hidden">
+                      <button
+                        type="button"
+                        aria-label="رفع الصوت"
+                        onClick={() => sendTvCommand('VOL_UP', 'رفع الصوت')}
+                        className="w-full flex-1 flex items-center justify-center text-white active:scale-95 active:opacity-55 transition-all"
+                      >
+                        <Plus className="w-[18px] h-[18px]" />
+                      </button>
+                      <Volume2 className="w-[20px] h-[20px] text-[#5A5A5E] pointer-events-none" />
+                      <button
+                        type="button"
+                        aria-label="خفض الصوت"
+                        onClick={() => sendTvCommand('VOL_DOWN', 'خفض الصوت')}
+                        className="w-full flex-1 flex items-center justify-center text-white active:scale-95 active:opacity-55 transition-all"
+                      >
+                        <Minus className="w-[18px] h-[18px]" />
+                      </button>
+                    </div>
                   </div>
-                  <button
-                    type="button"
-                    aria-label="أسفل"
-                    onClick={() => sendTvCommand('DOWN', 'أسفل')}
-                    className="w-12 h-12 rounded-full bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-200 flex items-center justify-center transition-all"
-                  >
-                    <ArrowDown className="w-4 h-4" />
-                  </button>
+
+                  {/* دائرة D-Pad 200×200 */}
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] opacity-0 select-none">·</span>
+                    <div className="w-[200px] h-[200px] rounded-full bg-[#161618] border border-[#232326] flex flex-col items-center justify-center overflow-hidden">
+                      <button
+                        type="button"
+                        aria-label="أعلى"
+                        onClick={() => sendTvCommand('UP', 'أعلى')}
+                        className="w-[88px] h-[62px] flex items-center justify-center text-[#8A8A8E] hover:text-white active:scale-95 active:opacity-55 transition-all"
+                      >
+                        <ArrowUp className="w-5 h-5" />
+                      </button>
+                      <div className="flex items-center justify-center">
+                        <button
+                          type="button"
+                          aria-label="يمين"
+                          onClick={() => sendTvCommand('RIGHT', 'يمين')}
+                          className="w-[62px] h-[88px] flex items-center justify-center text-[#8A8A8E] hover:text-white active:scale-95 active:opacity-55 transition-all"
+                        >
+                          <ArrowRight className="w-5 h-5" />
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="موافق"
+                          onClick={() => sendTvCommand('OK', 'موافق')}
+                          className="w-[72px] h-[72px] rounded-full bg-[#000000] border-[1.5px] border-[#2C8EF8] text-white font-extrabold text-[14px] shrink-0 active:scale-95 active:opacity-55 transition-all"
+                        >
+                          OK
+                        </button>
+                        <button
+                          type="button"
+                          aria-label="يسار"
+                          onClick={() => sendTvCommand('LEFT', 'يسار')}
+                          className="w-[62px] h-[88px] flex items-center justify-center text-[#8A8A8E] hover:text-white active:scale-95 active:opacity-55 transition-all"
+                        >
+                          <ArrowLeft className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        aria-label="أسفل"
+                        onClick={() => sendTvCommand('DOWN', 'أسفل')}
+                        className="w-[88px] h-[62px] flex items-center justify-center text-[#8A8A8E] hover:text-white active:scale-95 active:opacity-55 transition-all"
+                      >
+                        <ArrowDown className="w-5 h-5" />
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* كبسولة القناة (يسار في RTL) */}
+                  <div className="flex flex-col items-center gap-1">
+                    <span className="text-[10px] font-medium tracking-[0.3px] text-[#8A8A8E]">
+                      قناة
+                    </span>
+                    <div className="w-[60px] h-[186px] rounded-[30px] bg-[#161618] border border-[#232326] flex flex-col items-center justify-between overflow-hidden">
+                      <button
+                        type="button"
+                        aria-label="قناة أعلى"
+                        onClick={() => sendTvCommand('CH_UP', 'قناة أعلى')}
+                        className="w-full flex-1 flex items-center justify-center text-white active:scale-95 active:opacity-55 transition-all"
+                      >
+                        <ChevronUp className="w-[18px] h-[18px]" />
+                      </button>
+                      <Tv className="w-[20px] h-[20px] text-[#5A5A5E] pointer-events-none" />
+                      <button
+                        type="button"
+                        aria-label="قناة أسفل"
+                        onClick={() => sendTvCommand('CH_DOWN', 'قناة أسفل')}
+                        className="w-full flex-1 flex items-center justify-center text-white active:scale-95 active:opacity-55 transition-all"
+                      >
+                        <ChevronDown className="w-[18px] h-[18px]" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
 
-                {/* أزرار التنقل */}
-                <div className="grid grid-cols-3 gap-2.5">
+                {/* [هـ] شريط سفلي واحد — 4 أزرار دائرية 52×52 */}
+                <div className="flex items-center justify-center gap-[20px]">
                   <button
                     type="button"
+                    aria-label="رجوع"
                     onClick={() => sendTvCommand('BACK', 'رجوع')}
-                    className="min-h-[44px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5"
+                    className="w-[52px] h-[52px] rounded-full bg-[#161618] border border-[#232326] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
                   >
-                    <CornerUpLeft className="w-3.5 h-3.5" />
-                    <span>رجوع</span>
+                    <CornerUpLeft className="w-5 h-5" />
                   </button>
                   <button
                     type="button"
+                    aria-label="الرئيسية"
                     onClick={() => sendTvCommand('HOME', 'الرئيسية')}
-                    className="min-h-[44px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5"
+                    className="w-[52px] h-[52px] rounded-full bg-[#161618] border border-[#232326] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
                   >
-                    <Home className="w-3.5 h-3.5" />
-                    <span>الرئيسية</span>
+                    <Home className="w-5 h-5" />
                   </button>
                   <button
                     type="button"
+                    aria-label="القائمة"
                     onClick={() => sendTvCommand('MENU', 'القائمة')}
-                    className="min-h-[44px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] text-slate-200 text-xs font-medium flex items-center justify-center gap-1.5"
+                    className="w-[52px] h-[52px] rounded-full bg-[#161618] border border-[#232326] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
                   >
-                    <Menu className="w-3.5 h-3.5" />
-                    <span>القائمة</span>
+                    <Menu className="w-5 h-5" />
                   </button>
-                </div>
-
-                {/* عمودا الصوت والقنوات */}
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="rounded-2xl bg-[#131720] border border-[#1E2532] p-2 flex flex-col items-center gap-2">
-                    <button
-                      type="button"
-                      aria-label="رفع الصوت"
-                      onClick={() => sendTvCommand('VOL_UP', 'رفع الصوت')}
-                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                    <span className="text-[11px] font-medium text-slate-400">الصوت</span>
-                    <button
-                      type="button"
-                      aria-label="خفض الصوت"
-                      onClick={() => sendTvCommand('VOL_DOWN', 'خفض الصوت')}
-                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
-                    >
-                      <Minus className="w-4 h-4" />
-                    </button>
-                  </div>
-
-                  <div className="rounded-2xl bg-[#131720] border border-[#1E2532] p-2 flex flex-col items-center gap-2">
-                    <button
-                      type="button"
-                      aria-label="القناة التالية"
-                      onClick={() => sendTvCommand('CH_UP', 'القناة التالية')}
-                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
-                    >
-                      <ChevronUp className="w-4 h-4" />
-                    </button>
-                    <span className="text-[11px] font-medium text-slate-400">القناة</span>
-                    <button
-                      type="button"
-                      aria-label="القناة السابقة"
-                      onClick={() => sendTvCommand('CH_DOWN', 'القناة السابقة')}
-                      className="w-full min-h-[44px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 text-slate-100 flex items-center justify-center transition-all"
-                    >
-                      <ChevronDown className="w-4 h-4" />
-                    </button>
-                  </div>
+                  <button
+                    type="button"
+                    aria-label="المصدر"
+                    onClick={() => sendTvCommand('INPUT', 'المصدر')}
+                    className="w-[52px] h-[52px] rounded-full bg-[#161618] border border-[#232326] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
+                  >
+                    <Radio className="w-5 h-5" />
+                  </button>
                 </div>
               </div>
             ) : (
-              <div className="p-4 space-y-4">
+              <div className="p-3 space-y-3.5">
                 {/* ماركة المكيف */}
                 <div className="grid grid-cols-2 gap-2">
                   {(['gree', 'carrier'] as AcBrand[]).map((b) => (
@@ -601,10 +613,10 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                       key={b}
                       type="button"
                       onClick={() => setAcBrand(b)}
-                      className={`min-h-[44px] rounded-xl border text-xs font-semibold transition-colors ${
+                      className={`h-[38px] rounded-full border text-[14px] font-semibold transition-all active:opacity-55 ${
                         acBrand === b
-                          ? 'border-sky-500 bg-sky-500/15 text-slate-100'
-                          : 'border-[#1E2532] bg-[#131720] text-slate-400 hover:text-slate-200'
+                          ? 'border-[#2C8EF8] bg-[#2C8EF8]/15 text-white'
+                          : 'border-[#232326] bg-[#161618] text-[#8A8A8E]'
                       }`}
                     >
                       {b === 'gree' ? 'Gree AC' : 'Carrier AC'}
@@ -614,24 +626,24 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
 
                 {/* شاشة التكييف الرقمية */}
                 <div
-                  className={`rounded-2xl bg-[#0F172A] border border-[#1E293B] p-5 text-center space-y-2 transition-opacity ${
-                    acState.power ? 'opacity-100' : 'opacity-50'
+                  className={`rounded-[18px] bg-[#0E0E10] border border-[#232326] p-4 text-center space-y-1.5 transition-opacity ${
+                    acState.power ? 'opacity-100' : 'opacity-45'
                   }`}
                 >
-                  <div className="flex items-center justify-between text-xs text-slate-400">
+                  <div className="flex items-center justify-between text-[11px] font-medium text-[#8A8A8E]">
                     <span>الوضع: {currentAcModeLabel}</span>
                     <span>المروحة: {FAN_LABELS[acState.fanSpeed]}</span>
                   </div>
-                  <div className="text-5xl font-mono font-bold tabular-nums text-slate-100 tracking-tight py-1">
+                  <div className="text-[64px] leading-none font-light tabular-nums text-white py-1">
                     {acState.power ? `${acState.temperature}°C` : 'OFF'}
                   </div>
-                  <div className="text-xs text-sky-400">
+                  <div className="text-[11px] font-medium text-[#8A8A8E]">
                     توجيه الهواء: {acState.swing ? 'متحرك' : 'ثابت'} · IR 38kHz
                   </div>
                 </div>
 
-                {/* أزرار الطاقة ورفع/خفض الحرارة */}
-                <div className="grid grid-cols-3 gap-2.5">
+                {/* صف الطاقة والحرارة: [−] [زر دائري 64px] [+] */}
+                <div className="flex items-center justify-center gap-4">
                   <button
                     type="button"
                     aria-label="خفض الحرارة"
@@ -644,13 +656,14 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                         );
                       }
                     }}
-                    className="min-h-[54px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 border border-[#263042] text-slate-100 flex items-center justify-center transition-all"
+                    className="w-[64px] h-[64px] rounded-full bg-[#161618] border border-[#232326] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
                   >
                     <Minus className="w-5 h-5" />
                   </button>
 
                   <button
                     type="button"
+                    aria-label="الطاقة"
                     onClick={() => {
                       const nextPower = !acState.power;
                       emitAcState(
@@ -658,11 +671,9 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                         nextPower ? 'تشغيل المكيف' : 'إطفاء المكيف'
                       );
                     }}
-                    className={`min-h-[54px] rounded-xl font-bold text-sm text-white active:scale-95 transition-all ${
-                      acState.power ? 'bg-red-500 hover:bg-red-600' : 'bg-emerald-600 hover:bg-emerald-500'
-                    }`}
+                    className="w-[64px] h-[64px] rounded-full bg-[#FF453A] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
                   >
-                    {acState.power ? 'إطفاء' : 'تشغيل'}
+                    <Power className="w-6 h-6" />
                   </button>
 
                   <button
@@ -677,28 +688,18 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                         );
                       }
                     }}
-                    className="min-h-[54px] rounded-xl bg-[#1A202C] hover:bg-[#252E3E] active:scale-95 border border-[#263042] text-slate-100 flex items-center justify-center transition-all"
+                    className="w-[64px] h-[64px] rounded-full bg-[#161618] border border-[#232326] text-white flex items-center justify-center active:scale-95 active:opacity-55 transition-all"
                   >
                     <Plus className="w-5 h-5" />
                   </button>
                 </div>
 
-                {/* أوضاع التشغيل */}
-                <div className="space-y-2">
-                  <div className="text-xs font-medium text-slate-400">وضع التشغيل</div>
-                  <div className="grid grid-cols-3 gap-2">
+                {/* شريط أوضاع التشغيل الأفقي الموحّد */}
+                <div className="space-y-1">
+                  <div className="text-[11px] font-medium text-[#8A8A8E]">وضع التشغيل</div>
+                  <div className="flex bg-[#0E0E10] border border-[#232326] rounded-[14px] p-[3px] gap-[3px]">
                     {AC_MODES.map((m) => {
                       const active = acState.mode === m.key;
-                      const ModeIcon =
-                        m.key === 'cool'
-                          ? Snowflake
-                          : m.key === 'heat'
-                          ? Sun
-                          : m.key === 'dry'
-                          ? Droplets
-                          : m.key === 'fan'
-                          ? Wind
-                          : Sparkles;
                       return (
                         <button
                           key={m.key}
@@ -706,15 +707,12 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                           onClick={() =>
                             emitAcState({ ...acState, power: true, mode: m.key }, `وضع ${m.label}`)
                           }
-                          className={`min-h-[44px] rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                          className={`flex-1 h-[40px] rounded-[11px] border text-[11px] flex items-center justify-center transition-all active:opacity-55 ${
                             active
-                              ? m.key === 'heat'
-                                ? 'border-amber-500 bg-amber-500/15 text-amber-200'
-                                : 'border-sky-500 bg-sky-500/15 text-sky-200'
-                              : 'border-[#1E2532] bg-[#131720] text-slate-400 hover:text-slate-200'
+                              ? 'border-[#2C8EF8] bg-[#2C8EF8]/15 text-white font-semibold'
+                              : 'border-transparent text-[#8A8A8E] font-medium'
                           }`}
                         >
-                          <ModeIcon className="w-3.5 h-3.5" />
                           <span>{m.label}</span>
                         </button>
                       );
@@ -723,7 +721,7 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                 </div>
 
                 {/* المروحة والتأرجح */}
-                <div className="grid grid-cols-2 gap-2.5">
+                <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
                     onClick={() => {
@@ -734,13 +732,13 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                         `المروحة: ${FAN_LABELS[nextFan]}`
                       );
                     }}
-                    className="min-h-[58px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] p-2.5 flex flex-col items-center justify-center gap-1"
+                    className="h-[58px] rounded-[14px] bg-[#161618] border border-[#232326] p-2 flex flex-col items-center justify-center gap-0.5 active:opacity-55"
                   >
-                    <span className="text-[11px] text-slate-400 flex items-center gap-1">
-                      <Fan className="w-3.5 h-3.5" />
+                    <span className="text-[11px] text-[#8A8A8E] flex items-center gap-1">
+                      <Fan className="w-3 h-3" />
                       سرعة المروحة
                     </span>
-                    <span className="text-xs font-bold text-slate-100">
+                    <span className="text-[13px] font-semibold text-white">
                       {FAN_LABELS[acState.fanSpeed]}
                     </span>
                   </button>
@@ -754,10 +752,10 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
                         nextSwing ? 'تفعيل التأرجح' : 'إيقاف التأرجح'
                       );
                     }}
-                    className="min-h-[58px] rounded-xl bg-[#131720] hover:bg-[#1A202C] border border-[#1E2532] p-2.5 flex flex-col items-center justify-center gap-1"
+                    className="h-[58px] rounded-[14px] bg-[#161618] border border-[#232326] p-2 flex flex-col items-center justify-center gap-0.5 active:opacity-55"
                   >
-                    <span className="text-[11px] text-slate-400">تأرجح الريش</span>
-                    <span className="text-xs font-bold text-slate-100">
+                    <span className="text-[11px] text-[#8A8A8E]">تأرجح الريش</span>
+                    <span className="text-[13px] font-semibold text-white">
                       {acState.swing ? 'يعمل' : 'متوقف'}
                     </span>
                   </button>
@@ -765,33 +763,130 @@ export default function PhoneRemoteSimulator({ onSelectSourceFile }: PhoneRemote
               </div>
             )}
 
-            {/* شريط التبويب السفلي */}
-            <div className="grid grid-cols-2 gap-2 p-2.5 bg-[#131720] border-t border-[#1E2532]">
+            {/* [و] شريط التبويب السفلي بارتفاع 52 وحد علوي فقط */}
+            <div className="h-[52px] grid grid-cols-2 gap-2 px-3 py-1.5 bg-[#000000] border-t border-[#232326]">
               <button
                 type="button"
                 onClick={() => setActiveTab('tv')}
-                className={`min-h-[46px] rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
+                className={`rounded-full border text-[14px] font-semibold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap active:opacity-55 ${
                   activeTab === 'tv'
-                    ? 'bg-[#1A202C] border border-sky-500 text-slate-100'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white'
+                    : 'bg-[#161618] border-[#232326] text-[#8A8A8E]'
                 }`}
               >
                 <Tv className="w-4 h-4" />
-                <span>ريموت الشاشة</span>
+                <span>الشاشة</span>
               </button>
               <button
                 type="button"
                 onClick={() => setActiveTab('ac')}
-                className={`min-h-[46px] rounded-xl text-xs font-semibold flex items-center justify-center gap-2 transition-colors whitespace-nowrap ${
+                className={`rounded-full border text-[14px] font-semibold flex items-center justify-center gap-1.5 transition-all whitespace-nowrap active:opacity-55 ${
                   activeTab === 'ac'
-                    ? 'bg-[#1A202C] border border-sky-500 text-slate-100'
-                    : 'text-slate-400 hover:text-slate-200'
+                    ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white'
+                    : 'bg-[#161618] border-[#232326] text-[#8A8A8E]'
                 }`}
               >
                 <Snowflake className="w-4 h-4" />
-                <span>ريموت التكييف</span>
+                <span>التكييف</span>
               </button>
             </div>
+
+            {/* نافذة إعدادات الاتصال والماركة (WifiSheet) */}
+            {showSettingsModal && (
+              <div className="absolute inset-0 z-30 bg-black/85 flex items-center justify-center p-4">
+                <div className="w-full rounded-[18px] bg-[#0E0E10] border border-[#232326] p-4 space-y-3">
+                  <div className="text-[17px] font-bold text-white">إعدادات الشاشة والاتصال</div>
+                  <div className="grid grid-cols-2 gap-1 p-[3px] rounded-full bg-[#161618] border border-[#232326]">
+                    <button
+                      type="button"
+                      onClick={() => setTransport('ir')}
+                      className={`h-[40px] rounded-full border text-[13px] font-semibold flex items-center justify-center gap-1.5 ${
+                        transport === 'ir'
+                          ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white'
+                          : 'border-transparent text-[#8A8A8E]'
+                      }`}
+                    >
+                      <Radio className="w-3.5 h-3.5" />
+                      <span>أشعة IR</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTransport('wifi')}
+                      className={`h-[40px] rounded-full border text-[13px] font-semibold flex items-center justify-center gap-1.5 ${
+                        transport === 'wifi'
+                          ? 'bg-[#2C8EF8]/15 border-[#2C8EF8] text-white'
+                          : 'border-transparent text-[#8A8A8E]'
+                      }`}
+                    >
+                      <Wifi className="w-3.5 h-3.5" />
+                      <span>واي فاي</span>
+                    </button>
+                  </div>
+
+                  {transport === 'ir' ? (
+                    <div className="grid grid-cols-2 gap-2">
+                      {(['samsung', 'lg'] as TvIrBrand[]).map((b) => (
+                        <button
+                          key={b}
+                          type="button"
+                          onClick={() => setIrBrand(b)}
+                          className={`h-[44px] rounded-full border text-[13px] font-semibold ${
+                            irBrand === b
+                              ? 'border-[#2C8EF8] bg-[#2C8EF8]/15 text-white'
+                              : 'border-[#232326] bg-[#161618] text-[#8A8A8E]'
+                          }`}
+                        >
+                          {b === 'samsung' ? 'Samsung (0x0707)' : 'LG TV (NEC)'}
+                        </button>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <div className="grid grid-cols-2 gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setWifiProtocol('roku')}
+                          className={`h-[44px] rounded-full border text-[13px] font-semibold ${
+                            wifiProtocol === 'roku'
+                              ? 'border-[#2C8EF8] bg-[#2C8EF8]/15 text-white'
+                              : 'border-[#232326] bg-[#161618] text-[#8A8A8E]'
+                          }`}
+                        >
+                          Roku ECP
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setWifiProtocol('android_tv')}
+                          className={`h-[44px] rounded-full border text-[13px] font-semibold ${
+                            wifiProtocol === 'android_tv'
+                              ? 'border-[#2C8EF8] bg-[#2C8EF8]/15 text-white'
+                              : 'border-[#232326] bg-[#161618] text-[#8A8A8E]'
+                          }`}
+                        >
+                          Android TV
+                        </button>
+                      </div>
+                      <input
+                        type="text"
+                        dir="ltr"
+                        value={wifiIp}
+                        onChange={(e) => setWifiIp(e.target.value)}
+                        aria-label="عنوان IP الشاشة الذكية"
+                        className="w-full h-[44px] px-3 rounded-[14px] bg-[#161618] border border-[#232326] text-xs font-mono text-white focus:outline-none focus:border-[#2C8EF8]"
+                      />
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setShowSettingsModal(false)}
+                    className="w-full h-[46px] rounded-[14px] bg-[#161618] border border-[#2C8EF8] text-white text-[14px] font-semibold"
+                  >
+                    تم
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>

@@ -153,18 +153,84 @@ export function StatusBar(_props: { barStyle?: string; backgroundColor?: string 
 export function View({
   style,
   pointerEvents,
+  onStartShouldSetResponder,
+  onResponderGrant,
+  onResponderRelease,
+  onResponderTerminate,
   children,
 }: {
   style?: RNStyle;
   pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
+  onStartShouldSetResponder?: (e: any) => boolean;
+  onResponderGrant?: (e: any) => void;
+  onResponderRelease?: (e: any) => void;
+  onResponderTerminate?: (e: any) => void;
+  onResponderTerminationRequest?: (e: any) => boolean;
   children?: React.ReactNode;
 }) {
+  const activePointerRef = React.useRef<number | null>(null);
+  const hasResponder = Boolean(
+    onStartShouldSetResponder || onResponderGrant || onResponderRelease
+  );
+
+  const buildNativeEvent = (e: React.PointerEvent<HTMLDivElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    return {
+      nativeEvent: {
+        locationX: e.clientX - rect.left,
+        locationY: e.clientY - rect.top,
+        pageX: e.pageX,
+        pageY: e.pageY,
+      },
+    };
+  };
+
   return (
     <div
+      onPointerDown={
+        hasResponder
+          ? (e) => {
+              const synth = buildNativeEvent(e);
+              if (onStartShouldSetResponder && !onStartShouldSetResponder(synth)) {
+                return;
+              }
+              activePointerRef.current = e.pointerId;
+              try {
+                e.currentTarget.setPointerCapture(e.pointerId);
+              } catch (_) {
+                // ignore
+              }
+              if (onResponderGrant) onResponderGrant(synth);
+            }
+          : undefined
+      }
+      onPointerUp={
+        hasResponder
+          ? (e) => {
+              if (activePointerRef.current !== e.pointerId) return;
+              activePointerRef.current = null;
+              if (onResponderRelease) onResponderRelease(buildNativeEvent(e));
+            }
+          : undefined
+      }
+      onPointerCancel={
+        hasResponder
+          ? (e) => {
+              if (activePointerRef.current !== e.pointerId) return;
+              activePointerRef.current = null;
+              if (onResponderTerminate) {
+                onResponderTerminate(buildNativeEvent(e));
+              } else if (onResponderRelease) {
+                onResponderRelease(buildNativeEvent(e));
+              }
+            }
+          : undefined
+      }
       style={toWebStyle(style, {
         display: 'flex',
         flexDirection: flattenStyle(style).flexDirection || 'column',
         ...(pointerEvents === 'none' ? { pointerEvents: 'none' } : {}),
+        ...(hasResponder ? { cursor: 'pointer', touchAction: 'none', userSelect: 'none' } : {}),
       })}
     >
       {children}

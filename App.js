@@ -186,29 +186,35 @@ function getSubnetFromIp(ip) {
 function RepeatableButton({
   onAction,
   onActiveChange,
-  repeatIntervalMs = 130,
-  initialDelayMs = 220,
+  minRepeatCycleMs = 90,
+  initialDelayMs = 150,
   style,
   activeOpacity = 0.7,
   hitSlop,
   children,
 }) {
   const holdTimerRef = useRef(null);
-  const repeatTimerRef = useRef(null);
+  const waitResolveRef = useRef(null);
+  const holdingRef = useRef(false);
+  const sessionRef = useRef(0);
+  const firstActionPromiseRef = useRef(null);
   const latestActionRef = useRef(onAction);
   const latestActiveChangeRef = useRef(onActiveChange);
 
   latestActionRef.current = onAction;
   latestActiveChangeRef.current = onActiveChange;
 
-  const clearTimers = () => {
+  const stopRepeating = () => {
+    holdingRef.current = false;
+    sessionRef.current += 1;
     if (holdTimerRef.current) {
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
     }
-    if (repeatTimerRef.current) {
-      clearInterval(repeatTimerRef.current);
-      repeatTimerRef.current = null;
+    if (waitResolveRef.current) {
+      const resolveWait = waitResolveRef.current;
+      waitResolveRef.current = null;
+      resolveWait();
     }
     if (latestActiveChangeRef.current) {
       latestActiveChangeRef.current(false);
@@ -216,23 +222,47 @@ function RepeatableButton({
   };
 
   useEffect(() => {
-    return () => clearTimers();
+    return () => stopRepeating();
   }, []);
 
   const handlePressIn = () => {
-    clearTimers();
+    stopRepeating();
+    holdingRef.current = true;
+    const sessionId = sessionRef.current;
+
     if (latestActiveChangeRef.current) {
       latestActiveChangeRef.current(true);
     }
     if (latestActionRef.current) {
-      latestActionRef.current();
+      firstActionPromiseRef.current = Promise.resolve(
+        latestActionRef.current({ isRepeat: false })
+      ).catch(() => {});
     }
-    holdTimerRef.current = setTimeout(() => {
-      repeatTimerRef.current = setInterval(() => {
+
+    holdTimerRef.current = setTimeout(async () => {
+      if (firstActionPromiseRef.current) {
+        await firstActionPromiseRef.current;
+      }
+      while (holdingRef.current && sessionRef.current === sessionId) {
+        const startedAt = Date.now();
         if (latestActionRef.current) {
-          latestActionRef.current();
+          await Promise.resolve(
+            latestActionRef.current({ isRepeat: true })
+          ).catch(() => {});
         }
-      }, repeatIntervalMs);
+        if (!holdingRef.current || sessionRef.current !== sessionId) {
+          break;
+        }
+        const elapsed = Date.now() - startedAt;
+        const waitMs = Math.max(15, minRepeatCycleMs - elapsed);
+        await new Promise((resolve) => {
+          waitResolveRef.current = resolve;
+          holdTimerRef.current = setTimeout(() => {
+            waitResolveRef.current = null;
+            resolve();
+          }, waitMs);
+        });
+      }
     }, initialDelayMs);
   };
 
@@ -242,10 +272,122 @@ function RepeatableButton({
       activeOpacity={activeOpacity}
       hitSlop={hitSlop}
       onPressIn={handlePressIn}
-      onPressOut={clearTimers}
+      onPressOut={stopRepeating}
     >
       {children}
     </TouchableOpacity>
+  );
+}
+
+const DPAD_CENTER_OFFSET = 123;
+const DPAD_WEDGE_ROTATION = {
+  UP: '0deg',
+  RIGHT: '90deg',
+  DOWN: '180deg',
+  LEFT: '270deg',
+};
+
+function resolveDpadDirectionFromPoint(locationX, locationY) {
+  const dx = (Number(locationX) || 0) - DPAD_CENTER_OFFSET;
+  const dy = (Number(locationY) || 0) - DPAD_CENTER_OFFSET;
+  if (Math.abs(dy) >= Math.abs(dx)) {
+    return dy < 0 ? 'UP' : 'DOWN';
+  }
+  return dx < 0 ? 'LEFT' : 'RIGHT';
+}
+
+function DpadRingControl({
+  style,
+  minRepeatCycleMs = 95,
+  initialDelayMs = 150,
+  onActiveChange,
+  onDirectionAction,
+}) {
+  const holdTimerRef = useRef(null);
+  const waitResolveRef = useRef(null);
+  const holdingRef = useRef(false);
+  const sessionRef = useRef(0);
+  const firstActionPromiseRef = useRef(null);
+  const latestActionRef = useRef(onDirectionAction);
+  const latestActiveChangeRef = useRef(onActiveChange);
+
+  latestActionRef.current = onDirectionAction;
+  latestActiveChangeRef.current = onActiveChange;
+
+  const stopRepeating = () => {
+    holdingRef.current = false;
+    sessionRef.current += 1;
+    if (holdTimerRef.current) {
+      clearTimeout(holdTimerRef.current);
+      holdTimerRef.current = null;
+    }
+    if (waitResolveRef.current) {
+      const resolveWait = waitResolveRef.current;
+      waitResolveRef.current = null;
+      resolveWait();
+    }
+    if (latestActiveChangeRef.current) {
+      latestActiveChangeRef.current(null);
+    }
+  };
+
+  useEffect(() => {
+    return () => stopRepeating();
+  }, []);
+
+  const handleGrant = (event) => {
+    stopRepeating();
+    const nativeEvt = event && event.nativeEvent ? event.nativeEvent : {};
+    const dir = resolveDpadDirectionFromPoint(nativeEvt.locationX, nativeEvt.locationY);
+    holdingRef.current = true;
+    const sessionId = sessionRef.current;
+
+    if (latestActiveChangeRef.current) {
+      latestActiveChangeRef.current(dir);
+    }
+    if (latestActionRef.current) {
+      firstActionPromiseRef.current = Promise.resolve(
+        latestActionRef.current(dir, { isRepeat: false })
+      ).catch(() => {});
+    }
+
+    holdTimerRef.current = setTimeout(async () => {
+      if (firstActionPromiseRef.current) {
+        await firstActionPromiseRef.current;
+      }
+      while (holdingRef.current && sessionRef.current === sessionId) {
+        const startedAt = Date.now();
+        if (latestActionRef.current) {
+          await Promise.resolve(
+            latestActionRef.current(dir, { isRepeat: true })
+          ).catch(() => {});
+        }
+        if (!holdingRef.current || sessionRef.current !== sessionId) {
+          break;
+        }
+        const elapsed = Date.now() - startedAt;
+        const waitMs = Math.max(15, minRepeatCycleMs - elapsed);
+        await new Promise((resolve) => {
+          waitResolveRef.current = resolve;
+          holdTimerRef.current = setTimeout(() => {
+            waitResolveRef.current = null;
+            resolve();
+          }, waitMs);
+        });
+      }
+    }, initialDelayMs);
+  };
+
+  return (
+    <View
+      style={style}
+      pointerEvents="box-only"
+      onStartShouldSetResponder={() => true}
+      onResponderTerminationRequest={() => false}
+      onResponderGrant={handleGrant}
+      onResponderRelease={stopRepeating}
+      onResponderTerminate={stopRepeating}
+    />
   );
 }
 
@@ -302,6 +444,7 @@ function App() {
 
   const [activeDpadDir, setActiveDpadDir] = useState(null);
   const isSendingRef = useRef(false);
+  const hasIrHardwareRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -324,20 +467,25 @@ function App() {
     });
 
     if (Platform.OS === 'web') {
+      hasIrHardwareRef.current = true;
       setHasIrHardware(true);
     } else if (Platform.OS === 'android' && IrManagerModule) {
       IrManagerModule.hasIrEmitter()
         .then((supported) => {
           if (mounted) {
-            setHasIrHardware(Boolean(supported));
+            const available = Boolean(supported);
+            hasIrHardwareRef.current = available;
+            setHasIrHardware(available);
           }
         })
         .catch(() => {
           if (mounted) {
+            hasIrHardwareRef.current = false;
             setHasIrHardware(false);
           }
         });
     } else {
+      hasIrHardwareRef.current = false;
       setHasIrHardware(false);
     }
 
@@ -367,9 +515,13 @@ function App() {
     if (Platform.OS !== 'android' || !IrManagerModule) {
       throw new Error('وحدة IrManagerModule متاحة فقط على أجهزة أندرويد.');
     }
-    const available = await IrManagerModule.hasIrEmitter();
-    if (!available) {
-      throw new Error('هذا الهاتف لا يحتوي على مستشعر IR Blaster.');
+    if (hasIrHardwareRef.current !== true) {
+      const available = Boolean(await IrManagerModule.hasIrEmitter());
+      hasIrHardwareRef.current = available;
+      setHasIrHardware(available);
+      if (!available) {
+        throw new Error('هذا الهاتف لا يحتوي على مستشعر IR Blaster.');
+      }
     }
     await IrManagerModule.transmitIR(pattern, CARRIER_38KHZ);
     clearErrorBanner();
@@ -593,17 +745,22 @@ function App() {
   };
 
   const updateAcAndTransmit = async (nextAcState, options = {}) => {
-    setAcState(nextAcState);
+    const normalizedAcState = !nextAcState.power
+      ? { ...nextAcState, sleep: false, turbo: false }
+      : nextAcState.mode === 'fan' || nextAcState.mode === 'dry'
+      ? { ...nextAcState, sleep: false }
+      : nextAcState;
+    setAcState(normalizedAcState);
 
     let effectiveOptions = options;
     if (acBrand === 'midea' && acTimerConfig) {
       const shouldClearTimer =
-        !nextAcState.power || (acTimerConfig.action === 'on' && nextAcState.power);
+        !normalizedAcState.power || (acTimerConfig.action === 'on' && normalizedAcState.power);
       if (shouldClearTimer) {
         setAcTimerConfig(null);
       } else if (
         acTimerConfig.action === 'off' &&
-        nextAcState.power &&
+        normalizedAcState.power &&
         !options.specialCommand &&
         !options.isSwingToggle &&
         !options.timerMinutes
@@ -623,7 +780,7 @@ function App() {
     }
 
     try {
-      const pattern = buildAcIrPattern(acBrand, nextAcState, effectiveOptions);
+      const pattern = buildAcIrPattern(acBrand, normalizedAcState, effectiveOptions);
       await transmitIrPattern(pattern);
     } catch (error) {
       setFeedback({
@@ -634,8 +791,6 @@ function App() {
   };
 
   const handleSleepToggle = async () => {
-    const needsCompatibleMode =
-      !acState.power || acState.mode === 'fan' || acState.mode === 'dry';
     const nextMode =
       acState.mode === 'fan' || acState.mode === 'dry' ? 'cool' : acState.mode;
     const nextState = {
@@ -645,27 +800,8 @@ function App() {
       sleep: !acState.sleep,
     };
 
-    if (!needsCompatibleMode) {
-      await updateAcAndTransmit(nextState, { specialCommand: 'sleep' });
-      return;
-    }
-
-    // بروتوكول Midea يرفض تفعيل النوم أثناء الإطفاء أو وضعي المروحة/التجفيف؛ نضبط التبريد أولاً ثم نرسل أمر النوم
-    setAcState(nextState);
-    try {
-      const basePattern = buildAcIrPattern(acBrand, nextState);
-      await transmitIrPattern(basePattern);
-      await new Promise((resolve) => setTimeout(resolve, 120));
-      const sleepPattern = buildAcIrPattern(acBrand, nextState, {
-        specialCommand: 'sleep',
-      });
-      await transmitIrPattern(sleepPattern);
-    } catch (error) {
-      setFeedback({
-        text: error && error.message ? error.message : 'تعذر تفعيل وضع النوم للمكيف',
-        tone: 'error',
-      });
-    }
+    // يرسل مقدمة النوم 0xB2E003 متبوعة مباشرةً بإطار الحالة المتوافقة في نبضة IR واحدة
+    await updateAcAndTransmit(nextState, { specialCommand: 'sleep' });
   };
 
   const formatTimerDuration = (totalMinutes) => {
@@ -936,80 +1072,50 @@ function App() {
       </View>
 
       <View style={styles.dpadCircle}>
-        <View style={styles.dpadRotatedGrid}>
-          <RepeatableButton
+        {activeDpadDir && DPAD_WEDGE_ROTATION[activeDpadDir] ? (
+          <View
+            pointerEvents="none"
             style={[
-              styles.dpadSector,
-              styles.dpadSectorUp,
-              activeDpadDir === 'UP' && styles.dpadSectorActive,
+              styles.dpadWedgeOverlay,
+              { transform: [{ rotate: DPAD_WEDGE_ROTATION[activeDpadDir] }] },
             ]}
-            activeOpacity={1}
-            repeatIntervalMs={180}
-            onActiveChange={(active) => setActiveDpadDir(active ? 'UP' : null)}
-            onAction={() => handleTvCommand('UP', { burstFrames: 2 })}
           />
-          <RepeatableButton
-            style={[
-              styles.dpadSector,
-              styles.dpadSectorRight,
-              activeDpadDir === 'RIGHT' && styles.dpadSectorActive,
-            ]}
-            activeOpacity={1}
-            repeatIntervalMs={180}
-            onActiveChange={(active) => setActiveDpadDir(active ? 'RIGHT' : null)}
-            onAction={() => handleTvCommand('RIGHT', { burstFrames: 2 })}
-          />
-          <RepeatableButton
-            style={[
-              styles.dpadSector,
-              styles.dpadSectorDown,
-              activeDpadDir === 'DOWN' && styles.dpadSectorActive,
-            ]}
-            activeOpacity={1}
-            repeatIntervalMs={180}
-            onActiveChange={(active) => setActiveDpadDir(active ? 'DOWN' : null)}
-            onAction={() => handleTvCommand('DOWN', { burstFrames: 2 })}
-          />
-          <RepeatableButton
-            style={[
-              styles.dpadSector,
-              styles.dpadSectorLeft,
-              activeDpadDir === 'LEFT' && styles.dpadSectorActive,
-            ]}
-            activeOpacity={1}
-            repeatIntervalMs={180}
-            onActiveChange={(active) => setActiveDpadDir(active ? 'LEFT' : null)}
-            onAction={() => handleTvCommand('LEFT', { burstFrames: 2 })}
-          />
-        </View>
+        ) : null}
+
+        <DpadRingControl
+          style={styles.dpadTouchRing}
+          minRepeatCycleMs={95}
+          onActiveChange={(dir) => setActiveDpadDir(dir)}
+          onDirectionAction={(dir, { isRepeat }) =>
+            handleTvCommand(dir, { burstFrames: isRepeat ? 1 : 2 })
+          }
+        />
 
         <View style={styles.dpadDotsLayer} pointerEvents="none">
           <View
             style={[
               styles.dpadDot,
-              styles.dpadDotUp,
               activeDpadDir === 'UP' && styles.dpadDotActive,
             ]}
           />
+          <View style={styles.dpadDotsMiddleRow}>
+            <View
+              style={[
+                styles.dpadDot,
+                activeDpadDir === 'LEFT' && styles.dpadDotActive,
+              ]}
+            />
+            <View
+              style={[
+                styles.dpadDot,
+                activeDpadDir === 'RIGHT' && styles.dpadDotActive,
+              ]}
+            />
+          </View>
           <View
             style={[
               styles.dpadDot,
-              styles.dpadDotRight,
-              activeDpadDir === 'RIGHT' && styles.dpadDotActive,
-            ]}
-          />
-          <View
-            style={[
-              styles.dpadDot,
-              styles.dpadDotDown,
               activeDpadDir === 'DOWN' && styles.dpadDotActive,
-            ]}
-          />
-          <View
-            style={[
-              styles.dpadDot,
-              styles.dpadDotLeft,
-              activeDpadDir === 'LEFT' && styles.dpadDotActive,
             ]}
           />
         </View>
@@ -1044,16 +1150,20 @@ function App() {
         <View style={styles.rockerCard}>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={180}
-            onAction={() => handleTvCommand('VOL_UP', { burstFrames: 2 })}
+            minRepeatCycleMs={85}
+            onAction={({ isRepeat }) =>
+              handleTvCommand('VOL_UP', { burstFrames: isRepeat ? 1 : 2 })
+            }
           >
             <Text style={styles.rockerSymbol}>+</Text>
           </RepeatableButton>
           <Text style={styles.rockerLabel}>الصوت</Text>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={180}
-            onAction={() => handleTvCommand('VOL_DOWN', { burstFrames: 2 })}
+            minRepeatCycleMs={85}
+            onAction={({ isRepeat }) =>
+              handleTvCommand('VOL_DOWN', { burstFrames: isRepeat ? 1 : 2 })
+            }
           >
             <Text style={styles.rockerSymbol}>−</Text>
           </RepeatableButton>
@@ -1062,16 +1172,20 @@ function App() {
         <View style={styles.rockerCard}>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={180}
-            onAction={() => handleTvCommand('CH_UP', { burstFrames: 2 })}
+            minRepeatCycleMs={85}
+            onAction={({ isRepeat }) =>
+              handleTvCommand('CH_UP', { burstFrames: isRepeat ? 1 : 2 })
+            }
           >
             <Text style={styles.rockerSymbol}>▲</Text>
           </RepeatableButton>
           <Text style={styles.rockerLabel}>القناة</Text>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={180}
-            onAction={() => handleTvCommand('CH_DOWN', { burstFrames: 2 })}
+            minRepeatCycleMs={85}
+            onAction={({ isRepeat }) =>
+              handleTvCommand('CH_DOWN', { burstFrames: isRepeat ? 1 : 2 })
+            }
           >
             <Text style={styles.rockerSymbol}>▼</Text>
           </RepeatableButton>
@@ -1902,37 +2016,51 @@ const styles = StyleSheet.create({
     direction: 'ltr',
     marginVertical: 4,
   },
-  dpadRotatedGrid: {
+  dpadWedgeOverlay: {
     position: 'absolute',
-    width: 352,
-    height: 352,
-    top: -52,
-    left: -52,
-    transform: [{ rotate: '45deg' }],
+    top: 0,
+    left: 0,
+    width: 0,
+    height: 0,
+    borderTopWidth: 123,
+    borderRightWidth: 123,
+    borderBottomWidth: 123,
+    borderLeftWidth: 123,
+    borderTopColor: 'rgba(14, 165, 233, 0.14)',
+    borderRightColor: 'transparent',
+    borderBottomColor: 'transparent',
+    borderLeftColor: 'transparent',
+    zIndex: 2,
   },
-  dpadSector: {
+  dpadTouchRing: {
     position: 'absolute',
-    width: 176,
-    height: 176,
-    backgroundColor: 'transparent',
-  },
-  dpadSectorUp: { top: 0, left: 0 },
-  dpadSectorRight: { top: 0, left: 176 },
-  dpadSectorDown: { top: 176, left: 176 },
-  dpadSectorLeft: { top: 176, left: 0 },
-  dpadSectorActive: {
-    backgroundColor: 'rgba(14, 165, 233, 0.14)',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 4,
   },
   dpadDotsLayer: {
     position: 'absolute',
-    width: 248,
-    height: 248,
     top: 0,
     left: 0,
-    zIndex: 5,
+    right: 0,
+    bottom: 0,
+    direction: 'ltr',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 34,
+    zIndex: 6,
+  },
+  dpadDotsMiddleRow: {
+    width: '100%',
+    flexDirection: 'row',
+    direction: 'ltr',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 34,
   },
   dpadDot: {
-    position: 'absolute',
     width: 8,
     height: 8,
     borderRadius: 4,
@@ -1942,10 +2070,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#38BDF8',
     transform: [{ scale: 1.35 }],
   },
-  dpadDotUp: { top: 34, left: 120 },
-  dpadDotRight: { right: 34, top: 120 },
-  dpadDotDown: { bottom: 34, left: 120 },
-  dpadDotLeft: { left: 34, top: 120 },
   dpadOkBtn: {
     width: 96,
     height: 96,

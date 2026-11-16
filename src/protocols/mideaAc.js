@@ -107,6 +107,28 @@ export function buildMideaTimerBytes(acState, timerMinutes, timerAction = 'off')
   return [byte0, byte1, byte2, byte3, byte4, byte5];
 }
 
+export function buildSleepCompatibleAcState(acState) {
+  const modeKey = (acState && acState.mode) || 'cool';
+  return {
+    ...(acState || {}),
+    power: true,
+    mode: modeKey === 'fan' || modeKey === 'dry' ? 'cool' : modeKey,
+  };
+}
+
+// في بروتوكول Midea (مثل RG10B10(B)/BGEF) تُرسل شفرة النوم 0xB2E003 كمقدمة (Preamble: pa=0xE0, pb=0x03)
+// متبوعةً مباشرةً بإطار الحالة المتوافقة في نفس نبضة الإرسال بفاصل GAP_SPACE واحد
+export function buildMideaSleepFrames(acState, options = {}) {
+  const { timerMinutes = 0, timerAction = 'off' } = options;
+  const compatibleState = buildSleepCompatibleAcState(acState);
+  const preambleBytes = [...MIDEA_SPECIAL_FRAMES.sleep];
+  const stateBytes = buildMideaAcBytes(compatibleState, {
+    timerMinutes,
+    timerAction,
+  });
+  return [preambleBytes, stateBytes];
+}
+
 export function buildMideaAcBytes(acState, options = {}) {
   const {
     isSwingToggle = false,
@@ -159,12 +181,22 @@ function appendFramePulses(pattern, bytes) {
 
 export function encodeMideaAcPattern(acState, options = {}) {
   const { invertRepeat = false, repeatCount, isSwingToggle = false, specialCommand = null } = options;
+
+  if (specialCommand === 'sleep' && !isSwingToggle) {
+    const [preambleBytes, stateBytes] = buildMideaSleepFrames(acState, options);
+    const pattern = [];
+    appendFramePulses(pattern, preambleBytes);
+    pattern.push(GAP_SPACE);
+    appendFramePulses(pattern, stateBytes);
+    return pattern;
+  }
+
   const primaryBytes = buildMideaAcBytes(acState, options);
   const repeatBytes = invertRepeat
     ? primaryBytes.map((b) => (~b) & 0xff)
     : primaryBytes;
 
-  // أوامر التبديل (مثل Sleep/Swing/Turbo/LED/Clean) تتطلب إطارين فقط (kCoolixDefaultRepeat) لمنع التفعيل ثم الإلغاء
+  // أوامر التبديل (مثل Swing/Turbo/LED/Clean) تتطلب إطارين فقط (kCoolixDefaultRepeat) لمنع التفعيل ثم الإلغاء
   const isToggle = isSwingToggle || (specialCommand && TOGGLE_SPECIAL_COMMANDS.has(specialCommand));
   const defaultRepeats = isToggle ? 2 : 3;
   const totalFrames = Math.max(2, Math.min(4, Number(repeatCount) || defaultRepeats));

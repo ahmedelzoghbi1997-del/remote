@@ -295,10 +295,9 @@ function App() {
     clean: false,
     sleep: false,
   });
-  const [acTimerSeconds, setAcTimerSeconds] = useState(0);
-  const [acTimerAction, setAcTimerAction] = useState('off');
+  const [acTimerConfig, setAcTimerConfig] = useState(null);
   const [showTimerModal, setShowTimerModal] = useState(false);
-  const [draftTimerMinutes, setDraftTimerMinutes] = useState(30);
+  const [draftTimerMinutes, setDraftTimerMinutes] = useState(60);
   const [draftTimerAction, setDraftTimerAction] = useState('off');
 
   const [activeDpadDir, setActiveDpadDir] = useState(null);
@@ -595,8 +594,36 @@ function App() {
 
   const updateAcAndTransmit = async (nextAcState, options = {}) => {
     setAcState(nextAcState);
+
+    let effectiveOptions = options;
+    if (acBrand === 'midea' && acTimerConfig) {
+      const shouldClearTimer =
+        !nextAcState.power || (acTimerConfig.action === 'on' && nextAcState.power);
+      if (shouldClearTimer) {
+        setAcTimerConfig(null);
+      } else if (
+        acTimerConfig.action === 'off' &&
+        nextAcState.power &&
+        !options.specialCommand &&
+        !options.isSwingToggle &&
+        !options.timerMinutes
+      ) {
+        const remainingMs = Math.max(0, acTimerConfig.targetMs - Date.now());
+        const remainingMinutes = Math.round(remainingMs / (30 * 60 * 1000)) * 30;
+        if (remainingMinutes >= 30) {
+          effectiveOptions = {
+            ...options,
+            timerMinutes: Math.min(1440, remainingMinutes),
+            timerAction: acTimerConfig.action,
+          };
+        } else {
+          setAcTimerConfig(null);
+        }
+      }
+    }
+
     try {
-      const pattern = buildAcIrPattern(acBrand, nextAcState, options);
+      const pattern = buildAcIrPattern(acBrand, nextAcState, effectiveOptions);
       await transmitIrPattern(pattern);
     } catch (error) {
       setFeedback({
@@ -606,36 +633,39 @@ function App() {
     }
   };
 
-  useEffect(() => {
-    if (acTimerSeconds <= 0) return undefined;
-    const timer = setInterval(() => {
-      setAcTimerSeconds((prev) => {
-        if (prev <= 1) {
-          clearInterval(timer);
-          const targetPower = acTimerAction === 'on';
-          setAcState((curr) => {
-            const nextState = { ...curr, power: targetPower };
-            const pattern = buildAcIrPattern(acBrand, nextState);
-            transmitIrPattern(pattern).catch(() => {});
-            return nextState;
-          });
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
-    return () => clearInterval(timer);
-  }, [acTimerSeconds, acTimerAction, acBrand]);
+  const handleSleepToggle = async () => {
+    const needsCompatibleMode =
+      !acState.power || acState.mode === 'fan' || acState.mode === 'dry';
+    const nextMode =
+      acState.mode === 'fan' || acState.mode === 'dry' ? 'cool' : acState.mode;
+    const nextState = {
+      ...acState,
+      power: true,
+      mode: nextMode,
+      sleep: !acState.sleep,
+    };
 
-  const formatTimerLabel = (totalSec) => {
-    if (!totalSec || totalSec <= 0) return 'متوقف';
-    const hrs = Math.floor(totalSec / 3600);
-    const mins = Math.floor((totalSec % 3600) / 60);
-    const secs = totalSec % 60;
-    if (hrs > 0) {
-      return `${hrs} ساعة ${mins} دقيقة`;
+    if (!needsCompatibleMode) {
+      await updateAcAndTransmit(nextState, { specialCommand: 'sleep' });
+      return;
     }
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+
+    // بروتوكول Midea يرفض تفعيل النوم أثناء الإطفاء أو وضعي المروحة/التجفيف؛ نضبط التبريد أولاً ثم نرسل أمر النوم
+    setAcState(nextState);
+    try {
+      const basePattern = buildAcIrPattern(acBrand, nextState);
+      await transmitIrPattern(basePattern);
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      const sleepPattern = buildAcIrPattern(acBrand, nextState, {
+        specialCommand: 'sleep',
+      });
+      await transmitIrPattern(sleepPattern);
+    } catch (error) {
+      setFeedback({
+        text: error && error.message ? error.message : 'تعذر تفعيل وضع النوم للمكيف',
+        tone: 'error',
+      });
+    }
   };
 
   const formatTimerDuration = (totalMinutes) => {
@@ -644,9 +674,9 @@ function App() {
     return `${hrs} ساعة ${mins} دقيقة`;
   };
 
-  const formatTargetClockLabel = (offsetMinutes) => {
-    const now = new Date();
-    const target = new Date(now.getTime() + offsetMinutes * 60 * 1000);
+  const formatTargetClockLabel = (offsetMinutes, baseTimestampMs = Date.now()) => {
+    const now = new Date(baseTimestampMs);
+    const target = new Date(baseTimestampMs + offsetMinutes * 60 * 1000);
     const sameDay =
       target.getFullYear() === now.getFullYear() &&
       target.getMonth() === now.getMonth() &&
@@ -659,10 +689,8 @@ function App() {
 
   const handleOpenTimerModal = () => {
     const defaultAction = acState.power ? 'off' : 'on';
-    setDraftTimerAction(acTimerSeconds > 0 ? acTimerAction : defaultAction);
-    setDraftTimerMinutes(
-      acTimerSeconds > 0 ? Math.max(30, Math.round(acTimerSeconds / 60)) : 60
-    );
+    setDraftTimerAction(acTimerConfig ? acTimerConfig.action : defaultAction);
+    setDraftTimerMinutes(acTimerConfig ? acTimerConfig.minutes : 60);
     setShowTimerModal(true);
   };
 
@@ -680,15 +708,50 @@ function App() {
     });
   };
 
-  const handleConfirmAcTimer = () => {
-    setAcTimerAction(draftTimerAction);
-    setAcTimerSeconds(draftTimerMinutes * 60);
+  const handleConfirmAcTimer = async () => {
+    const nowMs = Date.now();
+    const targetAcState =
+      draftTimerAction === 'off' && !acState.power
+        ? { ...acState, power: true }
+        : acState;
+
     setShowTimerModal(false);
+    try {
+      const timerPattern = buildAcIrPattern(acBrand, targetAcState, {
+        timerMinutes: draftTimerMinutes,
+        timerAction: draftTimerAction,
+      });
+      await transmitIrPattern(timerPattern);
+      if (targetAcState !== acState) {
+        setAcState(targetAcState);
+      }
+      setAcTimerConfig({
+        action: draftTimerAction,
+        minutes: draftTimerMinutes,
+        setAtMs: nowMs,
+        targetMs: nowMs + draftTimerMinutes * 60 * 1000,
+      });
+    } catch (error) {
+      setFeedback({
+        text: error && error.message ? error.message : 'تعذر إرسال أمر المؤقت للمكيف',
+        tone: 'error',
+      });
+    }
   };
 
-  const handleCancelAcTimer = () => {
-    setAcTimerSeconds(0);
+  const handleCancelAcTimer = async () => {
     setShowTimerModal(false);
+    setAcTimerConfig(null);
+    try {
+      // إرسال إطار الحالة القياسي بدون بتات المؤقت يلغي المؤقت المبرمج داخل وحدة المكيف
+      const resetPattern = buildAcIrPattern(acBrand, acState);
+      await transmitIrPattern(resetPattern);
+    } catch (error) {
+      setFeedback({
+        text: error && error.message ? error.message : 'تعذر إلغاء مؤقت المكيف',
+        tone: 'error',
+      });
+    }
   };
 
   const acMinTemp = acBrand === 'midea' ? MIDEA_MIN_TEMP : 16;
@@ -1162,6 +1225,7 @@ function App() {
         <ScrollView
           style={styles.scrollArea}
           contentContainerStyle={styles.acScrollContent}
+          nestedScrollEnabled
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.acSectionStack}>
@@ -1176,6 +1240,7 @@ function App() {
                   style={[styles.acBrandChip, acBrand === b.key && styles.chipBtnActive]}
                   onPress={() => {
                     setAcBrand(b.key);
+                    setAcTimerConfig(null);
                     if (b.key === 'midea' && acState.temperature < MIDEA_MIN_TEMP) {
                       setAcState((prev) => ({ ...prev, temperature: MIDEA_MIN_TEMP }));
                     }
@@ -1195,9 +1260,18 @@ function App() {
                 {acState.power ? `${acState.temperature}°C` : 'OFF'}
               </Text>
               <Text style={styles.acFooter}>
-                الريش: {acState.swing ? 'متحرك' : 'ثابت'} · IR 38kHz
+                الريش: {acState.swing ? 'متحرك' : 'ثابت'}
+                {acState.sleep ? ' · نوم' : ''}
+                {acState.turbo ? ' · تربو' : ''}
+                {' · IR 38kHz'}
                 {acBrand === 'midea' ? ' · Midea' : ''}
               </Text>
+              {acTimerConfig ? (
+                <Text style={styles.acLcdTimerBadge}>
+                  {acTimerConfig.action === 'on' ? 'مؤقت التشغيل' : 'مؤقت الإطفاء'} مبرمج:{' '}
+                  {formatTargetClockLabel(acTimerConfig.minutes, acTimerConfig.setAtMs)}
+                </Text>
+              ) : null}
             </View>
 
             <View style={styles.acRowGap}>
@@ -1249,7 +1323,7 @@ function App() {
               </TouchableOpacity>
             </View>
 
-            <View style={styles.modesRow}>
+            <View style={styles.modesGrid}>
               {AC_MODES.map((m) => {
                 const active = acState.mode === m.key;
                 return (
@@ -1264,7 +1338,7 @@ function App() {
                       updateAcAndTransmit({ ...acState, power: true, mode: m.key })
                     }
                   >
-                    <Text style={styles.acCompactLabel}>{m.label}</Text>
+                    <Text style={styles.acModeLabel}>{m.label}</Text>
                   </TouchableOpacity>
                 );
               })}
@@ -1306,7 +1380,7 @@ function App() {
 
             {acBrand === 'midea' ? (
               <>
-                <View style={styles.modesRow}>
+                <View style={styles.acFeatureGrid}>
                   <TouchableOpacity
                     style={[styles.acFeatureBtn, acState.turbo && styles.modeCoolActive]}
                     onPress={() =>
@@ -1316,7 +1390,7 @@ function App() {
                       )
                     }
                   >
-                    <Text style={styles.acCompactLabel}>تربو</Text>
+                    <Text style={styles.acFeatureTitle}>تربو</Text>
                     <Text style={styles.acTinyState}>
                       {acState.turbo ? 'مفعّل' : 'Turbo'}
                     </Text>
@@ -1331,7 +1405,7 @@ function App() {
                       )
                     }
                   >
-                    <Text style={styles.acCompactLabel}>الشاشة</Text>
+                    <Text style={styles.acFeatureTitle}>الشاشة</Text>
                     <Text style={styles.acTinyState}>
                       {acState.led ? 'مضيئة' : 'مطفأة'}
                     </Text>
@@ -1346,7 +1420,7 @@ function App() {
                       )
                     }
                   >
-                    <Text style={styles.acCompactLabel}>تنظيف</Text>
+                    <Text style={styles.acFeatureTitle}>تنظيف</Text>
                     <Text style={styles.acTinyState}>
                       {acState.clean ? 'نشط' : 'Clean'}
                     </Text>
@@ -1354,14 +1428,9 @@ function App() {
 
                   <TouchableOpacity
                     style={[styles.acFeatureBtn, acState.sleep && styles.modeCoolActive]}
-                    onPress={() =>
-                      updateAcAndTransmit(
-                        { ...acState, power: true, sleep: !acState.sleep },
-                        { specialCommand: 'sleep' }
-                      )
-                    }
+                    onPress={handleSleepToggle}
                   >
-                    <Text style={styles.acCompactLabel}>نوم</Text>
+                    <Text style={styles.acFeatureTitle}>نوم</Text>
                     <Text style={styles.acTinyState}>
                       {acState.sleep ? 'مفعّل' : 'Sleep'}
                     </Text>
@@ -1371,16 +1440,16 @@ function App() {
                 <TouchableOpacity
                   style={[
                     styles.timerCard,
-                    acTimerSeconds > 0 && styles.modeCoolActive,
+                    acTimerConfig && styles.modeCoolActive,
                   ]}
                   onPress={handleOpenTimerModal}
                 >
                   <View style={styles.timerRow}>
                     <Text style={styles.btnText}>المؤقت (Timer)</Text>
                     <Text style={styles.timerValue} numberOfLines={1}>
-                      {acTimerSeconds > 0
-                        ? `${acTimerAction === 'on' ? 'تشغيل' : 'إطفاء'} ${formatTargetClockLabel(Math.ceil(acTimerSeconds / 60))}`
-                        : 'ضبط (30د – 24س)'}
+                      {acTimerConfig
+                        ? `${acTimerConfig.action === 'on' ? 'تشغيل' : 'إطفاء'} ${formatTargetClockLabel(acTimerConfig.minutes, acTimerConfig.setAtMs)} (${formatTimerDuration(acTimerConfig.minutes)})`
+                        : 'ضبط مؤقت المكيف (30د – 24س)'}
                     </Text>
                   </View>
                 </TouchableOpacity>
@@ -1570,9 +1639,9 @@ function App() {
       <Modal visible={showTimerModal} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>مؤقت مكيف الهواء (Timer)</Text>
+            <Text style={styles.modalTitle}>مؤقت مكيف الهواء (Hardware IR Timer)</Text>
             <Text style={styles.timerModalHint}>
-              حدد الوقت المطلوب (بنفس تدرج ريموت Midea من 30 دقيقة حتى 24 ساعة)
+              يُرسل أمر المؤقت مباشرة إلى وحدة المكيف (COOLIX48) ليعمل تلقائياً حتى عند قفل الهاتف
             </Text>
 
             <View style={styles.rowGap}>
@@ -1624,7 +1693,7 @@ function App() {
                 : `سيتم إيقاف مكيف الهواء في ${formatTargetClockLabel(draftTimerMinutes)}`}
             </Text>
 
-            {acTimerSeconds > 0 ? (
+            {acTimerConfig ? (
               <TouchableOpacity
                 style={styles.timerCancelBtn}
                 onPress={handleCancelAcTimer}
@@ -2063,65 +2132,14 @@ const styles = StyleSheet.create({
     fontWeight: '700',
   },
   acScrollContent: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-  },
-  acSectionStack: { gap: 9 },
-  acRowGap: { flexDirection: 'row', gap: 8 },
-  acBrandChip: {
-    flex: 1,
-    minHeight: 34,
-    borderRadius: 10,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  acCompactLabel: { color: '#F1F5F9', fontSize: 12, fontWeight: '600' },
-  acTinyState: { color: '#94A3B8', fontSize: 10, fontWeight: '500' },
-  acLcd: {
-    backgroundColor: '#0F172A',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1E293B',
-    paddingVertical: 12,
+    flexGrow: 1,
     paddingHorizontal: 16,
-    alignItems: 'center',
-    gap: 4,
+    paddingTop: 14,
+    paddingBottom: 32,
   },
-  acLcdOff: { opacity: 0.5 },
-  acLcdTop: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' },
-  acMeta: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  acTemp: {
-    color: '#F1F5F9',
-    fontSize: 42,
-    fontWeight: '700',
-    fontVariant: ['tabular-nums'],
-  },
-  acFooter: { color: '#0EA5E9', fontSize: 11, fontWeight: '600' },
-  tempStepBtn: {
-    width: 66,
-    height: 48,
-    borderRadius: 12,
-    backgroundColor: '#1A202C',
-    borderWidth: 1,
-    borderColor: '#252E3E',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  acPowerBtn: {
-    flex: 1,
-    height: 48,
-    borderRadius: 12,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  acPowerOn: { backgroundColor: '#EF4444' },
-  acPowerOff: { backgroundColor: '#16A34A' },
-  sectionCaption: { color: '#94A3B8', fontSize: 13, fontWeight: '600', textAlign: 'right' },
-  modesRow: { flexDirection: 'row', gap: 6 },
-  modeChip: {
+  acSectionStack: { gap: 12 },
+  acRowGap: { flexDirection: 'row', gap: 10 },
+  acBrandChip: {
     flex: 1,
     minHeight: 40,
     borderRadius: 10,
@@ -2131,42 +2149,115 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
+  acCompactLabel: { color: '#F1F5F9', fontSize: 12, fontWeight: '600' },
+  acModeLabel: { color: '#F1F5F9', fontSize: 13, fontWeight: '600' },
+  acFeatureTitle: { color: '#F1F5F9', fontSize: 14, fontWeight: '700' },
+  acTinyState: { color: '#94A3B8', fontSize: 11, fontWeight: '500' },
+  acLcd: {
+    backgroundColor: '#0F172A',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E293B',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    alignItems: 'center',
+    gap: 6,
+  },
+  acLcdOff: { opacity: 0.5 },
+  acLcdTop: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' },
+  acMeta: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  acTemp: {
+    color: '#F1F5F9',
+    fontSize: 46,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  acFooter: { color: '#0EA5E9', fontSize: 12, fontWeight: '600' },
+  acLcdTimerBadge: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  tempStepBtn: {
+    width: 72,
+    height: 54,
+    borderRadius: 14,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acPowerBtn: {
+    flex: 1,
+    height: 54,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acPowerOn: { backgroundColor: '#EF4444' },
+  acPowerOff: { backgroundColor: '#16A34A' },
+  sectionCaption: { color: '#94A3B8', fontSize: 13, fontWeight: '600', textAlign: 'right' },
+  modesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  modeChip: {
+    width: '31.5%',
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 6,
+  },
   modeCoolActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.16)' },
   modeHeatActive: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.16)' },
   extraCard: {
     flex: 1,
-    minHeight: 46,
-    borderRadius: 12,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    paddingVertical: 6,
-    paddingHorizontal: 10,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  extraCaption: { color: '#94A3B8', fontSize: 11 },
-  acFeatureBtn: {
-    flex: 1,
-    minHeight: 46,
-    borderRadius: 12,
-    backgroundColor: '#131720',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    paddingVertical: 6,
-    paddingHorizontal: 4,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 2,
-  },
-  timerCard: {
-    minHeight: 42,
-    borderRadius: 12,
+    minHeight: 58,
+    borderRadius: 14,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
     paddingVertical: 10,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  extraCaption: { color: '#94A3B8', fontSize: 11 },
+  acFeatureGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  acFeatureBtn: {
+    width: '48.2%',
+    minHeight: 58,
+    borderRadius: 14,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  timerCard: {
+    minHeight: 58,
+    borderRadius: 14,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingVertical: 12,
     paddingHorizontal: 14,
     justifyContent: 'center',
   },
@@ -2181,6 +2272,8 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '600',
     fontVariant: ['tabular-nums'],
+    flexShrink: 1,
+    textAlign: 'left',
   },
   tabBar: {
     flexDirection: 'row',

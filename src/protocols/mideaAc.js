@@ -13,22 +13,22 @@ const ONE_SPACE = 1690;
 const ZERO_SPACE = 560;
 const GAP_SPACE = 5200;
 
-// جدول ترميز الحرارة (Gray-Code) من 17°C إلى 30°C
+// جدول ترميز الحرارة (Gray-Code) من 17°C إلى 30°C (مطابق لـ IRremoteESP8266 kCoolixTempMap)
 const MIDEA_TEMP_GRAY_TABLE = [
-  0x0, // 17°C
-  0x1, // 18°C
-  0x3, // 19°C
-  0x2, // 20°C
-  0x6, // 21°C
-  0x7, // 22°C
-  0x5, // 23°C
-  0x4, // 24°C
-  0xc, // 25°C
-  0xd, // 26°C
-  0xf, // 27°C
-  0xe, // 28°C
-  0xa, // 29°C
-  0xb, // 30°C
+  0x0, // 17°C (0b0000)
+  0x1, // 18°C (0b0001)
+  0x3, // 19°C (0b0011)
+  0x2, // 20°C (0b0010)
+  0x6, // 21°C (0b0110)
+  0x7, // 22°C (0b0111)
+  0x5, // 23°C (0b0101)
+  0x4, // 24°C (0b0100)
+  0xc, // 25°C (0b1100)
+  0xd, // 26°C (0b1101)
+  0x9, // 27°C (0b1001)
+  0x8, // 28°C (0b1000)
+  0xa, // 29°C (0b1010)
+  0xb, // 30°C (0b1011)
 ];
 
 const MIDEA_MODE_BITS = {
@@ -55,8 +55,65 @@ export const MIDEA_SPECIAL_FRAMES = {
   clean: [0xb5, 0x4a, 0xf5, 0x0a, 0xaa, 0x55],     // 0xB5F5AA
 };
 
+const TOGGLE_SPECIAL_COMMANDS = new Set(['swing', 'sleep', 'turbo', 'led', 'clean']);
+
+function resolveTempAndModeByte4Base(acState) {
+  const modeKey = (acState && acState.mode) || 'cool';
+  if (modeKey === 'fan') {
+    // وضع المروحة فقط في Midea يرسل Temp=0xE مع Mode=0b01
+    return (0x0e << 4) | (MIDEA_MODE_BITS.dry << 2);
+  }
+  const rawTemp = Number(acState && acState.temperature);
+  const clampedTemp = Math.max(
+    MIDEA_MIN_TEMP,
+    Math.min(MIDEA_MAX_TEMP, Number.isFinite(rawTemp) ? Math.round(rawTemp) : 22)
+  );
+  const tempNibble = MIDEA_TEMP_GRAY_TABLE[clampedTemp - MIDEA_MIN_TEMP];
+  const modeBits =
+    MIDEA_MODE_BITS[modeKey] !== undefined ? MIDEA_MODE_BITS[modeKey] : MIDEA_MODE_BITS.cool;
+  return ((tempNibble & 0x0f) << 4) | ((modeBits & 0x03) << 2);
+}
+
+function resolveFanBits(acState, allowAutoDryFanBits = false) {
+  const modeKey = (acState && acState.mode) || 'cool';
+  const isFixedFanMode = modeKey === 'auto' || modeKey === 'dry';
+  if (isFixedFanMode && !allowAutoDryFanBits) {
+    return null;
+  }
+  const fanKey = acState && acState.fanSpeed;
+  return MIDEA_FAN_BITS[fanKey] !== undefined ? MIDEA_FAN_BITS[fanKey] : MIDEA_FAN_BITS.auto;
+}
+
+// تشفير مؤقت المكيف العتادي بصيغة COOLIX48 (من 30 دقيقة حتى 24 ساعة)
+// مطابق لمتجهات IRremoteESP8266: مثل 0xB24DA15E607F (21°C Cool 0.5h) و 0xB24DA15E90FF (27°C Cool 0.5h)
+export function buildMideaTimerBytes(acState, timerMinutes, timerAction = 'off') {
+  const safeMinutes = Math.max(30, Math.min(1440, Math.round(Number(timerMinutes) || 30)));
+  const halfHours = Math.max(1, Math.min(48, Math.round(safeMinutes / 30)));
+  const blockIndex = Math.floor((halfHours - 1) / 16); // 0: 0.5-8h, 1: 8.5-16h, 2: 16.5-24h
+  const stepInBlock = (halfHours - 1) % 16;
+  const timerLow5 = (0x01 + stepInBlock * 2) & 0x1f;
+
+  const byte0 = 0xb2;
+  const byte1 = 0x4d;
+
+  const activeFanBits = resolveFanBits(acState, true);
+  const fanBits = timerAction === 'on' && (!acState || !acState.power) ? MIDEA_FAN_BITS.auto : activeFanBits;
+  const byte2 = ((fanBits & 0x07) << 5) | timerLow5;
+  const byte3 = (~byte2) & 0xff;
+
+  const byte4 = (resolveTempAndModeByte4Base(acState) & 0xfc) | (blockIndex & 0x03);
+  const byte5 = (byte4 & 0x80) | 0x7f;
+
+  return [byte0, byte1, byte2, byte3, byte4, byte5];
+}
+
 export function buildMideaAcBytes(acState, options = {}) {
-  const { isSwingToggle = false, specialCommand = null } = options;
+  const {
+    isSwingToggle = false,
+    specialCommand = null,
+    timerMinutes = 0,
+    timerAction = 'off',
+  } = options;
 
   if (specialCommand && MIDEA_SPECIAL_FRAMES[specialCommand]) {
     return [...MIDEA_SPECIAL_FRAMES[specialCommand]];
@@ -66,6 +123,10 @@ export function buildMideaAcBytes(acState, options = {}) {
     return [...MIDEA_SPECIAL_FRAMES.swing];
   }
 
+  if (Number(timerMinutes) >= 30) {
+    return buildMideaTimerBytes(acState, timerMinutes, timerAction);
+  }
+
   if (!acState || !acState.power) {
     return [...MIDEA_SPECIAL_FRAMES.power_off];
   }
@@ -73,37 +134,11 @@ export function buildMideaAcBytes(acState, options = {}) {
   const byte0 = 0xb2;
   const byte1 = (~byte0) & 0xff; // 0x4D
 
-  const modeKey = acState.mode || 'cool';
-  const isFanOnly = modeKey === 'fan';
-  const isFixedFanMode = modeKey === 'auto' || modeKey === 'dry';
-
-  let byte2;
-  if (isFixedFanMode) {
-    byte2 = 0x1f;
-  } else {
-    const fanBits =
-      MIDEA_FAN_BITS[acState.fanSpeed] !== undefined
-        ? MIDEA_FAN_BITS[acState.fanSpeed]
-        : MIDEA_FAN_BITS.auto;
-    byte2 = ((fanBits & 0x07) << 5) | 0x1f;
-  }
+  const fanBits = resolveFanBits(acState, false);
+  const byte2 = fanBits === null ? 0x1f : ((fanBits & 0x07) << 5) | 0x1f;
   const byte3 = (~byte2) & 0xff;
 
-  let byte4;
-  if (isFanOnly) {
-    // وضع المروحة فقط في Midea يرسل Temp=0xE مع Mode=0b01
-    byte4 = (0x0e << 4) | (MIDEA_MODE_BITS.dry << 2);
-  } else {
-    const rawTemp = Number(acState.temperature);
-    const clampedTemp = Math.max(
-      MIDEA_MIN_TEMP,
-      Math.min(MIDEA_MAX_TEMP, Number.isFinite(rawTemp) ? Math.round(rawTemp) : 22)
-    );
-    const tempNibble = MIDEA_TEMP_GRAY_TABLE[clampedTemp - MIDEA_MIN_TEMP];
-    const modeBits =
-      MIDEA_MODE_BITS[modeKey] !== undefined ? MIDEA_MODE_BITS[modeKey] : MIDEA_MODE_BITS.cool;
-    byte4 = ((tempNibble & 0x0f) << 4) | ((modeBits & 0x03) << 2);
-  }
+  const byte4 = resolveTempAndModeByte4Base(acState);
   const byte5 = (~byte4) & 0xff;
 
   return [byte0, byte1, byte2, byte3, byte4, byte5];
@@ -123,13 +158,17 @@ function appendFramePulses(pattern, bytes) {
 }
 
 export function encodeMideaAcPattern(acState, options = {}) {
-  const { invertRepeat = false, repeatCount = 3 } = options;
+  const { invertRepeat = false, repeatCount, isSwingToggle = false, specialCommand = null } = options;
   const primaryBytes = buildMideaAcBytes(acState, options);
   const repeatBytes = invertRepeat
     ? primaryBytes.map((b) => (~b) & 0xff)
     : primaryBytes;
 
-  const totalFrames = Math.max(2, Math.min(4, Number(repeatCount) || 3));
+  // أوامر التبديل (مثل Sleep/Swing/Turbo/LED/Clean) تتطلب إطارين فقط (kCoolixDefaultRepeat) لمنع التفعيل ثم الإلغاء
+  const isToggle = isSwingToggle || (specialCommand && TOGGLE_SPECIAL_COMMANDS.has(specialCommand));
+  const defaultRepeats = isToggle ? 2 : 3;
+  const totalFrames = Math.max(2, Math.min(4, Number(repeatCount) || defaultRepeats));
+
   const pattern = [];
   for (let frameIdx = 0; frameIdx < totalFrames; frameIdx += 1) {
     if (frameIdx > 0) {
@@ -139,6 +178,14 @@ export function encodeMideaAcPattern(acState, options = {}) {
     appendFramePulses(pattern, frameBytes);
   }
   return pattern;
+}
+
+export function encodeMideaTimerPattern(acState, timerMinutes, timerAction = 'off', options = {}) {
+  return encodeMideaAcPattern(acState, {
+    ...options,
+    timerMinutes,
+    timerAction,
+  });
 }
 
 export function formatMideaBytesHex(bytes) {

@@ -254,7 +254,13 @@ export function TouchableOpacity({
       style={toWebStyle(style, {
         display: 'flex',
         flexDirection: flat.flexDirection || 'column',
-        border: flat.borderWidth ? undefined : 'none',
+        ...(flat.borderWidth === undefined &&
+        flat.borderTopWidth === undefined &&
+        flat.borderBottomWidth === undefined &&
+        flat.borderLeftWidth === undefined &&
+        flat.borderRightWidth === undefined
+          ? { borderWidth: 0, borderStyle: 'none' }
+          : {}),
         cursor: disabled ? 'not-allowed' : 'pointer',
         opacity: disabled ? 0.55 : pressed ? activeOpacity : 1,
         transition: 'opacity 100ms ease, transform 80ms ease, background-color 120ms ease',
@@ -435,8 +441,12 @@ export function ActivityIndicator({
         width: px,
         height: px,
         borderRadius: '50%',
-        border: `2px solid ${color}33`,
+        borderWidth: 2,
+        borderStyle: 'solid',
         borderTopColor: color,
+        borderRightColor: `${color}33`,
+        borderBottomColor: `${color}33`,
+        borderLeftColor: `${color}33`,
         animation: 'rn-spin 0.7s linear infinite',
       }}
     />

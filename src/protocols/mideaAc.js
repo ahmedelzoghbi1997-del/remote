@@ -1,16 +1,16 @@
 // بروتوكول تشفير تكييف Midea بالأشعة تحت الحمراء (48-bit / 38kHz)
-// متوافق مع المواصفة القياسية لبروتوكول Midea (A, ~A, B, ~B, C, ~C)
+// متوافق مع المواصفة القياسية لبروتوكول Midea / Coolix (A, ~A, B, ~B, C, ~C)
 
 export const MIDEA_CARRIER_HZ = 38000;
 export const MIDEA_MIN_TEMP = 17;
 export const MIDEA_MAX_TEMP = 30;
 
-// توقيتات النبضات بالميكروثانية
-const HDR_MARK = 4400;
+// توقيتات النبضات بالميكروثانية (مضبوطة لمعايرة AGC واستقبال أقوى)
+const HDR_MARK = 4500;
 const HDR_SPACE = 4400;
-const BIT_MARK = 550;
-const ONE_SPACE = 1650;
-const ZERO_SPACE = 550;
+const BIT_MARK = 560;
+const ONE_SPACE = 1690;
+const ZERO_SPACE = 560;
 const GAP_SPACE = 5200;
 
 // جدول ترميز الحرارة (Gray-Code) من 17°C إلى 30°C
@@ -45,19 +45,29 @@ const MIDEA_FAN_BITS = {
   high: 0b001,
 };
 
-// أوامر Midea المستقلة الثابتة (48-bit)
-const MIDEA_POWER_OFF_BYTES = [0xb2, 0x4d, 0x7b, 0x84, 0xe0, 0x1f];
-const MIDEA_SWING_TOGGLE_BYTES = [0xb2, 0x4d, 0x6b, 0x94, 0xe0, 0x1f];
+// أوامر Midea المستقلة الثابتة (48-bit بصيغة B0, ~B0, B2, ~B2, B4, ~B4)
+export const MIDEA_SPECIAL_FRAMES = {
+  power_off: [0xb2, 0x4d, 0x7b, 0x84, 0xe0, 0x1f], // 0xB27BE0
+  swing: [0xb2, 0x4d, 0x6b, 0x94, 0xe0, 0x1f],     // 0xB26BE0
+  sleep: [0xb2, 0x4d, 0xe0, 0x1f, 0x03, 0xfc],     // 0xB2E003
+  turbo: [0xb5, 0x4a, 0xf5, 0x0a, 0xa2, 0x5d],     // 0xB5F5A2
+  led: [0xb5, 0x4a, 0xf5, 0x0a, 0xa5, 0x5a],       // 0xB5F5A5
+  clean: [0xb5, 0x4a, 0xf5, 0x0a, 0xaa, 0x55],     // 0xB5F5AA
+};
 
 export function buildMideaAcBytes(acState, options = {}) {
-  const { isSwingToggle = false } = options;
+  const { isSwingToggle = false, specialCommand = null } = options;
+
+  if (specialCommand && MIDEA_SPECIAL_FRAMES[specialCommand]) {
+    return [...MIDEA_SPECIAL_FRAMES[specialCommand]];
+  }
 
   if (isSwingToggle) {
-    return [...MIDEA_SWING_TOGGLE_BYTES];
+    return [...MIDEA_SPECIAL_FRAMES.swing];
   }
 
   if (!acState || !acState.power) {
-    return [...MIDEA_POWER_OFF_BYTES];
+    return [...MIDEA_SPECIAL_FRAMES.power_off];
   }
 
   const byte0 = 0xb2;
@@ -113,16 +123,21 @@ function appendFramePulses(pattern, bytes) {
 }
 
 export function encodeMideaAcPattern(acState, options = {}) {
-  const { invertRepeat = false } = options;
+  const { invertRepeat = false, repeatCount = 3 } = options;
   const primaryBytes = buildMideaAcBytes(acState, options);
   const repeatBytes = invertRepeat
     ? primaryBytes.map((b) => (~b) & 0xff)
     : primaryBytes;
 
+  const totalFrames = Math.max(2, Math.min(4, Number(repeatCount) || 3));
   const pattern = [];
-  appendFramePulses(pattern, primaryBytes);
-  pattern.push(GAP_SPACE);
-  appendFramePulses(pattern, repeatBytes);
+  for (let frameIdx = 0; frameIdx < totalFrames; frameIdx += 1) {
+    if (frameIdx > 0) {
+      pattern.push(GAP_SPACE);
+    }
+    const frameBytes = frameIdx === 1 && invertRepeat ? repeatBytes : primaryBytes;
+    appendFramePulses(pattern, frameBytes);
+  }
   return pattern;
 }
 

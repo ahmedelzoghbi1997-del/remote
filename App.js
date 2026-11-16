@@ -41,15 +41,28 @@ function pushByteLsbFirst(pattern, byteValue) {
   }
 }
 
-function encodeSamsungDual0707(commandHex, addressHigh = 0x07, addressLow = 0x07) {
+function encodeSamsungDual0707(
+  commandHex,
+  addressHigh = 0x07,
+  addressLow = 0x07,
+  repeatCount = 3
+) {
   const cmd = commandHex & 0xff;
   const cmdInv = ~cmd & 0xff;
-  const pattern = [4500, 4500];
-  pushByteLsbFirst(pattern, addressHigh);
-  pushByteLsbFirst(pattern, addressLow);
-  pushByteLsbFirst(pattern, cmd);
-  pushByteLsbFirst(pattern, cmdInv);
-  pattern.push(560);
+  const totalFrames = Math.max(1, Math.min(4, Number(repeatCount) || 3));
+  const pattern = [];
+  for (let frameIdx = 0; frameIdx < totalFrames; frameIdx += 1) {
+    if (frameIdx > 0) {
+      // فاصل زمني قياسي (46ms) لمعايرة AGC وضمان التقاط الإطار التالي عند الزوايا المائلة
+      pattern.push(46000);
+    }
+    pattern.push(4500, 4500);
+    pushByteLsbFirst(pattern, addressHigh);
+    pushByteLsbFirst(pattern, addressLow);
+    pushByteLsbFirst(pattern, cmd);
+    pushByteLsbFirst(pattern, cmdInv);
+    pattern.push(560);
+  }
   return pattern;
 }
 
@@ -277,7 +290,16 @@ function App() {
     mode: 'cool',
     fanSpeed: 'auto',
     swing: true,
+    turbo: false,
+    led: true,
+    clean: false,
+    sleep: false,
   });
+  const [acTimerSeconds, setAcTimerSeconds] = useState(0);
+  const [acTimerAction, setAcTimerAction] = useState('off');
+  const [showTimerModal, setShowTimerModal] = useState(false);
+  const [draftTimerMinutes, setDraftTimerMinutes] = useState(30);
+  const [draftTimerAction, setDraftTimerAction] = useState('off');
 
   const [activeDpadDir, setActiveDpadDir] = useState(null);
   const isSendingRef = useRef(false);
@@ -354,7 +376,7 @@ function App() {
     clearErrorBanner();
   };
 
-  const handleTvCommand = async (commandKey) => {
+  const handleTvCommand = async (commandKey, options = {}) => {
     if (isSendingRef.current) {
       return;
     }
@@ -366,9 +388,15 @@ function App() {
         if (cmdHex === undefined) {
           throw new Error(`الأمر ${commandKey} غير معرف لجهاز ${brand.label}`);
         }
+        const repeatCount = options.burstFrames || 3;
         const pattern =
           brand.protocol === 'samsung_dual'
-            ? encodeSamsungDual0707(cmdHex, brand.addressHigh, brand.addressLow)
+            ? encodeSamsungDual0707(
+                cmdHex,
+                brand.addressHigh,
+                brand.addressLow,
+                repeatCount
+              )
             : encodeNecToMicroseconds(brand.address, cmdHex);
         await transmitIrPattern(pattern);
       } else {
@@ -578,6 +606,91 @@ function App() {
     }
   };
 
+  useEffect(() => {
+    if (acTimerSeconds <= 0) return undefined;
+    const timer = setInterval(() => {
+      setAcTimerSeconds((prev) => {
+        if (prev <= 1) {
+          clearInterval(timer);
+          const targetPower = acTimerAction === 'on';
+          setAcState((curr) => {
+            const nextState = { ...curr, power: targetPower };
+            const pattern = buildAcIrPattern(acBrand, nextState);
+            transmitIrPattern(pattern).catch(() => {});
+            return nextState;
+          });
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(timer);
+  }, [acTimerSeconds, acTimerAction, acBrand]);
+
+  const formatTimerLabel = (totalSec) => {
+    if (!totalSec || totalSec <= 0) return 'متوقف';
+    const hrs = Math.floor(totalSec / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    if (hrs > 0) {
+      return `${hrs} ساعة ${mins} دقيقة`;
+    }
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const formatTimerDuration = (totalMinutes) => {
+    const hrs = Math.floor(totalMinutes / 60);
+    const mins = totalMinutes % 60;
+    return `${hrs} ساعة ${mins} دقيقة`;
+  };
+
+  const formatTargetClockLabel = (offsetMinutes) => {
+    const now = new Date();
+    const target = new Date(now.getTime() + offsetMinutes * 60 * 1000);
+    const sameDay =
+      target.getFullYear() === now.getFullYear() &&
+      target.getMonth() === now.getMonth() &&
+      target.getDate() === now.getDate();
+    const dayLabel = sameDay ? 'اليوم' : 'غداً';
+    const hh = String(target.getHours()).padStart(2, '0');
+    const mm = String(target.getMinutes()).padStart(2, '0');
+    return `${dayLabel} ${hh}:${mm}`;
+  };
+
+  const handleOpenTimerModal = () => {
+    const defaultAction = acState.power ? 'off' : 'on';
+    setDraftTimerAction(acTimerSeconds > 0 ? acTimerAction : defaultAction);
+    setDraftTimerMinutes(
+      acTimerSeconds > 0 ? Math.max(30, Math.round(acTimerSeconds / 60)) : 60
+    );
+    setShowTimerModal(true);
+  };
+
+  const handleStepDraftTimer = (direction) => {
+    setDraftTimerMinutes((prev) => {
+      if (direction > 0) {
+        if (prev >= 1440) return 1440;
+        // من 0 إلى 10 ساعات يزيد بمقدار 30 دقيقة، ومن 10 إلى 24 ساعة بمقدار ساعة
+        const step = prev < 600 ? 30 : 60;
+        return Math.min(1440, prev + step);
+      }
+      if (prev <= 30) return 30;
+      const step = prev <= 600 ? 30 : 60;
+      return Math.max(30, prev - step);
+    });
+  };
+
+  const handleConfirmAcTimer = () => {
+    setAcTimerAction(draftTimerAction);
+    setAcTimerSeconds(draftTimerMinutes * 60);
+    setShowTimerModal(false);
+  };
+
+  const handleCancelAcTimer = () => {
+    setAcTimerSeconds(0);
+    setShowTimerModal(false);
+  };
+
   const acMinTemp = acBrand === 'midea' ? MIDEA_MIN_TEMP : 16;
   const acMaxTemp = acBrand === 'midea' ? MIDEA_MAX_TEMP : 30;
 
@@ -768,9 +881,9 @@ function App() {
               activeDpadDir === 'UP' && styles.dpadSectorActive,
             ]}
             activeOpacity={1}
-            repeatIntervalMs={130}
+            repeatIntervalMs={180}
             onActiveChange={(active) => setActiveDpadDir(active ? 'UP' : null)}
-            onAction={() => handleTvCommand('UP')}
+            onAction={() => handleTvCommand('UP', { burstFrames: 2 })}
           />
           <RepeatableButton
             style={[
@@ -779,9 +892,9 @@ function App() {
               activeDpadDir === 'RIGHT' && styles.dpadSectorActive,
             ]}
             activeOpacity={1}
-            repeatIntervalMs={130}
+            repeatIntervalMs={180}
             onActiveChange={(active) => setActiveDpadDir(active ? 'RIGHT' : null)}
-            onAction={() => handleTvCommand('RIGHT')}
+            onAction={() => handleTvCommand('RIGHT', { burstFrames: 2 })}
           />
           <RepeatableButton
             style={[
@@ -790,9 +903,9 @@ function App() {
               activeDpadDir === 'DOWN' && styles.dpadSectorActive,
             ]}
             activeOpacity={1}
-            repeatIntervalMs={130}
+            repeatIntervalMs={180}
             onActiveChange={(active) => setActiveDpadDir(active ? 'DOWN' : null)}
-            onAction={() => handleTvCommand('DOWN')}
+            onAction={() => handleTvCommand('DOWN', { burstFrames: 2 })}
           />
           <RepeatableButton
             style={[
@@ -801,9 +914,9 @@ function App() {
               activeDpadDir === 'LEFT' && styles.dpadSectorActive,
             ]}
             activeOpacity={1}
-            repeatIntervalMs={130}
+            repeatIntervalMs={180}
             onActiveChange={(active) => setActiveDpadDir(active ? 'LEFT' : null)}
-            onAction={() => handleTvCommand('LEFT')}
+            onAction={() => handleTvCommand('LEFT', { burstFrames: 2 })}
           />
         </View>
 
@@ -868,16 +981,16 @@ function App() {
         <View style={styles.rockerCard}>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={120}
-            onAction={() => handleTvCommand('VOL_UP')}
+            repeatIntervalMs={180}
+            onAction={() => handleTvCommand('VOL_UP', { burstFrames: 2 })}
           >
             <Text style={styles.rockerSymbol}>+</Text>
           </RepeatableButton>
           <Text style={styles.rockerLabel}>الصوت</Text>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={120}
-            onAction={() => handleTvCommand('VOL_DOWN')}
+            repeatIntervalMs={180}
+            onAction={() => handleTvCommand('VOL_DOWN', { burstFrames: 2 })}
           >
             <Text style={styles.rockerSymbol}>−</Text>
           </RepeatableButton>
@@ -886,16 +999,16 @@ function App() {
         <View style={styles.rockerCard}>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={150}
-            onAction={() => handleTvCommand('CH_UP')}
+            repeatIntervalMs={180}
+            onAction={() => handleTvCommand('CH_UP', { burstFrames: 2 })}
           >
             <Text style={styles.rockerSymbol}>▲</Text>
           </RepeatableButton>
           <Text style={styles.rockerLabel}>القناة</Text>
           <RepeatableButton
             style={styles.rockerKey}
-            repeatIntervalMs={150}
-            onAction={() => handleTvCommand('CH_DOWN')}
+            repeatIntervalMs={180}
+            onAction={() => handleTvCommand('CH_DOWN', { burstFrames: 2 })}
           >
             <Text style={styles.rockerSymbol}>▼</Text>
           </RepeatableButton>
@@ -1048,11 +1161,11 @@ function App() {
       ) : (
         <ScrollView
           style={styles.scrollArea}
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={styles.acScrollContent}
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.sectionStack}>
-            <View style={styles.rowGap}>
+          <View style={styles.acSectionStack}>
+            <View style={styles.acRowGap}>
               {[
                 { key: 'midea', label: 'Midea AC' },
                 { key: 'gree', label: 'Gree AC' },
@@ -1060,7 +1173,7 @@ function App() {
               ].map((b) => (
                 <TouchableOpacity
                   key={b.key}
-                  style={[styles.chipBtn, acBrand === b.key && styles.chipBtnActive]}
+                  style={[styles.acBrandChip, acBrand === b.key && styles.chipBtnActive]}
                   onPress={() => {
                     setAcBrand(b.key);
                     if (b.key === 'midea' && acState.temperature < MIDEA_MIN_TEMP) {
@@ -1068,7 +1181,7 @@ function App() {
                     }
                   }}
                 >
-                  <Text style={styles.chipText}>{b.label}</Text>
+                  <Text style={styles.acCompactLabel}>{b.label}</Text>
                 </TouchableOpacity>
               ))}
             </View>
@@ -1082,12 +1195,12 @@ function App() {
                 {acState.power ? `${acState.temperature}°C` : 'OFF'}
               </Text>
               <Text style={styles.acFooter}>
-                توجيه الهواء: {acState.swing ? 'متحرك' : 'ثابت'} · IR 38kHz
-                {acBrand === 'midea' ? ' · Midea 48-bit' : ''}
+                الريش: {acState.swing ? 'متحرك' : 'ثابت'} · IR 38kHz
+                {acBrand === 'midea' ? ' · Midea' : ''}
               </Text>
             </View>
 
-            <View style={styles.rowGap}>
+            <View style={styles.acRowGap}>
               <TouchableOpacity
                 style={styles.tempStepBtn}
                 onPress={() => {
@@ -1136,8 +1249,7 @@ function App() {
               </TouchableOpacity>
             </View>
 
-            <Text style={styles.sectionCaption}>وضع التشغيل</Text>
-            <View style={styles.modesWrap}>
+            <View style={styles.modesRow}>
               {AC_MODES.map((m) => {
                 const active = acState.mode === m.key;
                 return (
@@ -1152,13 +1264,13 @@ function App() {
                       updateAcAndTransmit({ ...acState, power: true, mode: m.key })
                     }
                   >
-                    <Text style={styles.btnText}>{m.label}</Text>
+                    <Text style={styles.acCompactLabel}>{m.label}</Text>
                   </TouchableOpacity>
                 );
               })}
             </View>
 
-            <View style={styles.rowGap}>
+            <View style={styles.acRowGap}>
               <TouchableOpacity
                 style={styles.extraCard}
                 onPress={() => {
@@ -1172,7 +1284,7 @@ function App() {
                 }}
               >
                 <Text style={styles.extraCaption}>سرعة المروحة</Text>
-                <Text style={styles.btnTextBold}>{currentFanLabel}</Text>
+                <Text style={styles.btnText}>{currentFanLabel}</Text>
               </TouchableOpacity>
 
               <TouchableOpacity
@@ -1186,11 +1298,94 @@ function App() {
                 }}
               >
                 <Text style={styles.extraCaption}>تأرجح الريش</Text>
-                <Text style={styles.btnTextBold}>
+                <Text style={styles.btnText}>
                   {acState.swing ? 'يعمل' : 'متوقف'}
                 </Text>
               </TouchableOpacity>
             </View>
+
+            {acBrand === 'midea' ? (
+              <>
+                <View style={styles.modesRow}>
+                  <TouchableOpacity
+                    style={[styles.acFeatureBtn, acState.turbo && styles.modeCoolActive]}
+                    onPress={() =>
+                      updateAcAndTransmit(
+                        { ...acState, power: true, turbo: !acState.turbo },
+                        { specialCommand: 'turbo' }
+                      )
+                    }
+                  >
+                    <Text style={styles.acCompactLabel}>تربو</Text>
+                    <Text style={styles.acTinyState}>
+                      {acState.turbo ? 'مفعّل' : 'Turbo'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.acFeatureBtn, acState.led && styles.modeCoolActive]}
+                    onPress={() =>
+                      updateAcAndTransmit(
+                        { ...acState, led: !acState.led },
+                        { specialCommand: 'led' }
+                      )
+                    }
+                  >
+                    <Text style={styles.acCompactLabel}>الشاشة</Text>
+                    <Text style={styles.acTinyState}>
+                      {acState.led ? 'مضيئة' : 'مطفأة'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.acFeatureBtn, acState.clean && styles.modeCoolActive]}
+                    onPress={() =>
+                      updateAcAndTransmit(
+                        { ...acState, clean: !acState.clean },
+                        { specialCommand: 'clean' }
+                      )
+                    }
+                  >
+                    <Text style={styles.acCompactLabel}>تنظيف</Text>
+                    <Text style={styles.acTinyState}>
+                      {acState.clean ? 'نشط' : 'Clean'}
+                    </Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.acFeatureBtn, acState.sleep && styles.modeCoolActive]}
+                    onPress={() =>
+                      updateAcAndTransmit(
+                        { ...acState, power: true, sleep: !acState.sleep },
+                        { specialCommand: 'sleep' }
+                      )
+                    }
+                  >
+                    <Text style={styles.acCompactLabel}>نوم</Text>
+                    <Text style={styles.acTinyState}>
+                      {acState.sleep ? 'مفعّل' : 'Sleep'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+
+                <TouchableOpacity
+                  style={[
+                    styles.timerCard,
+                    acTimerSeconds > 0 && styles.modeCoolActive,
+                  ]}
+                  onPress={handleOpenTimerModal}
+                >
+                  <View style={styles.timerRow}>
+                    <Text style={styles.btnText}>المؤقت (Timer)</Text>
+                    <Text style={styles.timerValue} numberOfLines={1}>
+                      {acTimerSeconds > 0
+                        ? `${acTimerAction === 'on' ? 'تشغيل' : 'إطفاء'} ${formatTargetClockLabel(Math.ceil(acTimerSeconds / 60))}`
+                        : 'ضبط (30د – 24س)'}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              </>
+            ) : null}
           </View>
         </ScrollView>
       )}
@@ -1366,6 +1561,92 @@ function App() {
                 onPress={handleSaveWifi}
               >
                 <Text style={styles.btnTextBold}>حفظ واتصال</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={showTimerModal} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>مؤقت مكيف الهواء (Timer)</Text>
+            <Text style={styles.timerModalHint}>
+              حدد الوقت المطلوب (بنفس تدرج ريموت Midea من 30 دقيقة حتى 24 ساعة)
+            </Text>
+
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={[
+                  styles.chipBtn,
+                  draftTimerAction === 'off' && styles.chipBtnActive,
+                ]}
+                onPress={() => setDraftTimerAction('off')}
+              >
+                <Text style={styles.chipText}>جدولة الإطفاء</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.chipBtn,
+                  draftTimerAction === 'on' && styles.chipBtnActive,
+                ]}
+                onPress={() => setDraftTimerAction('on')}
+              >
+                <Text style={styles.chipText}>جدولة التشغيل</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.timerStepperBox}>
+              <TouchableOpacity
+                style={styles.timerStepSideBtn}
+                onPress={() => handleStepDraftTimer(-1)}
+              >
+                <Text style={styles.rockerSymbol}>−</Text>
+              </TouchableOpacity>
+
+              <View style={styles.timerStepCenter}>
+                <Text style={styles.timerStepDurationText}>
+                  {formatTimerDuration(draftTimerMinutes)}
+                </Text>
+              </View>
+
+              <TouchableOpacity
+                style={styles.timerStepSideBtn}
+                onPress={() => handleStepDraftTimer(1)}
+              >
+                <Text style={styles.rockerSymbol}>+</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.timerTargetPreview}>
+              {draftTimerAction === 'on'
+                ? `سيتم تشغيل مكيف الهواء في ${formatTargetClockLabel(draftTimerMinutes)}`
+                : `سيتم إيقاف مكيف الهواء في ${formatTargetClockLabel(draftTimerMinutes)}`}
+            </Text>
+
+            {acTimerSeconds > 0 ? (
+              <TouchableOpacity
+                style={styles.timerCancelBtn}
+                onPress={handleCancelAcTimer}
+              >
+                <Text style={styles.clearTokenText}>إلغاء المؤقت الحالي</Text>
+              </TouchableOpacity>
+            ) : null}
+
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={styles.navBtn}
+                onPress={() => setShowTimerModal(false)}
+              >
+                <Text style={styles.btnText}>خروج</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.navBtn, styles.modalSaveBtn]}
+                onPress={handleConfirmAcTimer}
+              >
+                <Text style={styles.btnTextBold}>
+                  {draftTimerAction === 'on' ? 'جدولة تشغيل الوقت' : 'جدولة إيقاف الوقت'}
+                </Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -1781,29 +2062,48 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: '700',
   },
+  acScrollContent: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  acSectionStack: { gap: 9 },
+  acRowGap: { flexDirection: 'row', gap: 8 },
+  acBrandChip: {
+    flex: 1,
+    minHeight: 34,
+    borderRadius: 10,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  acCompactLabel: { color: '#F1F5F9', fontSize: 12, fontWeight: '600' },
+  acTinyState: { color: '#94A3B8', fontSize: 10, fontWeight: '500' },
   acLcd: {
     backgroundColor: '#0F172A',
-    borderRadius: 18,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: '#1E293B',
-    padding: 20,
+    paddingVertical: 12,
+    paddingHorizontal: 16,
     alignItems: 'center',
-    gap: 8,
+    gap: 4,
   },
   acLcdOff: { opacity: 0.5 },
   acLcdTop: { width: '100%', flexDirection: 'row', justifyContent: 'space-between' },
-  acMeta: { color: '#94A3B8', fontSize: 13, fontWeight: '600' },
+  acMeta: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
   acTemp: {
     color: '#F1F5F9',
-    fontSize: 52,
+    fontSize: 42,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
-  acFooter: { color: '#0EA5E9', fontSize: 12, fontWeight: '600' },
+  acFooter: { color: '#0EA5E9', fontSize: 11, fontWeight: '600' },
   tempStepBtn: {
-    width: 72,
-    height: 58,
-    borderRadius: 14,
+    width: 66,
+    height: 48,
+    borderRadius: 12,
     backgroundColor: '#1A202C',
     borderWidth: 1,
     borderColor: '#252E3E',
@@ -1812,19 +2112,19 @@ const styles = StyleSheet.create({
   },
   acPowerBtn: {
     flex: 1,
-    height: 58,
-    borderRadius: 14,
+    height: 48,
+    borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',
   },
   acPowerOn: { backgroundColor: '#EF4444' },
   acPowerOff: { backgroundColor: '#16A34A' },
   sectionCaption: { color: '#94A3B8', fontSize: 13, fontWeight: '600', textAlign: 'right' },
-  modesWrap: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  modesRow: { flexDirection: 'row', gap: 6 },
   modeChip: {
-    width: '31%',
-    minHeight: 46,
-    borderRadius: 12,
+    flex: 1,
+    minHeight: 40,
+    borderRadius: 10,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
@@ -1835,17 +2135,53 @@ const styles = StyleSheet.create({
   modeHeatActive: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.16)' },
   extraCard: {
     flex: 1,
-    minHeight: 60,
-    borderRadius: 14,
+    minHeight: 46,
+    borderRadius: 12,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
-    padding: 10,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 4,
+    gap: 2,
   },
-  extraCaption: { color: '#94A3B8', fontSize: 12 },
+  extraCaption: { color: '#94A3B8', fontSize: 11 },
+  acFeatureBtn: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingVertical: 6,
+    paddingHorizontal: 4,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 2,
+  },
+  timerCard: {
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingVertical: 10,
+    paddingHorizontal: 14,
+    justifyContent: 'center',
+  },
+  timerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  timerValue: {
+    color: '#38BDF8',
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
   tabBar: {
     flexDirection: 'row',
     borderTopWidth: 1,
@@ -1927,6 +2263,56 @@ const styles = StyleSheet.create({
   tokenStatusLabel: { color: '#94A3B8', fontSize: 12, flex: 1, textAlign: 'right' },
   clearTokenText: { color: '#EF4444', fontSize: 12, fontWeight: '700' },
   modalSaveBtn: { backgroundColor: '#0EA5E9', borderColor: '#0EA5E9' },
+  timerModalHint: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  timerStepperBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0B0D11',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    overflow: 'hidden',
+    minHeight: 62,
+  },
+  timerStepSideBtn: {
+    width: 64,
+    height: 62,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#1A202C',
+  },
+  timerStepCenter: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 8,
+  },
+  timerStepDurationText: {
+    color: '#F1F5F9',
+    fontSize: 17,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  timerTargetPreview: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  timerCancelBtn: {
+    minHeight: 40,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.35)',
+    backgroundColor: 'rgba(239,68,68,0.08)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
 });
 
 export default App;

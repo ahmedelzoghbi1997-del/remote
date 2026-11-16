@@ -61,12 +61,35 @@ jobs:
           import com.facebook.react.bridge.Promise
           import com.facebook.react.bridge.ReadableArray
           import com.facebook.react.bridge.Arguments
+          import java.util.concurrent.Executors
 
           class IrManagerModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
-              private var irManager: ConsumerIrManager? = reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as ConsumerIrManager?
+              private val irManager: ConsumerIrManager? =
+                  reactContext.getSystemService(Context.CONSUMER_IR_SERVICE) as ConsumerIrManager?
+              private val irExecutor = Executors.newSingleThreadExecutor()
 
               override fun getName(): String {
                   return "IrManagerModule"
+              }
+
+              private fun resolveCarrierFrequency(requestedHz: Int): Int {
+                  val manager = irManager ?: return requestedHz
+                  val ranges = manager.carrierFrequencies ?: return requestedHz
+                  if (ranges.isEmpty()) return requestedHz
+                  var nearest = requestedHz
+                  var minDiff = Int.MAX_VALUE
+                  for (range in ranges) {
+                      if (requestedHz in range.minFrequency..range.maxFrequency) {
+                          return requestedHz
+                      }
+                      val clamped = requestedHz.coerceIn(range.minFrequency, range.maxFrequency)
+                      val diff = kotlin.math.abs(requestedHz - clamped)
+                      if (diff < minDiff) {
+                          minDiff = diff
+                          nearest = clamped
+                      }
+                  }
+                  return nearest
               }
 
               @ReactMethod
@@ -76,19 +99,37 @@ jobs:
 
               @ReactMethod
               fun transmitIR(pattern: ReadableArray, carrierFrequency: Int, promise: Promise) {
-                  if (irManager?.hasIrEmitter() == true) {
-                      val patternArray = IntArray(pattern.size())
-                      for (i in 0 until pattern.size()) {
-                          patternArray[i] = pattern.getInt(i)
-                      }
-                      irManager?.transmit(carrierFrequency, patternArray)
-                      val result = Arguments.createMap()
-                      result.putInt("carrierFrequency", carrierFrequency)
-                      result.putInt("pulseCount", patternArray.size)
-                      promise.resolve(result)
-                  } else {
+                  val manager = irManager
+                  if (manager?.hasIrEmitter() != true) {
                       promise.reject("NO_IR", "No IR emitter found on this device.")
+                      return
                   }
+                  val size = pattern.size()
+                  if (size <= 0) {
+                      promise.reject("INVALID_PATTERN", "IR pattern must not be empty.")
+                      return
+                  }
+                  val patternArray = IntArray(size)
+                  for (i in 0 until size) {
+                      patternArray[i] = pattern.getInt(i).coerceAtLeast(1)
+                  }
+                  val safeFrequency = resolveCarrierFrequency(carrierFrequency)
+                  irExecutor.execute {
+                      try {
+                          manager.transmit(safeFrequency, patternArray)
+                          val result = Arguments.createMap()
+                          result.putInt("carrierFrequency", safeFrequency)
+                          result.putInt("pulseCount", patternArray.size)
+                          promise.resolve(result)
+                      } catch (e: Exception) {
+                          promise.reject("IR_TRANSMIT_ERROR", e.message ?: "Failed to transmit IR signal.", e)
+                      }
+                  }
+              }
+
+              override fun onCatalystInstanceDestroy() {
+                  super.onCatalystInstanceDestroy()
+                  irExecutor.shutdownNow()
               }
           }
           EOF

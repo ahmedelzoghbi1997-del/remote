@@ -346,7 +346,7 @@ function SearchIcon({ color = '#F1F5F9', size = 20 }) {
   );
 }
 
-const DPAD_CENTER_OFFSET = 123;
+const DPAD_CENTER_OFFSET = 113;
 const DPAD_WEDGE_ROTATION = {
   UP: '0deg',
   RIGHT: '90deg',
@@ -1461,30 +1461,27 @@ function App() {
       </View>
 
       {tvTransport === 'wifi' ? (
-        <View style={styles.smartAppsSection}>
-          <Text style={styles.sectionCaption}>التطبيقات الذكية</Text>
-          <View style={styles.rowGap}>
-            <TouchableOpacity
-              style={styles.youtubeBtn}
-              activeOpacity={0.8}
-              onPress={() => handleLaunchYouTube()}
-              disabled={isLaunchingYouTube}
-            >
-              {isLaunchingYouTube ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Text style={styles.btnTextBold}>YouTube</Text>
-              )}
-            </TouchableOpacity>
+        <View style={styles.rowGap}>
+          <TouchableOpacity
+            style={styles.youtubeBtn}
+            activeOpacity={0.8}
+            onPress={() => handleLaunchYouTube()}
+            disabled={isLaunchingYouTube}
+          >
+            {isLaunchingYouTube ? (
+              <ActivityIndicator size="small" color="#FFFFFF" />
+            ) : (
+              <Text style={styles.btnTextBold}>YouTube</Text>
+            )}
+          </TouchableOpacity>
 
-            <TouchableOpacity
-              style={styles.netflixBtn}
-              activeOpacity={0.8}
-              onPress={() => handleTvCommand('NETFLIX')}
-            >
-              <Text style={styles.btnTextBold}>Netflix</Text>
-            </TouchableOpacity>
-          </View>
+          <TouchableOpacity
+            style={styles.netflixBtn}
+            activeOpacity={0.8}
+            onPress={() => handleTvCommand('NETFLIX')}
+          >
+            <Text style={styles.btnTextBold}>Netflix</Text>
+          </TouchableOpacity>
         </View>
       ) : null}
 
@@ -2300,8 +2297,8 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 18,
-    paddingVertical: 12,
-    minHeight: 62,
+    paddingVertical: 8,
+    minHeight: 54,
     borderBottomWidth: 1,
     borderBottomColor: '#1E2532',
     gap: 10,
@@ -2403,20 +2400,20 @@ const styles = StyleSheet.create({
   feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
   feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 16 },
-  sectionStack: { gap: 10 },
+  scrollContent: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 10 },
+  sectionStack: { gap: 8 },
   segmentBox: {
     flexDirection: 'row',
     backgroundColor: '#131720',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: '#1E2532',
-    padding: 4,
+    padding: 3,
     gap: 4,
   },
   segmentBtn: {
     flex: 1,
-    minHeight: 44,
+    minHeight: 38,
     borderRadius: 9,
     justifyContent: 'center',
     alignItems: 'center',
@@ -2511,7 +2508,7 @@ const styles = StyleSheet.create({
   discoveredConnectTag: { color: '#0EA5E9', fontSize: 12, fontWeight: '700' },
   powerBtn: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 44,
     borderRadius: 14,
     backgroundColor: '#EF4444',
     justifyContent: 'center',
@@ -2519,7 +2516,7 @@ const styles = StyleSheet.create({
   },
   actionBtn: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 44,
     borderRadius: 14,
     backgroundColor: '#1A202C',
     borderWidth: 1,
@@ -2531,9 +2528,9 @@ const styles = StyleSheet.create({
   btnTextBold: { color: '#FFFFFF', fontSize: 14, fontWeight: '700' },
   dpadCircle: {
     alignSelf: 'center',
-    width: 248,
-    height: 248,
-    borderRadius: 124,
+    width: 228,
+    height: 228,
+    borderRadius: 114,
     backgroundColor: '#171E2C',
     borderWidth: 1,
     borderColor: '#253044',
@@ -2550,10 +2547,10 @@ const styles = StyleSheet.create({
     left: 0,
     width: 0,
     height: 0,
-    borderTopWidth: 123,
-    borderRightWidth: 123,
-    borderBottomWidth: 123,
-    borderLeftWidth: 123,
+    borderTopWidth: 113,
+    borderRightWidth: 113,
+    borderBottomWidth: 113,
+    borderLeftWidth: 113,
     borderTopColor: 'rgba(14, 165, 233, 0.14)',
     borderRightColor: 'transparent',
     borderBottomColor: 'transparent',
@@ -2577,7 +2574,7 @@ const styles = StyleSheet.create({
     direction: 'ltr',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 34,
+    paddingVertical: 28,
     zIndex: 6,
   },
   dpadDotsMiddleRow: {
@@ -2586,7 +2583,7 @@ const styles = StyleSheet.create({
     direction: 'ltr',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingHorizontal: 34,
+    paddingHorizontal: 28,
   },
   dpadDot: {
     width: 8,
@@ -2599,9 +2596,9 @@ const styles = StyleSheet.create({
     transform: [{ scale: 1.35 }],
   },
   dpadOkBtn: {
-    width: 96,
-    height: 96,
-    borderRadius: 48,
+    width: 86,
+    height: 86,
+    borderRadius: 43,
     backgroundColor: '#1E2738',
     borderWidth: 1,
     borderColor: '#2E3B52',
@@ -2620,7 +2617,7 @@ const styles = StyleSheet.create({
   },
   navBtn: {
     flex: 1,
-    minHeight: 46,
+    minHeight: 42,
     borderRadius: 12,
     backgroundColor: '#131720',
     borderWidth: 1,
@@ -2634,13 +2631,13 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     borderWidth: 1,
     borderColor: '#1E2532',
-    padding: 8,
+    padding: 6,
     alignItems: 'center',
-    gap: 8,
+    gap: 5,
   },
   rockerKey: {
     width: '100%',
-    minHeight: 48,
+    minHeight: 44,
     borderRadius: 12,
     backgroundColor: '#1A202C',
     justifyContent: 'center',
@@ -2648,10 +2645,9 @@ const styles = StyleSheet.create({
   },
   rockerSymbol: { color: '#F1F5F9', fontSize: 20, fontWeight: '700' },
   rockerLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  smartAppsSection: { gap: 6, marginTop: 0 },
   youtubeBtn: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 44,
     borderRadius: 14,
     backgroundColor: '#EF4444',
     justifyContent: 'center',
@@ -2659,7 +2655,7 @@ const styles = StyleSheet.create({
   },
   netflixBtn: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 44,
     borderRadius: 14,
     backgroundColor: '#7F1D1D',
     borderWidth: 1,
@@ -3011,12 +3007,12 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: '#1E2532',
     backgroundColor: '#131720',
-    padding: 8,
+    padding: 6,
     gap: 8,
   },
   tabBtn: {
     flex: 1,
-    minHeight: 48,
+    minHeight: 42,
     borderRadius: 12,
     justifyContent: 'center',
     alignItems: 'center',

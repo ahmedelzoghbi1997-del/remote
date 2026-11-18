@@ -313,6 +313,17 @@ jobs:
           sed -i '/import android.app.Application/a \import com.facebook.react.modules.network.OkHttpClientProvider\nimport com.facebook.react.modules.websocket.WebSocketModule' universalremote/android/app/src/main/java/com/universalremote/MainApplication.kt
           sed -i '/SoLoader.init(this, false)/a \    val lanTlsFactory = LanTlsOkHttpFactory()\n    OkHttpClientProvider.setOkHttpClientFactory(lanTlsFactory)\n    WebSocketModule.setCustomClientBuilder(lanTlsFactory)' universalremote/android/app/src/main/java/com/universalremote/MainApplication.kt
 
+      - name: Generate Android App Icons from Single Logo
+        working-directory: ./universalremote
+        run: |
+          if ! command -v convert >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y imagemagick
+          fi
+          chmod +x scripts/generate-android-icons.sh
+          bash scripts/generate-android-icons.sh assets/app-icon.png android/app/src/main/res
+          grep -q 'android:icon="@mipmap/ic_launcher"' android/app/src/main/AndroidManifest.xml
+          grep -q 'android:roundIcon="@mipmap/ic_launcher_round"' android/app/src/main/AndroidManifest.xml
+
       - name: Grant execute permission for gradlew
         working-directory: ./universalremote/android
         run: chmod +x gradlew

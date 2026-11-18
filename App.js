@@ -795,7 +795,10 @@ function App() {
     }
   };
 
+  const isWifiSearchAvailable = activeTab === 'tv' && tvTransport === 'wifi';
+
   const handleOpenSearch = () => {
+    if (!isWifiSearchAvailable) return;
     clearErrorBanner();
     setIsSearchInputOpen(true);
   };
@@ -814,6 +817,12 @@ function App() {
     setLastCastedVideoId(null);
     clearErrorBanner();
   };
+
+  useEffect(() => {
+    if (!isWifiSearchAvailable && isSearchInputOpen) {
+      handleCloseSearch();
+    }
+  }, [isWifiSearchAvailable, isSearchInputOpen]);
 
   const handleClearSearchText = () => {
     if (searchDebounceRef.current) {
@@ -1355,7 +1364,8 @@ function App() {
     </View>
   );
 
-  const isSearchPageOpen = isSearchInputOpen && searchQuery.trim().length > 0;
+  const isSearchPageOpen =
+    isWifiSearchAvailable && isSearchInputOpen && searchQuery.trim().length > 0;
 
   const renderVideoItem = ({ item }) => {
     const isCasting = castingVideoId === item.videoId;
@@ -1399,7 +1409,7 @@ function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0B0D11" />
 
       <View style={styles.header}>
-        {isSearchInputOpen ? (
+        {isWifiSearchAvailable && isSearchInputOpen ? (
           <View style={styles.headerSearchRow}>
             <TouchableOpacity
               style={styles.headerBackBtn}
@@ -1436,14 +1446,16 @@ function App() {
           <>
             <View style={styles.headerBrandGroup}>
               <Text style={styles.headerTitle}>الريموت الشامل</Text>
-              <TouchableOpacity
-                style={styles.headerSearchIconBtn}
-                activeOpacity={0.75}
-                onPress={handleOpenSearch}
-                accessibilityLabel="بحث"
-              >
-                <SearchIcon color="#F1F5F9" size={20} />
-              </TouchableOpacity>
+              {isWifiSearchAvailable ? (
+                <TouchableOpacity
+                  style={styles.headerSearchIconBtn}
+                  activeOpacity={0.75}
+                  onPress={handleOpenSearch}
+                  accessibilityLabel="بحث"
+                >
+                  <SearchIcon color="#F1F5F9" size={20} />
+                </TouchableOpacity>
+              ) : null}
             </View>
 
             <Text style={styles.headerStatus}>

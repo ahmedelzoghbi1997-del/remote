@@ -1072,18 +1072,17 @@ class WifiControlService {
 
   /**
    * فتح تطبيق يوتيوب مباشرة على الشاشة الذكية
-   * - Samsung Tizen (مثل AU7000): يعتمد حصرياً على قناة WebSocket الموثقة (Port 8002)
-   *   عبر حدث ed.apps.launch (NATIVE_LAUNCH) بعد جاهزية ms.channel.connect
+   * - Samsung Tizen (AU7000): POST مباشر إلى المنفذ 8001 لمعرف التطبيق 111299001912
    */
   async launchYouTube() {
     if (IS_WEB) {
       return {
         launched: true,
         mocked: true,
-        method: this.protocol === 'samsung_tizen' ? 'websocket_8002' : 'dial',
+        method: this.protocol === 'samsung_tizen' ? 'tizen_rest_8001' : 'dial',
         endpoint:
           this.protocol === 'samsung_tizen'
-            ? `wss://${this.ipAddress}:${this.port}`
+            ? `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_YOUTUBE_APP_ID}`
             : `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
       };
     }
@@ -1098,24 +1097,16 @@ class WifiControlService {
     }
 
     if (this.protocol === 'samsung_tizen') {
-      const tizenLaunchPayload = {
-        method: 'ms.channel.emit',
-        params: {
-          event: 'ed.apps.launch',
-          to: 'host',
-          data: {
-            appId: SAMSUNG_YOUTUBE_APP_ID,
-            action_type: 'NATIVE_LAUNCH',
-          },
-        },
-      };
-
-      await this._sendWsJson(tizenLaunchPayload);
+      const url = `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_YOUTUBE_APP_ID}`;
+      const res = await this._postWithTimeout(url, { method: 'POST' }, 5000);
+      if (!res.ok) {
+        throw new Error(`تعذر فتح تطبيق يوتيوب على ${this.ipAddress} (${res.status})`);
+      }
       return {
         launched: true,
-        method: 'websocket_8002',
+        method: 'tizen_rest_8001',
         appId: SAMSUNG_YOUTUBE_APP_ID,
-        endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
+        endpoint: url,
       };
     }
 
@@ -1144,6 +1135,95 @@ class WifiControlService {
     throw new Error(
       `تعذر فتح تطبيق يوتيوب على ${this.ipAddress}. تأكد من اتصال الهاتف والشاشة بنفس شبكة الواي فاي.`
     );
+  }
+
+  async _getTizenYouTubeStatus() {
+    const statusUrl = `http://${this.ipAddress}:8080/ws/apps/YouTube`;
+    try {
+      const res = await this._postWithTimeout(statusUrl, { method: 'GET' }, 3000);
+      if (!res.ok) {
+        return { isRunning: false, screenId: '' };
+      }
+      const xml = await res.text();
+      const isRunning = /<state[^>]*>\s*running\s*<\/state>/i.test(xml);
+      const screenIdMatch = xml.match(/<screenId>([^<]+)<\/screenId>/i);
+      const screenId = screenIdMatch && screenIdMatch[1] ? screenIdMatch[1].trim() : '';
+      return { isRunning, screenId };
+    } catch (_) {
+      return { isRunning: false, screenId: '' };
+    }
+  }
+
+  async _castViaYouTubeLounge(screenId, cleanVideoId) {
+    // 1. جلب Lounge Token
+    const tokenRes = await this._postWithTimeout(
+      'https://www.youtube.com/api/lounge/pairing/get_lounge_token_batch',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `screen_ids=${encodeURIComponent(screenId)}`,
+      },
+      8000
+    );
+    if (!tokenRes.ok) {
+      throw new Error(`فشل جلب Lounge Token (${tokenRes.status})`);
+    }
+    const tokenJson = await tokenRes.json();
+    const loungeToken =
+      tokenJson &&
+      Array.isArray(tokenJson.screens) &&
+      tokenJson.screens[0] &&
+      tokenJson.screens[0].loungeToken
+        ? String(tokenJson.screens[0].loungeToken).trim()
+        : '';
+    if (!loungeToken) {
+      throw new Error('لم تُرجع شاشة يوتيوب رمز Lounge Token صالحاً.');
+    }
+
+    // 2. ربط الجلسة (Bind)
+    const base = `https://www.youtube.com/api/lounge/bc/bind?device=REMOTE_CONTROL&id=11111111-1111-1111-1111-111111111111&name=UniversalRemote&app=youtube-desktop&mdx-version=3&VER=8&v=2&t=1&CVER=1&loungeIdToken=${encodeURIComponent(
+      loungeToken
+    )}`;
+
+    const bindRes = await this._postWithTimeout(
+      `${base}&RID=1`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'count=0',
+      },
+      8000
+    );
+    if (!bindRes.ok) {
+      throw new Error(`فشل ربط جلسة YouTube Lounge (${bindRes.status})`);
+    }
+    const bindText = await bindRes.text();
+    const sidMatch = bindText.match(/\["c",\s*"([^"]+)"/);
+    const gsidMatch = bindText.match(/\["S",\s*"([^"]+)"/);
+    const sid = sidMatch && sidMatch[1] ? sidMatch[1] : '';
+    const gsid = gsidMatch && gsidMatch[1] ? gsidMatch[1] : '';
+
+    if (!sid || !gsid) {
+      throw new Error('تعذر استخراج SID أو gsessionid من جلسة YouTube Lounge.');
+    }
+
+    // 3. تشغيل / تبديل الفيديو (setPlaylist)
+    const playRes = await this._postWithTimeout(
+      `${base}&RID=2&AID=0&SID=${encodeURIComponent(sid)}&gsessionid=${encodeURIComponent(gsid)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: `count=1&ofs=0&req0__sc=setPlaylist&req0_videoId=${encodeURIComponent(
+          cleanVideoId
+        )}&req0_currentIndex=0&req0_currentTime=0`,
+      },
+      8000
+    );
+    if (!playRes.ok) {
+      throw new Error(`فشل إرسال أمر تشغيل الفيديو setPlaylist (${playRes.status})`);
+    }
+
+    return { screenId, sid, gsid };
   }
 
   async _tryDialCast(cleanVideoId) {
@@ -1180,9 +1260,10 @@ class WifiControlService {
 
   /**
    * إرسال فيديو محدد (Cast) وتشغيله فوراً على الشاشة:
-   * - Samsung Tizen (مثل AU7000): يرسل حصرياً عبر قناة WebSocket الموثقة (8002)
-   *   باستخدام DEEP_LINK و metaTag بعد جاهزية ms.channel.connect (بدون DIAL المحظور)
-   * - Android TV / Chromecast: يستخدم DIAL ثم التشغيل البارد عند الحاجة
+   * - Samsung Tizen (AU7000):
+   *   1) فحص الحالة عبر GET :8080/ws/apps/YouTube لاستخراج screenId
+   *   2) إذا كان مغلقاً: launchYouTube() عبر 8001 ثم Polling كل 500ms (بحد أقصى 30 محاولة) ثم انتظار 1800ms
+   *   3) البث الفوري عبر YouTube Lounge API (get_lounge_token_batch -> bc/bind -> setPlaylist)
    */
   async castYouTubeVideo(videoId) {
     const cleanVideoId = extractYoutubeVideoId(videoId) || String(videoId || '').trim();
@@ -1206,25 +1287,43 @@ class WifiControlService {
     }
 
     if (this.protocol === 'samsung_tizen') {
-      const deepLinkPayload = {
-        method: 'ms.channel.emit',
-        params: {
-          event: 'ed.apps.launch',
-          to: 'host',
-          data: {
-            appId: SAMSUNG_YOUTUBE_APP_ID,
-            action_type: 'DEEP_LINK',
-            metaTag: `https://www.youtube.com/watch?v=${encodeURIComponent(cleanVideoId)}`,
-          },
-        },
-      };
+      // الخطوة 1: فحص الحالة السريع
+      const initialStatus = await this._getTizenYouTubeStatus();
+      let screenId = initialStatus.isRunning && initialStatus.screenId ? initialStatus.screenId : '';
+      let launchedFromColdStart = false;
 
-      await this._sendWsJson(deepLinkPayload);
+      // الحالة ب: التطبيق مغلق أو لم يتوفر screenId
+      if (!screenId) {
+        await this.launchYouTube();
+        launchedFromColdStart = true;
+
+        for (let attempt = 0; attempt < 30; attempt += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 500));
+          const polled = await this._getTizenYouTubeStatus();
+          if (polled.isRunning && polled.screenId) {
+            screenId = polled.screenId;
+            break;
+          }
+        }
+
+        if (!screenId) {
+          throw new Error(
+            `تعذر العثور على screenId لتطبيق يوتيوب على ${this.ipAddress} بعد الفتح.`
+          );
+        }
+
+        // انتظار جاهزية مستمع Lounge داخل التطبيق في الفتح البارد فقط
+        await new Promise((resolve) => setTimeout(resolve, 1800));
+      }
+
+      // الخطوة 3: إرسال الفيديو عبر YouTube Lounge API
+      await this._castViaYouTubeLounge(screenId, cleanVideoId);
+
       return {
         casted: true,
-        stage: 'websocket_8002_deep_link',
+        stage: launchedFromColdStart ? 'tizen_lounge_cold_start' : 'tizen_lounge_instant',
         videoId: cleanVideoId,
-        endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
+        screenId,
       };
     }
 

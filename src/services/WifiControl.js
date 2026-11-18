@@ -2,12 +2,23 @@ import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const IS_WEB = Platform.OS === 'web';
-const YOUTUBE_API_KEY = 'YOUR_YOUTUBE_API_KEY';
+const SAMSUNG_YOUTUBE_APP_ID = '111299001912';
+
+const PIPED_INSTANCES = [
+  'https://pipedapi.kavin.rocks',
+  'https://pipedapi.adminforge.de',
+  'https://api.piped.private.coffee',
+  'https://pipedapi.leptons.xyz',
+  'https://pipedapi.tokhmi.xyz',
+  'https://pipedapi.moomoo.me',
+];
 
 const INVIDIOUS_INSTANCES = [
   'https://inv.nadeko.net',
   'https://invidious.nerdvpn.de',
   'https://yewtu.be',
+  'https://invidious.privacyredirect.com',
+  'https://iv.datura.network',
 ];
 
 const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
@@ -54,11 +65,71 @@ const WIFI_KEY_MAP = {
   NETFLIX: { roku: 'Home', androidTv: 'KEYCODE_BUTTON_1', tizen: 'KEY_APPS' },
 };
 
-function formatDurationSeconds(seconds) {
-  if (!seconds || seconds <= 0) return '';
-  const mins = Math.floor(seconds / 60);
-  const secs = seconds % 60;
+function formatDurationSeconds(seconds, isLive = false) {
+  if (isLive || seconds === -1) return 'بث مباشر';
+  const totalSeconds = Math.floor(Number(seconds) || 0);
+  if (totalSeconds <= 0) return '';
+  const hours = Math.floor(totalSeconds / 3600);
+  const mins = Math.floor((totalSeconds % 3600) / 60);
+  const secs = totalSeconds % 60;
+  if (hours > 0) {
+    return `${hours}:${mins < 10 ? '0' : ''}${mins}:${secs < 10 ? '0' : ''}${secs}`;
+  }
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
+}
+
+function extractYoutubeVideoId(urlOrId) {
+  const raw = String(urlOrId || '').trim();
+  if (!raw) return '';
+  if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) return raw;
+  const vMatch = raw.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
+  if (vMatch && vMatch[1]) return vMatch[1];
+  const shortMatch = raw.match(/(?:\/shorts\/|youtu\.be\/|\/embed\/)([a-zA-Z0-9_-]{11})/);
+  if (shortMatch && shortMatch[1]) return shortMatch[1];
+  return '';
+}
+
+function resolveYoutubeThumbnailUrl(videoId, rawUrl) {
+  const candidate = String(rawUrl || '').trim();
+  if (/^https:\/\/i\d*\.ytimg\.com\//i.test(candidate)) {
+    return candidate;
+  }
+  return `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`;
+}
+
+function raceFirstNonEmpty(tasks) {
+  return new Promise((resolve, reject) => {
+    if (!Array.isArray(tasks) || tasks.length === 0) {
+      reject(new Error('No providers configured'));
+      return;
+    }
+    let pending = tasks.length;
+    let settled = false;
+    let lastError = null;
+
+    tasks.forEach((task) => {
+      Promise.resolve()
+        .then(task)
+        .then((items) => {
+          if (!settled && Array.isArray(items) && items.length > 0) {
+            settled = true;
+            resolve(items);
+            return;
+          }
+          pending -= 1;
+          if (!settled && pending === 0) {
+            reject(lastError || new Error('Empty search results'));
+          }
+        })
+        .catch((err) => {
+          lastError = err;
+          pending -= 1;
+          if (!settled && pending === 0) {
+            reject(lastError || new Error('All search providers failed'));
+          }
+        });
+    });
+  });
 }
 
 function extractSubnetPrefix(ip) {
@@ -870,15 +941,44 @@ class WifiControlService {
     }
 
     const payload = this._buildWsPayload(mapped);
-
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-      this.commandQueue.push(payload);
-      await this.connect();
-    } else {
-      this.ws.send(JSON.stringify(payload));
-    }
+    await this._sendWsJson(payload);
 
     return { sent: true, protocol: this.protocol, payload };
+  }
+
+  async _sendWsJson(payload) {
+    if (IS_WEB) {
+      this.isConnected = true;
+      this.pairingState = 'paired';
+      this._notify();
+      return { sent: true, mocked: true, payload };
+    }
+
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify(payload));
+      return { sent: true, payload };
+    }
+
+    this.commandQueue.push(payload);
+    try {
+      await this.connect();
+    } catch (error) {
+      const idx = this.commandQueue.indexOf(payload);
+      if (idx !== -1) {
+        this.commandQueue.splice(idx, 1);
+      }
+      throw error;
+    }
+
+    if (
+      this.ws &&
+      this.ws.readyState === WebSocket.OPEN &&
+      this.commandQueue.includes(payload)
+    ) {
+      this._flushQueue();
+    }
+
+    return { sent: true, payload };
   }
 
   async _postWithTimeout(url, options = {}, timeoutMs = 4000) {
@@ -895,12 +995,43 @@ class WifiControlService {
     }
   }
 
+  async _fetchJsonWithTimeout(url, timeoutMs = 5000) {
+    const res = await this._postWithTimeout(
+      url,
+      {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+        },
+      },
+      timeoutMs
+    );
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}`);
+    }
+    const text = await res.text();
+    if (!text) {
+      throw new Error('Empty JSON response');
+    }
+    return JSON.parse(text);
+  }
+
   /**
-   * فتح تطبيق يوتيوب مباشرة على الشاشة الذكية عبر DIAL / REST
+   * فتح تطبيق يوتيوب مباشرة على الشاشة الذكية
+   * - Samsung Tizen: يرسل أمر ed.apps.launch عبر WebSocket المقترن (111299001912)
+   *   مع مسارات REST (8002 / 8001) و DIAL كبدائل احتياطية
    */
   async launchYouTube() {
     if (IS_WEB) {
-      return { launched: true, mocked: true, endpoint: `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube` };
+      return {
+        launched: true,
+        mocked: true,
+        method: this.protocol === 'samsung_tizen' ? 'websocket' : 'dial',
+        endpoint:
+          this.protocol === 'samsung_tizen'
+            ? `wss://${this.ipAddress}:${this.port}`
+            : `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
+      };
     }
 
     if (this.protocol === 'roku') {
@@ -909,20 +1040,54 @@ class WifiControlService {
       if (!res.ok) {
         throw new Error(`تعذر فتح يوتيوب على Roku (${res.status})`);
       }
-      return { launched: true, endpoint: url };
+      return { launched: true, method: 'roku_ecp', endpoint: url };
+    }
+
+    let wsLaunchError = null;
+    if (this.protocol === 'samsung_tizen') {
+      const tizenLaunchPayload = {
+        method: 'ms.channel.emit',
+        params: {
+          event: 'ed.apps.launch',
+          to: 'host',
+          data: {
+            appId: SAMSUNG_YOUTUBE_APP_ID,
+            action_type: 'NATIVE_LAUNCH',
+          },
+        },
+      };
+
+      try {
+        await this._sendWsJson(tizenLaunchPayload);
+        return {
+          launched: true,
+          method: 'websocket',
+          appId: SAMSUNG_YOUTUBE_APP_ID,
+          endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
+        };
+      } catch (err) {
+        wsLaunchError = err;
+      }
     }
 
     const candidateUrls =
       this.protocol === 'samsung_tizen'
-        ? [
-            `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube`,
-            `http://${this.ipAddress}:8001/api/v2/applications/111299001912`,
-            `http://${this.ipAddress}:8008/apps/YouTube`,
-          ]
-        : [
-            `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
-            `http://${this.ipAddress}:8080/ws/apps/YouTube`,
-          ];
+        ? Array.from(
+            new Set([
+              `https://${this.ipAddress}:8002/api/v2/applications/${SAMSUNG_YOUTUBE_APP_ID}`,
+              `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_YOUTUBE_APP_ID}`,
+              `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube`,
+              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
+              `http://${this.ipAddress}:8008/apps/YouTube`,
+            ])
+          )
+        : Array.from(
+            new Set([
+              `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
+              `http://${this.ipAddress}:8008/apps/YouTube`,
+              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
+            ])
+          );
 
     for (const url of candidateUrls) {
       try {
@@ -931,76 +1096,210 @@ class WifiControlService {
           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         });
         if (res.ok || res.status === 201 || res.status === 204) {
-          return { launched: true, endpoint: url };
+          return { launched: true, method: 'rest_dial', endpoint: url };
         }
       } catch (_) {
         // تجربة المسار التالي
       }
     }
 
+    if (wsLaunchError && this.pairingState === 'unauthorized') {
+      throw wsLaunchError;
+    }
+
     throw new Error(
-      `تعذر فتح تطبيق يوتيوب على ${this.ipAddress}. تأكد من اتصال الهاتف والشاشة بنفس شبكة الواي فاي.`
+      `تعذر فتح تطبيق يوتيوب على ${this.ipAddress}. تأكد من اتصال الهاتف والشاشة بنفس شبكة الواي فاي والموافقة على الاقتران.`
     );
   }
 
+  async _tryDialCast(cleanVideoId) {
+    const dialBody = `v=${encodeURIComponent(cleanVideoId)}`;
+    const candidateUrls =
+      this.protocol === 'samsung_tizen'
+        ? Array.from(
+            new Set([
+              `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube`,
+              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
+              `http://${this.ipAddress}:8008/apps/YouTube`,
+            ])
+          )
+        : Array.from(
+            new Set([
+              `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
+              `http://${this.ipAddress}:8008/apps/YouTube`,
+              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
+            ])
+          );
+
+    for (const url of candidateUrls) {
+      try {
+        const res = await this._postWithTimeout(
+          url,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+            body: dialBody,
+          },
+          3500
+        );
+        if (res.ok || res.status === 201 || res.status === 204) {
+          return { casted: true, stage: 'dial', videoId: cleanVideoId, endpoint: url };
+        }
+      } catch (_) {
+        // تجربة المسار التالي
+      }
+    }
+
+    return null;
+  }
+
   /**
-   * إرسال فيديو محدد (Cast) وتشغيله فوراً على الشاشة عبر بروتوكول DIAL
+   * إرسال فيديو محدد (Cast) وتشغيله فوراً على الشاشة عبر الحل الهجين (3 مراحل):
+   * 1) DIAL POST (v=VIDEO_ID)
+   * 2) Samsung Tizen WebSocket DEEP_LINK (ed.apps.launch + metaTag)
+   * 3) التشغيل البارد (Cold-Start): فتح YouTube ثم الانتظار 2500ms وإعادة DIAL
    */
   async castYouTubeVideo(videoId) {
-    if (!videoId) {
+    const cleanVideoId = extractYoutubeVideoId(videoId) || String(videoId || '').trim();
+    if (!cleanVideoId) {
       throw new Error('معرف الفيديو غير صالح.');
     }
 
     if (IS_WEB) {
-      return { casted: true, videoId, mocked: true };
+      return { casted: true, stage: 'mock', videoId: cleanVideoId, mocked: true };
     }
 
     if (this.protocol === 'roku') {
       const url = `http://${this.ipAddress}:${this.port}/launch/837?contentId=${encodeURIComponent(
-        videoId
+        cleanVideoId
       )}&mediaType=live`;
       const res = await this._postWithTimeout(url, { method: 'POST' });
       if (!res.ok) {
         throw new Error(`فشل بث الفيديو على Roku (${res.status})`);
       }
-      return { casted: true, videoId, endpoint: url };
+      return { casted: true, stage: 'roku_ecp', videoId: cleanVideoId, endpoint: url };
     }
 
-    const dialBody = `v=${encodeURIComponent(videoId)}`;
-    const candidateUrls =
-      this.protocol === 'samsung_tizen'
-        ? [
-            `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube`,
-            `http://${this.ipAddress}:8008/apps/YouTube`,
-          ]
-        : [
-            `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
-            `http://${this.ipAddress}:8080/ws/apps/YouTube`,
-          ];
+    // المرحلة 1: محاولة البث السريع عبر DIAL
+    const stage1Result = await this._tryDialCast(cleanVideoId);
+    if (stage1Result) {
+      return stage1Result;
+    }
 
-    for (const url of candidateUrls) {
+    // المرحلة 2: تمرير Deep Link عبر WebSocket الخاص بشاشات Samsung Tizen
+    let deepLinkError = null;
+    if (this.protocol === 'samsung_tizen') {
+      const deepLinkPayload = {
+        method: 'ms.channel.emit',
+        params: {
+          event: 'ed.apps.launch',
+          to: 'host',
+          data: {
+            appId: SAMSUNG_YOUTUBE_APP_ID,
+            action_type: 'DEEP_LINK',
+            metaTag: `https://www.youtube.com/watch?v=${encodeURIComponent(cleanVideoId)}`,
+          },
+        },
+      };
+
       try {
-        const res = await this._postWithTimeout(url, {
-          method: 'POST',
-          headers: { 'Content-Type': 'text/plain; charset=utf-8' },
-          body: dialBody,
-        });
-        if (res.ok || res.status === 201 || res.status === 204) {
-          return { casted: true, videoId, endpoint: url };
-        }
-      } catch (_) {
-        // تجربة المسار التالي
+        await this._sendWsJson(deepLinkPayload);
+        return {
+          casted: true,
+          stage: 'tizen_deep_link',
+          videoId: cleanVideoId,
+          endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
+        };
+      } catch (err) {
+        deepLinkError = err;
       }
     }
 
+    // المرحلة 3: التشغيل البارد (فتح التطبيق ثم الانتظار 2.5 ثانية وإعادة إرسال DIAL)
+    try {
+      await this.launchYouTube();
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      const stage3Result = await this._tryDialCast(cleanVideoId);
+      if (stage3Result) {
+        return {
+          ...stage3Result,
+          stage: 'cold_start_dial_retry',
+        };
+      }
+    } catch (coldStartError) {
+      if (this.pairingState === 'unauthorized') {
+        throw coldStartError;
+      }
+    }
+
+    if (deepLinkError && this.pairingState === 'unauthorized') {
+      throw deepLinkError;
+    }
+
     throw new Error(
-      `تعذر تشغيل الفيديو (${videoId}) عبر DIAL على ${this.ipAddress}.`
+      `تعذر تشغيل الفيديو (${cleanVideoId}) على ${this.ipAddress}. تأكد من وجود تطبيق YouTube على الشاشة والموافقة على الاقتران.`
     );
   }
 
+  async _searchPipedInstance(baseUrl, cleanQuery, timeoutMs = 4500) {
+    const searchUrl = `${baseUrl}/search?q=${encodeURIComponent(cleanQuery)}&filter=videos`;
+    const data = await this._fetchJsonWithTimeout(searchUrl, timeoutMs);
+    const items = data && Array.isArray(data.items) ? data.items : [];
+    const seenIds = new Set();
+    const results = [];
+
+    for (const item of items) {
+      if (!item || (item.type && item.type !== 'stream')) continue;
+      const videoId = extractYoutubeVideoId(item.url || item.videoId);
+      if (!videoId || seenIds.has(videoId)) continue;
+      seenIds.add(videoId);
+
+      results.push({
+        videoId,
+        title: item.title || 'فيديو يوتيوب',
+        channelTitle: item.uploaderName || item.uploader || 'YouTube',
+        thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, item.thumbnail),
+        durationText: formatDurationSeconds(item.duration, item.duration === -1),
+      });
+
+      if (results.length >= 12) break;
+    }
+
+    return results;
+  }
+
+  async _searchInvidiousInstance(baseUrl, cleanQuery, timeoutMs = 4500) {
+    const searchUrl = `${baseUrl}/api/v1/search?q=${encodeURIComponent(cleanQuery)}&type=video`;
+    const items = await this._fetchJsonWithTimeout(searchUrl, timeoutMs);
+    if (!Array.isArray(items)) return [];
+    const seenIds = new Set();
+    const results = [];
+
+    for (const item of items) {
+      if (!item || (item.type && item.type !== 'video')) continue;
+      const videoId = extractYoutubeVideoId(item.videoId);
+      if (!videoId || seenIds.has(videoId)) continue;
+      seenIds.add(videoId);
+
+      const thumbs = Array.isArray(item.videoThumbnails) ? item.videoThumbnails : [];
+      const preferredThumb = thumbs.find((t) => t.quality === 'medium') || thumbs[0] || null;
+
+      results.push({
+        videoId,
+        title: item.title || 'فيديو يوتيوب',
+        channelTitle: item.author || 'YouTube',
+        thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, preferredThumb && preferredThumb.url),
+        durationText: formatDurationSeconds(item.lengthSeconds, Boolean(item.liveNow)),
+      });
+
+      if (results.length >= 12) break;
+    }
+
+    return results;
+  }
+
   /**
-   * البحث في يوتيوب عبر YouTube Data API v3 (عند توفر المفتاح)
-   * أو عبر واجهة Invidious مفتوحة المصدر تلقائياً دون الحاجة لمفتاح
+   * البحث في يوتيوب مجاناً وبدون أي مفتاح API عبر سباق متوازٍ بين خوادم Piped و Invidious
    */
   async searchYouTubeVideos(query) {
     const cleanQuery = (query || '').trim();
@@ -1008,65 +1307,31 @@ class WifiControlService {
       throw new Error('أدخل عبارة للبحث في يوتيوب.');
     }
 
-    if (YOUTUBE_API_KEY && YOUTUBE_API_KEY !== 'YOUR_YOUTUBE_API_KEY') {
-      const apiUrl = `https://www.googleapis.com/youtube/v3/search?part=snippet&type=video&maxResults=12&q=${encodeURIComponent(
-        cleanQuery
-      )}&key=${encodeURIComponent(YOUTUBE_API_KEY)}`;
+    const wave1Tasks = [
+      ...PIPED_INSTANCES.slice(0, 3).map((url) => () => this._searchPipedInstance(url, cleanQuery, 4500)),
+      ...INVIDIOUS_INSTANCES.slice(0, 3).map(
+        (url) => () => this._searchInvidiousInstance(url, cleanQuery, 4500)
+      ),
+    ];
 
-      const res = await this._postWithTimeout(apiUrl, { method: 'GET' }, 7000);
-      if (!res.ok) {
-        throw new Error(`فشل البحث عبر YouTube Data API (${res.status})`);
-      }
-      const data = await res.json();
-      return (data.items || [])
-        .filter((item) => item && item.id && item.id.videoId)
-        .map((item) => ({
-          videoId: item.id.videoId,
-          title: item.snippet.title || 'فيديو يوتيوب',
-          channelTitle: item.snippet.channelTitle || 'YouTube',
-          thumbnailUrl:
-            (item.snippet.thumbnails &&
-              ((item.snippet.thumbnails.medium && item.snippet.thumbnails.medium.url) ||
-                (item.snippet.thumbnails.default && item.snippet.thumbnails.default.url))) ||
-            `https://i.ytimg.com/vi/${item.id.videoId}/mqdefault.jpg`,
-          durationText: '',
-        }));
+    try {
+      return await raceFirstNonEmpty(wave1Tasks);
+    } catch (_) {
+      // المتابعة إلى موجة الخوادم الاحتياطية
     }
 
-    for (const baseUrl of INVIDIOUS_INSTANCES) {
+    const wave2Tasks = [
+      ...PIPED_INSTANCES.slice(3).map((url) => () => this._searchPipedInstance(url, cleanQuery, 5500)),
+      ...INVIDIOUS_INSTANCES.slice(3).map(
+        (url) => () => this._searchInvidiousInstance(url, cleanQuery, 5500)
+      ),
+    ];
+
+    if (wave2Tasks.length > 0) {
       try {
-        const searchUrl = `${baseUrl}/api/v1/search?q=${encodeURIComponent(
-          cleanQuery
-        )}&type=video`;
-        const res = await this._postWithTimeout(searchUrl, { method: 'GET' }, 6500);
-        if (!res.ok) continue;
-
-        const items = await res.json();
-        if (!Array.isArray(items)) continue;
-
-        const normalized = items
-          .filter((item) => item && item.videoId)
-          .slice(0, 12)
-          .map((item) => {
-            const thumbs = Array.isArray(item.videoThumbnails) ? item.videoThumbnails : [];
-            const preferredThumb =
-              thumbs.find((t) => t.quality === 'medium') || thumbs[0] || null;
-            return {
-              videoId: item.videoId,
-              title: item.title || 'فيديو يوتيوب',
-              channelTitle: item.author || 'YouTube',
-              thumbnailUrl:
-                (preferredThumb && preferredThumb.url) ||
-                `https://i.ytimg.com/vi/${item.videoId}/mqdefault.jpg`,
-              durationText: formatDurationSeconds(item.lengthSeconds),
-            };
-          });
-
-        if (normalized.length > 0) {
-          return normalized;
-        }
+        return await raceFirstNonEmpty(wave2Tasks);
       } catch (_) {
-        // الانتقال تلقائياً إلى الخادم البديل
+        // تعذرت كافة الخوادم البديلة في الموجة الثانية
       }
     }
 
@@ -1089,7 +1354,7 @@ class WifiControlService {
       ];
     }
 
-    throw new Error('تعذر جلب نتائج البحث حالياً. تحقق من اتصال الإنترنت وأعد المحاولة.');
+    throw new Error('تعذر جلب نتائج البحث حالياً من خوادم Piped و Invidious. تحقق من الإنترنت وأعد المحاولة.');
   }
 }
 

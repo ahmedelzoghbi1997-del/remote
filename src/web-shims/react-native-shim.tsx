@@ -277,6 +277,7 @@ export function TouchableOpacity({
   onPressOut,
   disabled,
   activeOpacity = 0.75,
+  accessibilityLabel,
   children,
 }: {
   style?: RNStyle;
@@ -285,6 +286,7 @@ export function TouchableOpacity({
   onPressOut?: () => void;
   disabled?: boolean;
   activeOpacity?: number;
+  accessibilityLabel?: string;
   hitSlop?: unknown;
   children?: React.ReactNode;
 }) {
@@ -294,6 +296,7 @@ export function TouchableOpacity({
   return (
     <button
       type="button"
+      aria-label={accessibilityLabel}
       disabled={disabled}
       onClick={() => {
         if (!disabled && onPress) onPress();
@@ -438,6 +441,7 @@ export function TextInput({
   placeholderTextColor,
   onSubmitEditing,
   keyboardType,
+  autoFocus,
 }: {
   style?: RNStyle;
   value?: string;
@@ -447,10 +451,12 @@ export function TextInput({
   returnKeyType?: string;
   onSubmitEditing?: () => void;
   keyboardType?: string;
+  autoFocus?: boolean;
 }) {
   return (
     <input
       type="text"
+      autoFocus={Boolean(autoFocus)}
       inputMode={keyboardType === 'numeric' ? 'decimal' : 'text'}
       value={value ?? ''}
       placeholder={placeholder}

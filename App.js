@@ -279,6 +279,39 @@ function RepeatableButton({
   );
 }
 
+function SearchIcon({ color = '#F1F5F9', size = 18 }) {
+  const ringSize = Math.round(size * 0.68);
+  const handleLength = Math.round(size * 0.44);
+  return (
+    <View style={{ width: size, height: size, position: 'relative' }}>
+      <View
+        style={{
+          width: ringSize,
+          height: ringSize,
+          borderRadius: ringSize / 2,
+          borderWidth: 2,
+          borderColor: color,
+          position: 'absolute',
+          top: 1,
+          left: 1,
+        }}
+      />
+      <View
+        style={{
+          width: handleLength,
+          height: 2,
+          borderRadius: 1,
+          backgroundColor: color,
+          position: 'absolute',
+          bottom: 2,
+          right: 1,
+          transform: [{ rotate: '45deg' }],
+        }}
+      />
+    </View>
+  );
+}
+
 const DPAD_CENTER_OFFSET = 123;
 const DPAD_WEDGE_ROTATION = {
   UP: '0deg',
@@ -416,12 +449,14 @@ function App() {
   const [hasScannedOnce, setHasScannedOnce] = useState(false);
   const [isConnectingWifi, setIsConnectingWifi] = useState(false);
 
-  // حالة البحث والتشغيل المباشر (Cast) ليوتيوب عبر الواي فاي
+  // حالة البحث والتشغيل المباشر ليوتيوب من أيقونة الهيدر
+  const [isSearchInputOpen, setIsSearchInputOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   const [isLaunchingYouTube, setIsLaunchingYouTube] = useState(false);
   const [castingVideoId, setCastingVideoId] = useState(null);
+  const [lastCastedVideoId, setLastCastedVideoId] = useState(null);
   const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
 
   // حالة ريموت التكييف
@@ -445,6 +480,8 @@ function App() {
   const [activeDpadDir, setActiveDpadDir] = useState(null);
   const isSendingRef = useRef(false);
   const hasIrHardwareRef = useRef(null);
+  const searchDebounceRef = useRef(null);
+  const searchRequestIdRef = useRef(0);
 
   useEffect(() => {
     let mounted = true;
@@ -491,6 +528,10 @@ function App() {
 
     return () => {
       mounted = false;
+      if (searchDebounceRef.current) {
+        clearTimeout(searchDebounceRef.current);
+        searchDebounceRef.current = null;
+      }
       unsubscribe();
       WifiControl.abortDiscovery();
       WifiControl.disconnect();
@@ -701,26 +742,103 @@ function App() {
     }
   };
 
-  const handleSearchYouTube = async () => {
-    if (!searchQuery.trim()) {
-      setFeedback({ text: 'اكتب عنوان الفيديو للبحث في يوتيوب.', tone: 'error' });
+  const handleSearchYouTube = async (overrideQuery) => {
+    const targetQuery =
+      typeof overrideQuery === 'string' ? overrideQuery : searchQuery;
+    const cleanTarget = targetQuery.trim();
+    if (!cleanTarget) {
+      setSearchResults([]);
+      setIsSearching(false);
+      setHasSearchedOnce(false);
       return;
     }
+
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+
+    const requestId = searchRequestIdRef.current + 1;
+    searchRequestIdRef.current = requestId;
     setIsSearching(true);
     setHasSearchedOnce(true);
+
     try {
-      const items = await WifiControl.searchYouTubeVideos(searchQuery);
+      const items = await WifiControl.searchYouTubeVideos(cleanTarget);
+      if (searchRequestIdRef.current !== requestId) return;
       setSearchResults(items);
       clearErrorBanner();
     } catch (error) {
+      if (searchRequestIdRef.current !== requestId) return;
       setSearchResults([]);
       setFeedback({
         text: error && error.message ? error.message : 'فشل البحث في يوتيوب',
         tone: 'error',
       });
     } finally {
-      setIsSearching(false);
+      if (searchRequestIdRef.current === requestId) {
+        setIsSearching(false);
+      }
     }
+  };
+
+  const handleOpenSearch = () => {
+    clearErrorBanner();
+    setIsSearchInputOpen(true);
+  };
+
+  const handleCloseSearch = () => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+    searchRequestIdRef.current += 1;
+    setIsSearchInputOpen(false);
+    setSearchQuery('');
+    setSearchResults([]);
+    setIsSearching(false);
+    setHasSearchedOnce(false);
+    setLastCastedVideoId(null);
+    clearErrorBanner();
+  };
+
+  const handleClearSearchText = () => {
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+    searchRequestIdRef.current += 1;
+    setSearchQuery('');
+    setSearchResults([]);
+    setIsSearching(false);
+    setHasSearchedOnce(false);
+    setLastCastedVideoId(null);
+    clearErrorBanner();
+  };
+
+  const handleSearchQueryChange = (text) => {
+    setSearchQuery(text);
+    setLastCastedVideoId(null);
+    if (searchDebounceRef.current) {
+      clearTimeout(searchDebounceRef.current);
+      searchDebounceRef.current = null;
+    }
+
+    const trimmed = text.trim();
+    if (!trimmed) {
+      searchRequestIdRef.current += 1;
+      setSearchResults([]);
+      setIsSearching(false);
+      setHasSearchedOnce(false);
+      clearErrorBanner();
+      return;
+    }
+
+    clearErrorBanner();
+    setIsSearching(true);
+    searchDebounceRef.current = setTimeout(() => {
+      handleSearchYouTube(text);
+    }, 520);
   };
 
   const handleCastVideo = async (item) => {
@@ -733,6 +851,7 @@ function App() {
         dialPort: Number(dialPort) || undefined,
       });
       await WifiControl.castYouTubeVideo(item.videoId);
+      setLastCastedVideoId(item.videoId);
       clearErrorBanner();
     } catch (error) {
       setFeedback({
@@ -1200,8 +1319,13 @@ function App() {
               style={styles.youtubeBtn}
               activeOpacity={0.8}
               onPress={() => handleLaunchYouTube()}
+              disabled={isLaunchingYouTube}
             >
-              <Text style={styles.btnTextBold}>YouTube</Text>
+              {isLaunchingYouTube ? (
+                <ActivityIndicator size="small" color="#FFFFFF" />
+              ) : (
+                <Text style={styles.btnTextBold}>YouTube</Text>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1215,62 +1339,17 @@ function App() {
         </View>
       ) : null}
 
-      {tvTransport === 'wifi' ? (
-        <View style={styles.castPanel}>
-          <View style={styles.castHeaderRow}>
-            <Text style={styles.castPanelTitle}>البحث والتشغيل المباشر (Cast)</Text>
-            <TouchableOpacity
-              style={styles.launchYtBtn}
-              activeOpacity={0.8}
-              onPress={handleLaunchYouTube}
-              disabled={isLaunchingYouTube}
-            >
-              {isLaunchingYouTube ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Text style={styles.launchYtBtnText}>فتح YouTube</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          <Text style={styles.sectionCaption}>بحث يوتيوب</Text>
-          <View style={styles.searchRow}>
-            <TextInput
-              style={styles.searchInput}
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="ابحث عن فيديو لتشغيله على الشاشة..."
-              placeholderTextColor="#64748B"
-              returnKeyType="search"
-              onSubmitEditing={handleSearchYouTube}
-            />
-            <TouchableOpacity
-              style={styles.searchBtn}
-              activeOpacity={0.8}
-              onPress={handleSearchYouTube}
-              disabled={isSearching}
-            >
-              {isSearching ? (
-                <ActivityIndicator size="small" color="#FFFFFF" />
-              ) : (
-                <Text style={styles.btnTextBold}>بحث</Text>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {!isSearching && hasSearchedOnce && searchResults.length === 0 ? (
-            <Text style={styles.emptySearchText}>لم يتم العثور على نتائج مطابقة.</Text>
-          ) : null}
-        </View>
-      ) : null}
     </View>
   );
 
+  const isSearchPageOpen = isSearchInputOpen && searchQuery.trim().length > 0;
+
   const renderVideoItem = ({ item }) => {
     const isCasting = castingVideoId === item.videoId;
+    const wasCasted = lastCastedVideoId === item.videoId && !isCasting;
     return (
       <TouchableOpacity
-        style={[styles.videoCard, isCasting && styles.videoCardActive]}
+        style={[styles.videoCard, (isCasting || wasCasted) && styles.videoCardActive]}
         activeOpacity={0.75}
         onPress={() => handleCastVideo(item)}
         disabled={Boolean(castingVideoId)}
@@ -1290,7 +1369,11 @@ function App() {
               {item.durationText ? ` · ${item.durationText}` : ''}
             </Text>
             <Text style={styles.videoCastLabel}>
-              {isCasting ? 'جاري البث...' : 'تشغيل على الشاشة'}
+              {isCasting
+                ? 'جاري التشغيل...'
+                : wasCasted
+                ? 'تم التشغيل على الشاشة'
+                : 'تشغيل على الشاشة'}
             </Text>
           </View>
         </View>
@@ -1303,16 +1386,64 @@ function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0B0D11" />
 
       <View style={styles.header}>
-        <Text style={styles.headerTitle}>الريموت الشامل</Text>
-        <Text style={styles.headerStatus}>
-          {Platform.OS === 'web'
-            ? 'معاينة الويب (وضع المحاكاة)'
-            : hasIrHardware === null
-            ? 'جاري فحص IR...'
-            : hasIrHardware
-            ? 'IR Blaster جاهز'
-            : 'وضع Wi-Fi (لا يوجد IR)'}
-        </Text>
+        {isSearchInputOpen ? (
+          <View style={styles.headerSearchRow}>
+            <TouchableOpacity
+              style={styles.headerBackBtn}
+              activeOpacity={0.75}
+              onPress={handleCloseSearch}
+              accessibilityLabel="إغلاق البحث"
+            >
+              <Text style={styles.headerBackGlyph}>✕</Text>
+            </TouchableOpacity>
+
+            <TextInput
+              style={styles.headerSearchInput}
+              value={searchQuery}
+              onChangeText={handleSearchQueryChange}
+              placeholder="ابحث في يوتيوب..."
+              placeholderTextColor="#64748B"
+              returnKeyType="search"
+              autoFocus
+              onSubmitEditing={() => handleSearchYouTube()}
+            />
+
+            {searchQuery.length > 0 ? (
+              <TouchableOpacity
+                style={styles.headerClearBtn}
+                activeOpacity={0.75}
+                onPress={handleClearSearchText}
+                accessibilityLabel="مسح النص"
+              >
+                <Text style={styles.headerClearGlyph}>⌫</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : (
+          <>
+            <View style={styles.headerBrandGroup}>
+              <Text style={styles.headerTitle}>الريموت الشامل</Text>
+              <TouchableOpacity
+                style={styles.headerSearchIconBtn}
+                activeOpacity={0.75}
+                onPress={handleOpenSearch}
+                accessibilityLabel="بحث"
+              >
+                <SearchIcon color="#F1F5F9" size={18} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.headerStatus}>
+              {Platform.OS === 'web'
+                ? 'معاينة الويب (وضع المحاكاة)'
+                : hasIrHardware === null
+                ? 'جاري فحص IR...'
+                : hasIrHardware
+                ? 'IR Blaster جاهز'
+                : 'وضع Wi-Fi (لا يوجد IR)'}
+            </Text>
+          </>
+        )}
       </View>
 
       {feedback.tone === 'error' && feedback.text ? (
@@ -1323,18 +1454,40 @@ function App() {
         </View>
       ) : null}
 
-      {activeTab === 'tv' ? (
-        <FlatList
+      {isSearchPageOpen ? (
+        <View style={styles.searchPageWrap}>
+          {isSearching && searchResults.length === 0 ? (
+            <View style={styles.searchLoadingBox}>
+              <ActivityIndicator size="large" color="#0EA5E9" />
+              <Text style={styles.searchLoadingText}>جاري البحث في يوتيوب...</Text>
+            </View>
+          ) : (
+            <FlatList
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+              data={searchResults}
+              keyExtractor={(item, index) => `${item.videoId}_${index}`}
+              renderItem={renderVideoItem}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+              ItemSeparatorComponent={() => <View style={styles.videoSeparator} />}
+              ListEmptyComponent={
+                !isSearching && hasSearchedOnce && !feedback.text ? (
+                  <Text style={styles.emptySearchText}>لم يتم العثور على نتائج مطابقة.</Text>
+                ) : null
+              }
+            />
+          )}
+        </View>
+      ) : activeTab === 'tv' ? (
+        <ScrollView
           style={styles.scrollArea}
           contentContainerStyle={styles.scrollContent}
-          data={tvTransport === 'wifi' ? searchResults : []}
-          keyExtractor={(item) => item.videoId}
-          renderItem={renderVideoItem}
-          ListHeaderComponent={tvHeaderElement}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
-          ItemSeparatorComponent={() => <View style={styles.videoSeparator} />}
-        />
+        >
+          {tvHeaderElement}
+        </ScrollView>
       ) : (
         <ScrollView
           style={styles.scrollArea}
@@ -1573,24 +1726,26 @@ function App() {
         </ScrollView>
       )}
 
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'tv' && styles.tabBtnActive]}
-          onPress={() => setActiveTab('tv')}
-        >
-          <Text style={[styles.tabText, activeTab === 'tv' && styles.tabTextActive]}>
-            ريموت الشاشة
-          </Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={[styles.tabBtn, activeTab === 'ac' && styles.tabBtnActive]}
-          onPress={() => setActiveTab('ac')}
-        >
-          <Text style={[styles.tabText, activeTab === 'ac' && styles.tabTextActive]}>
-            ريموت التكييف
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {!isSearchPageOpen ? (
+        <View style={styles.tabBar}>
+          <TouchableOpacity
+            style={[styles.tabBtn, activeTab === 'tv' && styles.tabBtnActive]}
+            onPress={() => setActiveTab('tv')}
+          >
+            <Text style={[styles.tabText, activeTab === 'tv' && styles.tabTextActive]}>
+              ريموت الشاشة
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={[styles.tabBtn, activeTab === 'ac' && styles.tabBtnActive]}
+            onPress={() => setActiveTab('ac')}
+          >
+            <Text style={[styles.tabText, activeTab === 'ac' && styles.tabTextActive]}>
+              ريموت التكييف
+            </Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
 
       <Modal visible={showWifiModal} transparent animationType="fade">
         <View style={styles.modalBackdrop}>
@@ -1846,9 +2001,71 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 18,
-    paddingVertical: 14,
+    paddingVertical: 12,
+    minHeight: 62,
     borderBottomWidth: 1,
     borderBottomColor: '#1E2532',
+    gap: 10,
+  },
+  headerBrandGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  headerSearchIconBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerSearchRow: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  headerBackBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerBackGlyph: {
+    color: '#F1F5F9',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  headerSearchInput: {
+    flex: 1,
+    minHeight: 40,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    color: '#F1F5F9',
+    fontSize: 14,
+    textAlign: 'right',
+  },
+  headerClearBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  headerClearGlyph: {
+    color: '#94A3B8',
+    fontSize: 15,
+    fontWeight: '600',
   },
   headerTitle: { color: '#F1F5F9', fontSize: 19, fontWeight: '700' },
   headerStatus: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
@@ -2139,71 +2356,27 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  castPanel: {
-    marginTop: 4,
-    marginBottom: 8,
-    backgroundColor: '#131720',
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    padding: 14,
-    gap: 10,
-  },
-  castHeaderRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 10,
-  },
-  castPanelTitle: {
-    color: '#F1F5F9',
-    fontSize: 14,
-    fontWeight: '700',
+  searchPageWrap: {
     flex: 1,
-  },
-  launchYtBtn: {
-    minHeight: 40,
-    paddingHorizontal: 14,
-    borderRadius: 10,
-    backgroundColor: '#DC2626',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  launchYtBtnText: {
-    color: '#FFFFFF',
-    fontSize: 13,
-    fontWeight: '700',
-  },
-  searchRow: {
-    flexDirection: 'row',
-    gap: 8,
-    alignItems: 'center',
-  },
-  searchInput: {
-    flex: 1,
-    minHeight: 46,
     backgroundColor: '#0B0D11',
-    borderWidth: 1,
-    borderColor: '#1E2532',
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    color: '#F1F5F9',
-    fontSize: 13,
-    textAlign: 'right',
   },
-  searchBtn: {
-    minHeight: 46,
-    paddingHorizontal: 18,
-    borderRadius: 12,
-    backgroundColor: '#0EA5E9',
+  searchLoadingBox: {
+    flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
+    gap: 12,
+    paddingHorizontal: 24,
+  },
+  searchLoadingText: {
+    color: '#94A3B8',
+    fontSize: 14,
+    fontWeight: '600',
   },
   emptySearchText: {
     color: '#94A3B8',
-    fontSize: 12,
+    fontSize: 13,
     textAlign: 'center',
-    paddingVertical: 8,
+    paddingVertical: 24,
   },
   videoSeparator: {
     height: 10,

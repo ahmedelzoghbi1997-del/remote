@@ -16,6 +16,7 @@ import {
   TextInput,
   TouchableOpacity,
   View,
+  useWindowDimensions,
 } from 'react-native';
 import WifiControl from './src/services/WifiControl';
 import {
@@ -346,7 +347,6 @@ function SearchIcon({ color = '#F1F5F9', size = 20 }) {
   );
 }
 
-const DPAD_CENTER_OFFSET = 113;
 const DPAD_WEDGE_ROTATION = {
   UP: '0deg',
   RIGHT: '90deg',
@@ -354,9 +354,115 @@ const DPAD_WEDGE_ROTATION = {
   LEFT: '270deg',
 };
 
-function resolveDpadDirectionFromPoint(locationX, locationY) {
-  const dx = (Number(locationX) || 0) - DPAD_CENTER_OFFSET;
-  const dy = (Number(locationY) || 0) - DPAD_CENTER_OFFSET;
+function clampValue(value, min, max) {
+  return Math.max(min, Math.min(max, value));
+}
+
+function computeTvLayoutMetrics(areaWidth, areaHeight) {
+  const w = Math.max(300, Number(areaWidth) || 390);
+  const h = Math.max(340, Number(areaHeight) || 580);
+  const t = clampValue((h - 420) / (680 - 420), 0, 1);
+  const wt = clampValue((w - 340) / (420 - 340), 0, 1);
+
+  const hPad = Math.round(12 + wt * 6);
+  const vPad = Math.round(5 + t * 8);
+  const stackGap = Math.round(5 + t * 8);
+  const rowGap = Math.round(8 + wt * 4);
+
+  const segmentBtnH = Math.round(34 + t * 10);
+  const segmentBoxH = segmentBtnH + 6;
+  const powerBtnH = Math.round(42 + t * 12);
+  const navBtnH = Math.round(40 + t * 12);
+  const rockerKeyH = Math.round(36 + t * 22);
+  const rockerPad = Math.round(5 + t * 3);
+  const rockerGap = Math.round(4 + t * 3);
+  const rockerCardH = rockerKeyH * 2 + 18 + rockerPad * 2 + rockerGap * 2;
+  const streamingBtnH = Math.round(46 + t * 6);
+
+  const usedWithoutDpad =
+    segmentBoxH +
+    powerBtnH +
+    navBtnH +
+    rockerCardH +
+    stackGap * 4 +
+    vPad * 2;
+
+  const maxDpadByHeight = h - usedWithoutDpad;
+  const maxDpadByWidth = w - hPad * 2 - 42;
+  const maxDpadCap = Math.round(280 + wt * 14);
+  const needsScroll = maxDpadByHeight < 168;
+  const rawDpad = needsScroll
+    ? Math.min(204, maxDpadByWidth)
+    : Math.max(168, Math.min(maxDpadByHeight, maxDpadByWidth, maxDpadCap));
+  const dpadSize = Math.max(168, Math.floor(rawDpad) - (Math.floor(rawDpad) % 2));
+  const dpadCenterOffset = (dpadSize - 2) / 2;
+  const dpadWedgeBorder = Math.floor((dpadSize - 2) / 2);
+  const dpadOkSize = Math.round(dpadSize * 0.37);
+  const ringThickness = (dpadSize - dpadOkSize) / 2;
+  const dpadDotPad = Math.max(18, Math.round(ringThickness * 0.42));
+  const dpadDotSize = dpadSize >= 250 ? 9 : 8;
+
+  const btnFontSize = Math.round(13 + t * 1.5);
+  const btnBoldFontSize = Math.round(14 + t * 1.5);
+  const segmentFontSize = Math.round(12 + wt * 2);
+  const dpadOkFontSize = Math.round(15 + t * 2);
+  const rockerSymbolSize = Math.round(20 + t * 4);
+  const rockerLabelSize = Math.round(12 + t * 1.5);
+
+  return {
+    hPad,
+    vPad,
+    stackGap,
+    rowGap,
+    segmentBtnH,
+    powerBtnH,
+    navBtnH,
+    rockerKeyH,
+    rockerPad,
+    rockerGap,
+    streamingBtnH,
+    dpadSize,
+    dpadCenterOffset,
+    dpadWedgeBorder,
+    dpadOkSize,
+    dpadDotPad,
+    dpadDotSize,
+    needsScroll,
+    btnFontSize,
+    btnBoldFontSize,
+    segmentFontSize,
+    dpadOkFontSize,
+    rockerSymbolSize,
+    rockerLabelSize,
+  };
+}
+
+function computeAcLayoutMetrics(areaWidth, areaHeight) {
+  const w = Math.max(300, Number(areaWidth) || 390);
+  const h = Math.max(360, Number(areaHeight) || 580);
+  const t = clampValue((h - 460) / (710 - 460), 0, 1);
+  const wt = clampValue((w - 340) / (420 - 340), 0, 1);
+
+  return {
+    hPad: Math.round(12 + wt * 6),
+    vPad: Math.round(8 + t * 8),
+    gap: Math.round(8 + t * 6),
+    rowGap: Math.round(8 + wt * 4),
+    brandH: Math.round(38 + t * 6),
+    lcdPadV: Math.round(10 + t * 8),
+    tempFontSize: Math.round(40 + t * 10),
+    stepBtnH: Math.round(48 + t * 8),
+    modeH: Math.round(42 + t * 6),
+    extraH: Math.round(52 + t * 8),
+    featureH: Math.round(52 + t * 8),
+    timerH: Math.round(52 + t * 8),
+    needsScroll: h < 535,
+  };
+}
+
+function resolveDpadDirectionFromPoint(locationX, locationY, centerOffset = 113) {
+  const dx = (Number(locationX) || 0) - centerOffset;
+  const dy = (Number(locationY) || 0) - centerOffset;
   if (Math.abs(dy) >= Math.abs(dx)) {
     return dy < 0 ? 'UP' : 'DOWN';
   }
@@ -365,6 +471,7 @@ function resolveDpadDirectionFromPoint(locationX, locationY) {
 
 function DpadRingControl({
   style,
+  centerOffset = 113,
   minRepeatCycleMs = 95,
   initialDelayMs = 150,
   onActiveChange,
@@ -382,11 +489,13 @@ function DpadRingControl({
   const latestActiveChangeRef = useRef(onActiveChange);
   const latestHoldStartRef = useRef(onHoldStart);
   const latestHoldEndRef = useRef(onHoldEnd);
+  const latestCenterOffsetRef = useRef(centerOffset);
 
   latestActionRef.current = onDirectionAction;
   latestActiveChangeRef.current = onActiveChange;
   latestHoldStartRef.current = onHoldStart;
   latestHoldEndRef.current = onHoldEnd;
+  latestCenterOffsetRef.current = centerOffset;
 
   const stopRepeating = () => {
     holdingRef.current = false;
@@ -419,7 +528,11 @@ function DpadRingControl({
   const handleGrant = (event) => {
     stopRepeating();
     const nativeEvt = event && event.nativeEvent ? event.nativeEvent : {};
-    const dir = resolveDpadDirectionFromPoint(nativeEvt.locationX, nativeEvt.locationY);
+    const dir = resolveDpadDirectionFromPoint(
+      nativeEvt.locationX,
+      nativeEvt.locationY,
+      latestCenterOffsetRef.current
+    );
     holdingRef.current = true;
     const sessionId = sessionRef.current;
 
@@ -480,6 +593,12 @@ function DpadRingControl({
 }
 
 function App() {
+  const windowDims = useWindowDimensions();
+  const fallbackScreenW =
+    Platform.OS === 'web' ? Math.min(windowDims.width || 394, 400) : windowDims.width || 390;
+  const fallbackScreenH =
+    Platform.OS === 'web' ? Math.min(windowDims.height || 780, 780) : windowDims.height || 780;
+
   const [activeTab, setActiveTab] = useState('tv');
   const [hasIrHardware, setHasIrHardware] = useState(null);
   const [feedback, setFeedback] = useState({
@@ -490,6 +609,14 @@ function App() {
   // حالة ريموت الشاشة والواي فاي والاقتران التلقائي
   const [tvTransport, setTvTransport] = useState('ir');
   const tvBrand = 'samsung';
+  const [tvAreaSize, setTvAreaSize] = useState(() => ({
+    width: fallbackScreenW,
+    height: Math.max(400, fallbackScreenH - 180),
+  }));
+  const [acAreaSize, setAcAreaSize] = useState(() => ({
+    width: fallbackScreenW,
+    height: Math.max(420, fallbackScreenH - 130),
+  }));
   const [wifiProtocol, setWifiProtocol] = useState('samsung_tizen');
   const [tvIp, setTvIp] = useState('192.168.1.50');
   const [tvPort, setTvPort] = useState('8002');
@@ -1277,20 +1404,70 @@ function App() {
     ? 'بانتظار موافقة الشاشة'
     : 'غير مقترن';
 
+  const tvMetrics = computeTvLayoutMetrics(
+    tvAreaSize.width || fallbackScreenW,
+    tvAreaSize.height || Math.max(400, fallbackScreenH - (tvTransport === 'wifi' ? 190 : 126))
+  );
+  const acMetrics = computeAcLayoutMetrics(
+    acAreaSize.width || fallbackScreenW,
+    acAreaSize.height || Math.max(420, fallbackScreenH - 126)
+  );
+
+  const handleTvAreaLayout = (event) => {
+    const layout = event && event.nativeEvent && event.nativeEvent.layout;
+    if (!layout || layout.width <= 0 || layout.height <= 0) return;
+    setTvAreaSize((prev) =>
+      Math.abs(prev.width - layout.width) < 2 && Math.abs(prev.height - layout.height) < 2
+        ? prev
+        : { width: layout.width, height: layout.height }
+    );
+  };
+
+  const handleAcAreaLayout = (event) => {
+    const layout = event && event.nativeEvent && event.nativeEvent.layout;
+    if (!layout || layout.width <= 0 || layout.height <= 0) return;
+    setAcAreaSize((prev) =>
+      Math.abs(prev.width - layout.width) < 2 && Math.abs(prev.height - layout.height) < 2
+        ? prev
+        : { width: layout.width, height: layout.height }
+    );
+  };
+
   const tvHeaderElement = (
-    <View style={styles.sectionStack}>
+    <View
+      style={[
+        styles.sectionStack,
+        {
+          gap: tvMetrics.stackGap,
+          flexGrow: tvMetrics.needsScroll ? 0 : 1,
+          justifyContent: tvMetrics.needsScroll ? 'flex-start' : 'space-between',
+        },
+      ]}
+    >
       <View style={styles.segmentBox}>
         <TouchableOpacity
-          style={[styles.segmentBtn, tvTransport === 'ir' && styles.segmentIrActive]}
+          style={[
+            styles.segmentBtn,
+            { minHeight: tvMetrics.segmentBtnH },
+            tvTransport === 'ir' && styles.segmentIrActive,
+          ]}
           onPress={() => setTvTransport('ir')}
         >
-          <Text style={styles.segmentText}>أشعة IR (38kHz)</Text>
+          <Text style={[styles.segmentText, { fontSize: tvMetrics.segmentFontSize }]}>
+            أشعة IR (38kHz)
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={[styles.segmentBtn, tvTransport === 'wifi' && styles.segmentWifiActive]}
+          style={[
+            styles.segmentBtn,
+            { minHeight: tvMetrics.segmentBtnH },
+            tvTransport === 'wifi' && styles.segmentWifiActive,
+          ]}
           onPress={() => setTvTransport('wifi')}
         >
-          <Text style={styles.segmentText}>واي فاي (Smart TV)</Text>
+          <Text style={[styles.segmentText, { fontSize: tvMetrics.segmentFontSize }]}>
+            واي فاي (Smart TV)
+          </Text>
         </TouchableOpacity>
       </View>
 
@@ -1303,40 +1480,62 @@ function App() {
         </View>
       ) : null}
 
-      <View style={styles.rowGap}>
+      <View style={[styles.rowGap, { gap: tvMetrics.rowGap }]}>
         <TouchableOpacity
-          style={styles.powerBtn}
+          style={[styles.powerBtn, { minHeight: tvMetrics.powerBtnH }]}
           onPress={() => handleTvCommand('POWER')}
         >
-          <Text style={styles.btnTextBold}>طاقة</Text>
+          <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
+            طاقة
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.actionBtn}
+          style={[styles.actionBtn, { minHeight: tvMetrics.powerBtnH }]}
           onPress={() => handleTvCommand('INPUT')}
         >
-          <Text style={styles.btnText}>المصدر</Text>
+          <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
+            المصدر
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity
-          style={styles.actionBtn}
+          style={[styles.actionBtn, { minHeight: tvMetrics.powerBtnH }]}
           onPress={() => handleTvCommand('MUTE')}
         >
-          <Text style={styles.btnText}>كتم</Text>
+          <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
+            كتم
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.dpadCircle}>
+      <View
+        style={[
+          styles.dpadCircle,
+          {
+            width: tvMetrics.dpadSize,
+            height: tvMetrics.dpadSize,
+            borderRadius: tvMetrics.dpadSize / 2,
+          },
+        ]}
+      >
         {activeDpadDir && DPAD_WEDGE_ROTATION[activeDpadDir] ? (
           <View
             pointerEvents="none"
             style={[
               styles.dpadWedgeOverlay,
-              { transform: [{ rotate: DPAD_WEDGE_ROTATION[activeDpadDir] }] },
+              {
+                borderTopWidth: tvMetrics.dpadWedgeBorder,
+                borderRightWidth: tvMetrics.dpadWedgeBorder,
+                borderBottomWidth: tvMetrics.dpadWedgeBorder,
+                borderLeftWidth: tvMetrics.dpadWedgeBorder,
+                transform: [{ rotate: DPAD_WEDGE_ROTATION[activeDpadDir] }],
+              },
             ]}
           />
         ) : null}
 
         <DpadRingControl
           style={styles.dpadTouchRing}
+          centerOffset={tvMetrics.dpadCenterOffset}
           minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 95}
           initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
           onActiveChange={(dir) => setActiveDpadDir(dir)}
@@ -1347,23 +1546,46 @@ function App() {
           onHoldEnd={(dir) => handleEndWifiHold(dir)}
         />
 
-        <View style={styles.dpadDotsLayer} pointerEvents="none">
+        <View
+          style={[styles.dpadDotsLayer, { paddingVertical: tvMetrics.dpadDotPad }]}
+          pointerEvents="none"
+        >
           <View
             style={[
               styles.dpadDot,
+              {
+                width: tvMetrics.dpadDotSize,
+                height: tvMetrics.dpadDotSize,
+                borderRadius: tvMetrics.dpadDotSize / 2,
+              },
               activeDpadDir === 'UP' && styles.dpadDotActive,
             ]}
           />
-          <View style={styles.dpadDotsMiddleRow}>
+          <View
+            style={[
+              styles.dpadDotsMiddleRow,
+              { paddingHorizontal: tvMetrics.dpadDotPad },
+            ]}
+          >
             <View
               style={[
                 styles.dpadDot,
+                {
+                  width: tvMetrics.dpadDotSize,
+                  height: tvMetrics.dpadDotSize,
+                  borderRadius: tvMetrics.dpadDotSize / 2,
+                },
                 activeDpadDir === 'LEFT' && styles.dpadDotActive,
               ]}
             />
             <View
               style={[
                 styles.dpadDot,
+                {
+                  width: tvMetrics.dpadDotSize,
+                  height: tvMetrics.dpadDotSize,
+                  borderRadius: tvMetrics.dpadDotSize / 2,
+                },
                 activeDpadDir === 'RIGHT' && styles.dpadDotActive,
               ]}
             />
@@ -1371,6 +1593,11 @@ function App() {
           <View
             style={[
               styles.dpadDot,
+              {
+                width: tvMetrics.dpadDotSize,
+                height: tvMetrics.dpadDotSize,
+                borderRadius: tvMetrics.dpadDotSize / 2,
+              },
               activeDpadDir === 'DOWN' && styles.dpadDotActive,
             ]}
           />
@@ -1379,6 +1606,11 @@ function App() {
         <TouchableOpacity
           style={[
             styles.dpadOkBtn,
+            {
+              width: tvMetrics.dpadOkSize,
+              height: tvMetrics.dpadOkSize,
+              borderRadius: tvMetrics.dpadOkSize / 2,
+            },
             activeDpadDir === 'OK' && styles.dpadOkBtnActive,
           ]}
           activeOpacity={0.85}
@@ -1386,26 +1618,46 @@ function App() {
           onPressOut={() => setActiveDpadDir(null)}
           onPress={() => handleTvCommand('OK')}
         >
-          <Text style={styles.dpadOkText}>موافق</Text>
+          <Text style={[styles.dpadOkText, { fontSize: tvMetrics.dpadOkFontSize }]}>
+            موافق
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.rowGap}>
-        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('BACK')}>
-          <Text style={styles.btnText}>رجوع</Text>
+      <View style={[styles.rowGap, { gap: tvMetrics.rowGap }]}>
+        <TouchableOpacity
+          style={[styles.navBtn, { minHeight: tvMetrics.navBtnH }]}
+          onPress={() => handleTvCommand('BACK')}
+        >
+          <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>رجوع</Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('HOME')}>
-          <Text style={styles.btnText}>الرئيسية</Text>
+        <TouchableOpacity
+          style={[styles.navBtn, { minHeight: tvMetrics.navBtnH }]}
+          onPress={() => handleTvCommand('HOME')}
+        >
+          <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
+            الرئيسية
+          </Text>
         </TouchableOpacity>
-        <TouchableOpacity style={styles.navBtn} onPress={() => handleTvCommand('MENU')}>
-          <Text style={styles.btnText}>القائمة</Text>
+        <TouchableOpacity
+          style={[styles.navBtn, { minHeight: tvMetrics.navBtnH }]}
+          onPress={() => handleTvCommand('MENU')}
+        >
+          <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
+            القائمة
+          </Text>
         </TouchableOpacity>
       </View>
 
-      <View style={styles.rowGap}>
-        <View style={styles.rockerCard}>
+      <View style={[styles.rowGap, { gap: tvMetrics.rowGap }]}>
+        <View
+          style={[
+            styles.rockerCard,
+            { padding: tvMetrics.rockerPad, gap: tvMetrics.rockerGap },
+          ]}
+        >
           <RepeatableButton
-            style={styles.rockerKey}
+            style={[styles.rockerKey, { minHeight: tvMetrics.rockerKeyH }]}
             minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
             initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
@@ -1414,11 +1666,15 @@ function App() {
             onHoldStart={() => handleStartWifiHold('VOL_UP')}
             onHoldEnd={() => handleEndWifiHold('VOL_UP')}
           >
-            <Text style={styles.rockerSymbol}>+</Text>
+            <Text style={[styles.rockerSymbol, { fontSize: tvMetrics.rockerSymbolSize }]}>
+              +
+            </Text>
           </RepeatableButton>
-          <Text style={styles.rockerLabel}>الصوت</Text>
+          <Text style={[styles.rockerLabel, { fontSize: tvMetrics.rockerLabelSize }]}>
+            الصوت
+          </Text>
           <RepeatableButton
-            style={styles.rockerKey}
+            style={[styles.rockerKey, { minHeight: tvMetrics.rockerKeyH }]}
             minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
             initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
@@ -1427,13 +1683,20 @@ function App() {
             onHoldStart={() => handleStartWifiHold('VOL_DOWN')}
             onHoldEnd={() => handleEndWifiHold('VOL_DOWN')}
           >
-            <Text style={styles.rockerSymbol}>−</Text>
+            <Text style={[styles.rockerSymbol, { fontSize: tvMetrics.rockerSymbolSize }]}>
+              −
+            </Text>
           </RepeatableButton>
         </View>
 
-        <View style={styles.rockerCard}>
+        <View
+          style={[
+            styles.rockerCard,
+            { padding: tvMetrics.rockerPad, gap: tvMetrics.rockerGap },
+          ]}
+        >
           <RepeatableButton
-            style={styles.rockerKey}
+            style={[styles.rockerKey, { minHeight: tvMetrics.rockerKeyH }]}
             minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
             initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
@@ -1442,11 +1705,15 @@ function App() {
             onHoldStart={() => handleStartWifiHold('CH_UP')}
             onHoldEnd={() => handleEndWifiHold('CH_UP')}
           >
-            <Text style={styles.rockerSymbol}>▲</Text>
+            <Text style={[styles.rockerSymbol, { fontSize: tvMetrics.rockerSymbolSize }]}>
+              ▲
+            </Text>
           </RepeatableButton>
-          <Text style={styles.rockerLabel}>القناة</Text>
+          <Text style={[styles.rockerLabel, { fontSize: tvMetrics.rockerLabelSize }]}>
+            القناة
+          </Text>
           <RepeatableButton
-            style={styles.rockerKey}
+            style={[styles.rockerKey, { minHeight: tvMetrics.rockerKeyH }]}
             minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
             initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
@@ -1455,36 +1722,12 @@ function App() {
             onHoldStart={() => handleStartWifiHold('CH_DOWN')}
             onHoldEnd={() => handleEndWifiHold('CH_DOWN')}
           >
-            <Text style={styles.rockerSymbol}>▼</Text>
+            <Text style={[styles.rockerSymbol, { fontSize: tvMetrics.rockerSymbolSize }]}>
+              ▼
+            </Text>
           </RepeatableButton>
         </View>
       </View>
-
-      {tvTransport === 'wifi' ? (
-        <View style={styles.rowGap}>
-          <TouchableOpacity
-            style={styles.youtubeBtn}
-            activeOpacity={0.8}
-            onPress={() => handleLaunchYouTube()}
-            disabled={isLaunchingYouTube}
-          >
-            {isLaunchingYouTube ? (
-              <ActivityIndicator size="small" color="#FFFFFF" />
-            ) : (
-              <Text style={styles.btnTextBold}>YouTube</Text>
-            )}
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.netflixBtn}
-            activeOpacity={0.8}
-            onPress={() => handleTvCommand('NETFLIX')}
-          >
-            <Text style={styles.btnTextBold}>Netflix</Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
-
     </View>
   );
 
@@ -1576,7 +1819,14 @@ function App() {
         ) : (
           <>
             <View style={styles.headerBrandGroup}>
-              <Text style={styles.headerTitle}>الريموت الشامل</Text>
+              <Text
+                style={[
+                  styles.headerTitle,
+                  fallbackScreenW < 360 ? { fontSize: 17 } : null,
+                ]}
+              >
+                الريموت الشامل
+              </Text>
               {isTvSearchAvailable ? (
                 <TouchableOpacity
                   style={styles.headerSearchIconBtn}
@@ -1591,7 +1841,10 @@ function App() {
 
             {isWifiMode ? (
               <TouchableOpacity
-                style={styles.headerWifiBtn}
+                style={[
+                  styles.headerWifiBtn,
+                  { maxWidth: Math.round(fallbackScreenW * 0.43) },
+                ]}
                 activeOpacity={0.75}
                 onPress={() => setShowWifiModal(true)}
                 accessibilityLabel="إعدادات والبحث عن الشاشات"
@@ -1750,23 +2003,90 @@ function App() {
           )}
         </View>
       ) : activeTab === 'tv' ? (
-        <ScrollView
-          style={styles.scrollArea}
-          contentContainerStyle={styles.scrollContent}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
-        >
-          {tvHeaderElement}
-        </ScrollView>
+        <>
+          <ScrollView
+            style={styles.scrollArea}
+            onLayout={handleTvAreaLayout}
+            scrollEnabled={tvMetrics.needsScroll}
+            contentContainerStyle={[
+              styles.tvScrollContent,
+              {
+                paddingHorizontal: tvMetrics.hPad,
+                paddingTop: tvMetrics.vPad,
+                paddingBottom: tvMetrics.vPad,
+                justifyContent: tvMetrics.needsScroll ? 'flex-start' : 'space-between',
+              },
+            ]}
+            keyboardShouldPersistTaps="handled"
+            showsVerticalScrollIndicator={false}
+          >
+            {tvHeaderElement}
+          </ScrollView>
+
+          {tvTransport === 'wifi' ? (
+            <View
+              style={[
+                styles.streamingDock,
+                {
+                  paddingHorizontal: tvMetrics.hPad,
+                  gap: tvMetrics.rowGap,
+                },
+              ]}
+            >
+              <TouchableOpacity
+                style={[styles.youtubeBtn, { minHeight: tvMetrics.streamingBtnH }]}
+                activeOpacity={0.8}
+                onPress={() => handleLaunchYouTube()}
+                disabled={isLaunchingYouTube}
+              >
+                {isLaunchingYouTube ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
+                    YouTube
+                  </Text>
+                )}
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.netflixBtn, { minHeight: tvMetrics.streamingBtnH }]}
+                activeOpacity={0.8}
+                onPress={() => handleTvCommand('NETFLIX')}
+              >
+                <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
+                  Netflix
+                </Text>
+              </TouchableOpacity>
+            </View>
+          ) : null}
+        </>
       ) : (
         <ScrollView
           style={styles.scrollArea}
-          contentContainerStyle={styles.acScrollContent}
+          onLayout={handleAcAreaLayout}
+          contentContainerStyle={[
+            styles.acScrollContent,
+            {
+              paddingHorizontal: acMetrics.hPad,
+              paddingTop: acMetrics.vPad,
+              paddingBottom: acMetrics.needsScroll ? 24 : acMetrics.vPad,
+              justifyContent: acMetrics.needsScroll ? 'flex-start' : 'space-between',
+            },
+          ]}
           nestedScrollEnabled
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.acSectionStack}>
-            <View style={styles.acRowGap}>
+          <View
+            style={[
+              styles.acSectionStack,
+              {
+                gap: acMetrics.gap,
+                flexGrow: acMetrics.needsScroll ? 0 : 1,
+                justifyContent: acMetrics.needsScroll ? 'flex-start' : 'space-between',
+              },
+            ]}
+          >
+            <View style={[styles.acRowGap, { gap: acMetrics.rowGap }]}>
               {[
                 { key: 'midea', label: 'Midea AC' },
                 { key: 'gree', label: 'Gree AC' },
@@ -1774,7 +2094,11 @@ function App() {
               ].map((b) => (
                 <TouchableOpacity
                   key={b.key}
-                  style={[styles.acBrandChip, acBrand === b.key && styles.chipBtnActive]}
+                  style={[
+                    styles.acBrandChip,
+                    { minHeight: acMetrics.brandH },
+                    acBrand === b.key && styles.chipBtnActive,
+                  ]}
                   onPress={() => {
                     setAcBrand(b.key);
                     setAcTimerConfig(null);
@@ -1788,12 +2112,18 @@ function App() {
               ))}
             </View>
 
-            <View style={[styles.acLcd, !acState.power && styles.acLcdOff]}>
+            <View
+              style={[
+                styles.acLcd,
+                { paddingVertical: acMetrics.lcdPadV },
+                !acState.power && styles.acLcdOff,
+              ]}
+            >
               <View style={styles.acLcdTop}>
                 <Text style={styles.acMeta}>الوضع: {currentModeLabel}</Text>
                 <Text style={styles.acMeta}>المروحة: {currentFanLabel}</Text>
               </View>
-              <Text style={styles.acTemp}>
+              <Text style={[styles.acTemp, { fontSize: acMetrics.tempFontSize }]}>
                 {acState.power ? `${acState.temperature}°C` : 'OFF'}
               </Text>
               <Text style={styles.acFooter}>
@@ -1811,9 +2141,9 @@ function App() {
               ) : null}
             </View>
 
-            <View style={styles.acRowGap}>
+            <View style={[styles.acRowGap, { gap: acMetrics.rowGap }]}>
               <TouchableOpacity
-                style={styles.tempStepBtn}
+                style={[styles.tempStepBtn, { height: acMetrics.stepBtnH }]}
                 onPress={() => {
                   const nextTemp = Math.max(acMinTemp, acState.temperature - 1);
                   if (nextTemp !== acState.temperature) {
@@ -1831,6 +2161,7 @@ function App() {
               <TouchableOpacity
                 style={[
                   styles.acPowerBtn,
+                  { height: acMetrics.stepBtnH },
                   acState.power ? styles.acPowerOn : styles.acPowerOff,
                 ]}
                 onPress={() => {
@@ -1844,7 +2175,7 @@ function App() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.tempStepBtn}
+                style={[styles.tempStepBtn, { height: acMetrics.stepBtnH }]}
                 onPress={() => {
                   const nextTemp = Math.min(acMaxTemp, acState.temperature + 1);
                   if (nextTemp !== acState.temperature) {
@@ -1868,6 +2199,7 @@ function App() {
                     key={m.key}
                     style={[
                       styles.modeChip,
+                      { minHeight: acMetrics.modeH },
                       active &&
                         (m.key === 'heat' ? styles.modeHeatActive : styles.modeCoolActive),
                     ]}
@@ -1881,9 +2213,9 @@ function App() {
               })}
             </View>
 
-            <View style={styles.acRowGap}>
+            <View style={[styles.acRowGap, { gap: acMetrics.rowGap }]}>
               <TouchableOpacity
-                style={styles.extraCard}
+                style={[styles.extraCard, { minHeight: acMetrics.extraH }]}
                 onPress={() => {
                   const idx = FAN_SPEEDS.findIndex((f) => f.key === acState.fanSpeed);
                   const nextFan = FAN_SPEEDS[(idx + 1) % FAN_SPEEDS.length];
@@ -1899,7 +2231,7 @@ function App() {
               </TouchableOpacity>
 
               <TouchableOpacity
-                style={styles.extraCard}
+                style={[styles.extraCard, { minHeight: acMetrics.extraH }]}
                 onPress={() => {
                   const nextSwing = !acState.swing;
                   updateAcAndTransmit(
@@ -1919,7 +2251,11 @@ function App() {
               <>
                 <View style={styles.acFeatureGrid}>
                   <TouchableOpacity
-                    style={[styles.acFeatureBtn, acState.turbo && styles.modeCoolActive]}
+                    style={[
+                      styles.acFeatureBtn,
+                      { minHeight: acMetrics.featureH },
+                      acState.turbo && styles.modeCoolActive,
+                    ]}
                     onPress={() =>
                       updateAcAndTransmit(
                         { ...acState, power: true, turbo: !acState.turbo },
@@ -1934,7 +2270,11 @@ function App() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.acFeatureBtn, acState.led && styles.modeCoolActive]}
+                    style={[
+                      styles.acFeatureBtn,
+                      { minHeight: acMetrics.featureH },
+                      acState.led && styles.modeCoolActive,
+                    ]}
                     onPress={() =>
                       updateAcAndTransmit(
                         { ...acState, led: !acState.led },
@@ -1949,7 +2289,11 @@ function App() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.acFeatureBtn, acState.clean && styles.modeCoolActive]}
+                    style={[
+                      styles.acFeatureBtn,
+                      { minHeight: acMetrics.featureH },
+                      acState.clean && styles.modeCoolActive,
+                    ]}
                     onPress={() =>
                       updateAcAndTransmit(
                         { ...acState, clean: !acState.clean },
@@ -1964,7 +2308,11 @@ function App() {
                   </TouchableOpacity>
 
                   <TouchableOpacity
-                    style={[styles.acFeatureBtn, acState.sleep && styles.modeCoolActive]}
+                    style={[
+                      styles.acFeatureBtn,
+                      { minHeight: acMetrics.featureH },
+                      acState.sleep && styles.modeCoolActive,
+                    ]}
                     onPress={handleSleepToggle}
                   >
                     <Text style={styles.acFeatureTitle}>نوم</Text>
@@ -1977,6 +2325,7 @@ function App() {
                 <TouchableOpacity
                   style={[
                     styles.timerCard,
+                    { minHeight: acMetrics.timerH },
                     acTimerConfig && styles.modeCoolActive,
                   ]}
                   onPress={handleOpenTimerModal}
@@ -2400,8 +2749,15 @@ const styles = StyleSheet.create({
   feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
   feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 10 },
-  sectionStack: { gap: 8 },
+  scrollContent: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 18 },
+  tvScrollContent: { flexGrow: 1 },
+  streamingDock: {
+    flexDirection: 'row',
+    paddingTop: 6,
+    paddingBottom: 8,
+    backgroundColor: '#0B0D11',
+  },
+  sectionStack: { gap: 10 },
   segmentBox: {
     flexDirection: 'row',
     backgroundColor: '#131720',

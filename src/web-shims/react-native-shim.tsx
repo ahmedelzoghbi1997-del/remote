@@ -20,6 +20,31 @@ export const AppState = {
   addEventListener: () => ({ remove: () => {} }),
 };
 
+export const Dimensions = {
+  get(_dim: 'window' | 'screen' = 'window') {
+    if (typeof window === 'undefined') {
+      return { width: 390, height: 780, scale: 2, fontScale: 1 };
+    }
+    return {
+      width: window.innerWidth,
+      height: window.innerHeight,
+      scale: window.devicePixelRatio || 1,
+      fontScale: 1,
+    };
+  },
+};
+
+export function useWindowDimensions() {
+  const [dims, setDims] = React.useState(() => Dimensions.get('window'));
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const onResize = () => setDims(Dimensions.get('window'));
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+  return dims;
+}
+
 type RNStyle = Record<string, any> | false | null | undefined | RNStyle[];
 
 function flattenStyle(style: RNStyle): Record<string, any> {
@@ -158,6 +183,7 @@ export function StatusBar(_props: { barStyle?: string; backgroundColor?: string 
 export function View({
   style,
   pointerEvents,
+  onLayout,
   onStartShouldSetResponder,
   onResponderGrant,
   onResponderRelease,
@@ -166,6 +192,7 @@ export function View({
 }: {
   style?: RNStyle;
   pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
+  onLayout?: (e: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   onStartShouldSetResponder?: (e: any) => boolean;
   onResponderGrant?: (e: any) => void;
   onResponderRelease?: (e: any) => void;
@@ -173,10 +200,39 @@ export function View({
   onResponderTerminationRequest?: (e: any) => boolean;
   children?: React.ReactNode;
 }) {
+  const hostRef = React.useRef<HTMLDivElement | null>(null);
+  const latestOnLayoutRef = React.useRef(onLayout);
+  latestOnLayoutRef.current = onLayout;
   const activePointerRef = React.useRef<number | null>(null);
   const hasResponder = Boolean(
     onStartShouldSetResponder || onResponderGrant || onResponderRelease
   );
+
+  React.useEffect(() => {
+    const el = hostRef.current;
+    if (!el || !latestOnLayoutRef.current) return undefined;
+    const emit = () => {
+      if (!latestOnLayoutRef.current) return;
+      const rect = el.getBoundingClientRect();
+      latestOnLayoutRef.current({
+        nativeEvent: {
+          layout: {
+            x: rect.left,
+            y: rect.top,
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        },
+      });
+    };
+    emit();
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => emit());
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    return undefined;
+  }, [Boolean(onLayout)]);
 
   const buildNativeEvent = (e: React.PointerEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -192,6 +248,7 @@ export function View({
 
   return (
     <div
+      ref={hostRef}
       onPointerDown={
         hasResponder
           ? (e) => {
@@ -354,17 +411,54 @@ export function TouchableOpacity({
 export function ScrollView({
   style,
   contentContainerStyle,
+  scrollEnabled = true,
+  onLayout,
   children,
 }: {
   style?: RNStyle;
   contentContainerStyle?: RNStyle;
   showsVerticalScrollIndicator?: boolean;
+  scrollEnabled?: boolean;
+  nestedScrollEnabled?: boolean;
+  keyboardShouldPersistTaps?: string;
+  onLayout?: (e: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   children?: React.ReactNode;
 }) {
+  const hostRef = React.useRef<HTMLDivElement | null>(null);
+  const latestOnLayoutRef = React.useRef(onLayout);
+  latestOnLayoutRef.current = onLayout;
+
+  React.useEffect(() => {
+    const el = hostRef.current;
+    if (!el || !latestOnLayoutRef.current) return undefined;
+    const emit = () => {
+      if (!latestOnLayoutRef.current) return;
+      const rect = el.getBoundingClientRect();
+      latestOnLayoutRef.current({
+        nativeEvent: {
+          layout: {
+            x: rect.left,
+            y: rect.top,
+            width: Math.round(rect.width),
+            height: Math.round(rect.height),
+          },
+        },
+      });
+    };
+    emit();
+    if (typeof ResizeObserver !== 'undefined') {
+      const ro = new ResizeObserver(() => emit());
+      ro.observe(el);
+      return () => ro.disconnect();
+    }
+    return undefined;
+  }, [Boolean(onLayout)]);
+
   return (
     <div
+      ref={hostRef}
       style={toWebStyle(style, {
-        overflowY: 'auto',
+        overflowY: scrollEnabled ? 'auto' : 'hidden',
         overflowX: 'hidden',
         display: 'flex',
         flexDirection: 'column',

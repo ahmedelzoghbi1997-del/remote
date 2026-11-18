@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  AppState,
   FlatList,
   I18nManager,
   Image,
@@ -186,6 +187,8 @@ function getSubnetFromIp(ip) {
 function RepeatableButton({
   onAction,
   onActiveChange,
+  onHoldStart,
+  onHoldEnd,
   minRepeatCycleMs = 90,
   initialDelayMs = 150,
   style,
@@ -196,13 +199,18 @@ function RepeatableButton({
   const holdTimerRef = useRef(null);
   const waitResolveRef = useRef(null);
   const holdingRef = useRef(false);
+  const nativeHoldActiveRef = useRef(false);
   const sessionRef = useRef(0);
   const firstActionPromiseRef = useRef(null);
   const latestActionRef = useRef(onAction);
   const latestActiveChangeRef = useRef(onActiveChange);
+  const latestHoldStartRef = useRef(onHoldStart);
+  const latestHoldEndRef = useRef(onHoldEnd);
 
   latestActionRef.current = onAction;
   latestActiveChangeRef.current = onActiveChange;
+  latestHoldStartRef.current = onHoldStart;
+  latestHoldEndRef.current = onHoldEnd;
 
   const stopRepeating = () => {
     holdingRef.current = false;
@@ -215,6 +223,12 @@ function RepeatableButton({
       const resolveWait = waitResolveRef.current;
       waitResolveRef.current = null;
       resolveWait();
+    }
+    if (nativeHoldActiveRef.current) {
+      nativeHoldActiveRef.current = false;
+      if (latestHoldEndRef.current) {
+        latestHoldEndRef.current();
+      }
     }
     if (latestActiveChangeRef.current) {
       latestActiveChangeRef.current(false);
@@ -242,6 +256,13 @@ function RepeatableButton({
     holdTimerRef.current = setTimeout(async () => {
       if (firstActionPromiseRef.current) {
         await firstActionPromiseRef.current;
+      }
+      if (!holdingRef.current || sessionRef.current !== sessionId) {
+        return;
+      }
+      if (latestHoldStartRef.current && latestHoldStartRef.current() === true) {
+        nativeHoldActiveRef.current = true;
+        return;
       }
       while (holdingRef.current && sessionRef.current === sessionId) {
         const startedAt = Date.now();
@@ -348,17 +369,24 @@ function DpadRingControl({
   initialDelayMs = 150,
   onActiveChange,
   onDirectionAction,
+  onHoldStart,
+  onHoldEnd,
 }) {
   const holdTimerRef = useRef(null);
   const waitResolveRef = useRef(null);
   const holdingRef = useRef(false);
+  const nativeHoldDirRef = useRef(null);
   const sessionRef = useRef(0);
   const firstActionPromiseRef = useRef(null);
   const latestActionRef = useRef(onDirectionAction);
   const latestActiveChangeRef = useRef(onActiveChange);
+  const latestHoldStartRef = useRef(onHoldStart);
+  const latestHoldEndRef = useRef(onHoldEnd);
 
   latestActionRef.current = onDirectionAction;
   latestActiveChangeRef.current = onActiveChange;
+  latestHoldStartRef.current = onHoldStart;
+  latestHoldEndRef.current = onHoldEnd;
 
   const stopRepeating = () => {
     holdingRef.current = false;
@@ -371,6 +399,13 @@ function DpadRingControl({
       const resolveWait = waitResolveRef.current;
       waitResolveRef.current = null;
       resolveWait();
+    }
+    if (nativeHoldDirRef.current) {
+      const heldDir = nativeHoldDirRef.current;
+      nativeHoldDirRef.current = null;
+      if (latestHoldEndRef.current) {
+        latestHoldEndRef.current(heldDir);
+      }
     }
     if (latestActiveChangeRef.current) {
       latestActiveChangeRef.current(null);
@@ -400,6 +435,13 @@ function DpadRingControl({
     holdTimerRef.current = setTimeout(async () => {
       if (firstActionPromiseRef.current) {
         await firstActionPromiseRef.current;
+      }
+      if (!holdingRef.current || sessionRef.current !== sessionId) {
+        return;
+      }
+      if (latestHoldStartRef.current && latestHoldStartRef.current(dir) === true) {
+        nativeHoldDirRef.current = dir;
+        return;
       }
       while (holdingRef.current && sessionRef.current === sessionId) {
         const startedAt = Date.now();
@@ -471,6 +513,8 @@ function App() {
   const [castingVideoId, setCastingVideoId] = useState(null);
   const [lastCastedVideoId, setLastCastedVideoId] = useState(null);
   const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
+  const [searchHistory, setSearchHistory] = useState([]);
+  const [networkNotice, setNetworkNotice] = useState(null);
 
   // حالة ريموت التكييف
   const [acBrand, setAcBrand] = useState('midea');
@@ -494,6 +538,7 @@ function App() {
   const isSendingRef = useRef(false);
   const hasIrHardwareRef = useRef(null);
   const searchDebounceRef = useRef(null);
+  const historySettleTimerRef = useRef(null);
   const searchRequestIdRef = useRef(0);
 
   useEffect(() => {
@@ -504,6 +549,14 @@ function App() {
         setWifiStatus(status);
       }
     });
+
+    WifiControl.getSearchHistory()
+      .then((historyItems) => {
+        if (mounted && Array.isArray(historyItems)) {
+          setSearchHistory(historyItems);
+        }
+      })
+      .catch(() => {});
 
     WifiControl.loadSavedConfig().then((saved) => {
       if (!mounted || !saved) return;
@@ -545,6 +598,10 @@ function App() {
         clearTimeout(searchDebounceRef.current);
         searchDebounceRef.current = null;
       }
+      if (historySettleTimerRef.current) {
+        clearTimeout(historySettleTimerRef.current);
+        historySettleTimerRef.current = null;
+      }
       unsubscribe();
       WifiControl.abortDiscovery();
       WifiControl.disconnect();
@@ -581,7 +638,79 @@ function App() {
     clearErrorBanner();
   };
 
+  useEffect(() => {
+    if (activeTab !== 'tv' || tvTransport !== 'wifi') {
+      WifiControl.releaseActiveHold();
+    }
+  }, [activeTab, tvTransport]);
+
+  const refreshNetworkStatus = async ({ verifyLanReachability = true } = {}) => {
+    try {
+      WifiControl.configure({
+        protocol: wifiProtocol,
+        ipAddress: tvIp,
+        port: Number(tvPort) || undefined,
+        dialPort: Number(dialPort) || undefined,
+      });
+      const res = await WifiControl.checkSameWifiNetwork({ verifyLanReachability });
+      if (res && !res.sameNetwork) {
+        setNetworkNotice({ message: res.message, reason: res.reason });
+      } else {
+        setNetworkNotice(null);
+      }
+      return res;
+    } catch (_) {
+      return { sameNetwork: true, reason: 'ok', message: '' };
+    }
+  };
+
+  useEffect(() => {
+    if (!AppState || typeof AppState.addEventListener !== 'function') {
+      return undefined;
+    }
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState !== 'active') {
+        WifiControl.releaseActiveHold();
+      } else if (isSearchInputOpen) {
+        refreshNetworkStatus({ verifyLanReachability: true });
+      }
+    });
+    return () => {
+      if (sub && typeof sub.remove === 'function') {
+        sub.remove();
+      }
+    };
+  }, [isSearchInputOpen, tvIp, tvPort, dialPort, wifiProtocol]);
+
+  const handleStartWifiHold = (commandKey) => {
+    if (tvTransport !== 'wifi') {
+      return false;
+    }
+    return WifiControl.startKeyHold(commandKey);
+  };
+
+  const handleEndWifiHold = (commandKey) => {
+    if (tvTransport !== 'wifi') {
+      WifiControl.releaseActiveHold();
+      return;
+    }
+    WifiControl.endKeyHold(commandKey);
+  };
+
   const handleTvCommand = async (commandKey, options = {}) => {
+    if (tvTransport === 'wifi' && WifiControl.supportsNativeHold()) {
+      try {
+        await WifiControl.sendCommand(commandKey);
+        clearErrorBanner();
+      } catch (error) {
+        setFeedback({
+          text: error && error.message ? error.message : 'تعذر تنفيذ الأمر',
+          tone: 'error',
+        });
+      }
+      return;
+    }
+
     if (isSendingRef.current) {
       return;
     }
@@ -737,12 +866,11 @@ function App() {
   const handleLaunchYouTube = async () => {
     setIsLaunchingYouTube(true);
     try {
-      WifiControl.configure({
-        protocol: wifiProtocol,
-        ipAddress: tvIp,
-        port: Number(tvPort) || undefined,
-        dialPort: Number(dialPort) || undefined,
-      });
+      const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
+      if (netCheck && !netCheck.sameNetwork) {
+        setFeedback({ text: netCheck.message, tone: 'error' });
+        return;
+      }
       await WifiControl.launchYouTube();
       clearErrorBanner();
     } catch (error) {
@@ -755,7 +883,19 @@ function App() {
     }
   };
 
-  const handleSearchYouTube = async (overrideQuery) => {
+  const recordSearchHistory = (queryText) => {
+    const clean = String(queryText || '').trim().replace(/\s+/g, ' ');
+    if (clean.length < 2) return;
+    WifiControl.saveSearchHistoryItem(clean)
+      .then((updated) => {
+        if (Array.isArray(updated)) {
+          setSearchHistory(updated);
+        }
+      })
+      .catch(() => {});
+  };
+
+  const handleSearchYouTube = async (overrideQuery, options = {}) => {
     const targetQuery =
       typeof overrideQuery === 'string' ? overrideQuery : searchQuery;
     const cleanTarget = targetQuery.trim();
@@ -770,6 +910,14 @@ function App() {
       clearTimeout(searchDebounceRef.current);
       searchDebounceRef.current = null;
     }
+    if (historySettleTimerRef.current) {
+      clearTimeout(historySettleTimerRef.current);
+      historySettleTimerRef.current = null;
+    }
+
+    if (options.saveHistory) {
+      recordSearchHistory(cleanTarget);
+    }
 
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
@@ -781,6 +929,13 @@ function App() {
       if (searchRequestIdRef.current !== requestId) return;
       setSearchResults(items);
       clearErrorBanner();
+      if (!options.saveHistory && items.length > 0) {
+        historySettleTimerRef.current = setTimeout(() => {
+          if (searchRequestIdRef.current === requestId) {
+            recordSearchHistory(cleanTarget);
+          }
+        }, 1200);
+      }
     } catch (error) {
       if (searchRequestIdRef.current !== requestId) return;
       setSearchResults([]);
@@ -795,18 +950,34 @@ function App() {
     }
   };
 
-  const isWifiSearchAvailable = activeTab === 'tv' && tvTransport === 'wifi';
+  const isWifiMode = activeTab === 'tv' && tvTransport === 'wifi';
+  const isTvSearchAvailable = activeTab === 'tv';
 
   const handleOpenSearch = () => {
-    if (!isWifiSearchAvailable) return;
+    if (!isTvSearchAvailable) return;
     clearErrorBanner();
     setIsSearchInputOpen(true);
+    refreshNetworkStatus({ verifyLanReachability: true });
+    WifiControl.getSearchHistory()
+      .then((historyItems) => {
+        if (Array.isArray(historyItems)) {
+          setSearchHistory(historyItems);
+        }
+      })
+      .catch(() => {});
   };
 
   const handleCloseSearch = () => {
     if (searchDebounceRef.current) {
       clearTimeout(searchDebounceRef.current);
       searchDebounceRef.current = null;
+    }
+    if (historySettleTimerRef.current) {
+      clearTimeout(historySettleTimerRef.current);
+      historySettleTimerRef.current = null;
+    }
+    if (hasSearchedOnce && searchResults.length > 0 && searchQuery.trim().length >= 2) {
+      recordSearchHistory(searchQuery);
     }
     searchRequestIdRef.current += 1;
     setIsSearchInputOpen(false);
@@ -815,19 +986,33 @@ function App() {
     setIsSearching(false);
     setHasSearchedOnce(false);
     setLastCastedVideoId(null);
+    setNetworkNotice(null);
     clearErrorBanner();
   };
 
   useEffect(() => {
-    if (!isWifiSearchAvailable && isSearchInputOpen) {
+    if (!isTvSearchAvailable && isSearchInputOpen) {
       handleCloseSearch();
     }
-  }, [isWifiSearchAvailable, isSearchInputOpen]);
+  }, [isTvSearchAvailable, isSearchInputOpen]);
+
+  useEffect(() => {
+    if (isTvSearchAvailable && isSearchInputOpen) {
+      refreshNetworkStatus({ verifyLanReachability: true });
+    }
+  }, [tvIp, wifiProtocol]);
 
   const handleClearSearchText = () => {
     if (searchDebounceRef.current) {
       clearTimeout(searchDebounceRef.current);
       searchDebounceRef.current = null;
+    }
+    if (historySettleTimerRef.current) {
+      clearTimeout(historySettleTimerRef.current);
+      historySettleTimerRef.current = null;
+    }
+    if (hasSearchedOnce && searchResults.length > 0 && searchQuery.trim().length >= 2) {
+      recordSearchHistory(searchQuery);
     }
     searchRequestIdRef.current += 1;
     setSearchQuery('');
@@ -838,12 +1023,42 @@ function App() {
     clearErrorBanner();
   };
 
+  const handleSelectSuggestion = (term) => {
+    const clean = String(term || '').trim();
+    if (!clean) return;
+    setSearchQuery(clean);
+    setLastCastedVideoId(null);
+    handleSearchYouTube(clean, { saveHistory: true });
+  };
+
+  const handleRemoveSearchHistoryItem = async (term) => {
+    try {
+      const updated = await WifiControl.removeSearchHistoryItem(term);
+      setSearchHistory(updated);
+    } catch (_) {
+      // ignore
+    }
+  };
+
+  const handleClearAllSearchHistory = async () => {
+    try {
+      const updated = await WifiControl.clearSearchHistory();
+      setSearchHistory(updated);
+    } catch (_) {
+      // ignore
+    }
+  };
+
   const handleSearchQueryChange = (text) => {
     setSearchQuery(text);
     setLastCastedVideoId(null);
     if (searchDebounceRef.current) {
       clearTimeout(searchDebounceRef.current);
       searchDebounceRef.current = null;
+    }
+    if (historySettleTimerRef.current) {
+      clearTimeout(historySettleTimerRef.current);
+      historySettleTimerRef.current = null;
     }
 
     const trimmed = text.trim();
@@ -864,14 +1079,19 @@ function App() {
   };
 
   const handleCastVideo = async (item) => {
+    if (searchQuery.trim().length >= 2) {
+      recordSearchHistory(searchQuery);
+    }
     setCastingVideoId(item.videoId);
     try {
-      WifiControl.configure({
-        protocol: wifiProtocol,
-        ipAddress: tvIp,
-        port: Number(tvPort) || undefined,
-        dialPort: Number(dialPort) || undefined,
-      });
+      const netCheck = await refreshNetworkStatus({ verifyLanReachability: true });
+      if (netCheck && !netCheck.sameNetwork) {
+        setFeedback({
+          text: netCheck.message,
+          tone: 'error',
+        });
+        return;
+      }
       await WifiControl.castYouTubeVideo(item.videoId);
       setLastCastedVideoId(item.videoId);
       clearErrorBanner();
@@ -1074,120 +1294,12 @@ function App() {
         </TouchableOpacity>
       </View>
 
-      {tvTransport === 'wifi' ? (
-        <View style={styles.wifiSectionWrap}>
-          <View style={styles.wifiBar}>
-            <TouchableOpacity
-              style={styles.wifiInfoTouchable}
-              onPress={() => setShowWifiModal(true)}
-            >
-              <View style={styles.wifiStatusHeader}>
-                <View
-                  style={[
-                    styles.statusDot,
-                    wifiStatus.isConnected ? styles.statusDotOn : styles.statusDotIdle,
-                  ]}
-                />
-                <Text style={styles.wifiDeviceTitle} numberOfLines={1}>
-                  {wifiStatus.deviceName || protocolDisplayLabel}
-                </Text>
-              </View>
-              <Text style={styles.wifiAddressText}>
-                {tvIp}:{tvPort} · {pairingBadgeText}
-              </Text>
-            </TouchableOpacity>
-
-            <View style={styles.wifiBarActions}>
-              <TouchableOpacity
-                style={[styles.scanBtn, isDiscovering && styles.scanBtnActive]}
-                activeOpacity={0.8}
-                onPress={() => handleScanSmartTvs()}
-              >
-                {isDiscovering ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={styles.scanBtnText}>البحث عن الشاشات</Text>
-                )}
-              </TouchableOpacity>
-
-              <TouchableOpacity
-                style={styles.wifiEditBtn}
-                onPress={() => setShowWifiModal(true)}
-              >
-                <Text style={styles.wifiEditLabel}>إعداد</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          {isConnectingWifi ? (
-            <View style={styles.discoveryCard}>
-              <View style={styles.discoveryProgressRow}>
-                <ActivityIndicator size="small" color="#0EA5E9" />
-                <Text style={styles.discoveryStatusText}>
-                  جاري الاقتران والاتصال بـ {tvIp}:{tvPort}...
-                </Text>
-              </View>
-            </View>
-          ) : null}
-
-          {isDiscovering || hasScannedOnce ? (
-            <View style={styles.discoveryCard}>
-              <View style={styles.discoveryHeader}>
-                <Text style={styles.discoveryTitle}>
-                  {isDiscovering
-                    ? `جاري فحص الشبكة (${subnetPrefix}.1 - 254)... ${scanProgress.scanned}/${scanProgress.total}`
-                    : `الشاشات المكتشفة (${discoveredTvs.length})`}
-                </Text>
-                <TouchableOpacity
-                  onPress={() => {
-                    if (isDiscovering) {
-                      WifiControl.abortDiscovery();
-                      setIsDiscovering(false);
-                    } else {
-                      setHasScannedOnce(false);
-                    }
-                  }}
-                >
-                  <Text style={styles.discoveryCloseText}>
-                    {isDiscovering ? 'إيقاف' : 'إخفاء'}
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              {discoveredTvs.length > 0 ? (
-                <View style={styles.discoveryList}>
-                  {discoveredTvs.map((device) => {
-                    const isSelected = device.ip === tvIp;
-                    return (
-                      <TouchableOpacity
-                        key={`${device.ip}-${device.protocol}`}
-                        style={[
-                          styles.discoveredItem,
-                          isSelected && styles.discoveredItemActive,
-                        ]}
-                        activeOpacity={0.75}
-                        onPress={() => handleSelectDiscoveredTv(device)}
-                      >
-                        <View style={styles.discoveredMeta}>
-                          <Text style={styles.discoveredName}>{device.name}</Text>
-                          <Text style={styles.discoveredSub}>
-                            {device.modelName} · {device.ip}:{device.port}
-                          </Text>
-                        </View>
-                        <Text style={styles.discoveredConnectTag}>
-                          {isSelected && wifiStatus.isConnected ? 'متصل' : 'اتصال'}
-                        </Text>
-                      </TouchableOpacity>
-                    );
-                  })}
-                </View>
-              ) : !isDiscovering ? (
-                <Text style={styles.emptySearchText}>
-                  لم يتم العثور على شاشات على النطاق {subnetPrefix}.x — تأكد من تشغيل التلفاز أو عدّل النطاق من "إعداد".
-                </Text>
-              ) : null}
-            </View>
-          ) : null}
+      {tvTransport === 'wifi' && isConnectingWifi ? (
+        <View style={styles.connectingInlineRow}>
+          <ActivityIndicator size="small" color="#0EA5E9" />
+          <Text style={styles.connectingInlineText}>
+            جاري الاتصال بـ {tvIp}:{tvPort}...
+          </Text>
         </View>
       ) : null}
 
@@ -1225,11 +1337,14 @@ function App() {
 
         <DpadRingControl
           style={styles.dpadTouchRing}
-          minRepeatCycleMs={95}
+          minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 95}
+          initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
           onActiveChange={(dir) => setActiveDpadDir(dir)}
           onDirectionAction={(dir, { isRepeat }) =>
             handleTvCommand(dir, { burstFrames: isRepeat ? 1 : 2 })
           }
+          onHoldStart={(dir) => handleStartWifiHold(dir)}
+          onHoldEnd={(dir) => handleEndWifiHold(dir)}
         />
 
         <View style={styles.dpadDotsLayer} pointerEvents="none">
@@ -1291,20 +1406,26 @@ function App() {
         <View style={styles.rockerCard}>
           <RepeatableButton
             style={styles.rockerKey}
-            minRepeatCycleMs={85}
+            minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
+            initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
               handleTvCommand('VOL_UP', { burstFrames: isRepeat ? 1 : 2 })
             }
+            onHoldStart={() => handleStartWifiHold('VOL_UP')}
+            onHoldEnd={() => handleEndWifiHold('VOL_UP')}
           >
             <Text style={styles.rockerSymbol}>+</Text>
           </RepeatableButton>
           <Text style={styles.rockerLabel}>الصوت</Text>
           <RepeatableButton
             style={styles.rockerKey}
-            minRepeatCycleMs={85}
+            minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
+            initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
               handleTvCommand('VOL_DOWN', { burstFrames: isRepeat ? 1 : 2 })
             }
+            onHoldStart={() => handleStartWifiHold('VOL_DOWN')}
+            onHoldEnd={() => handleEndWifiHold('VOL_DOWN')}
           >
             <Text style={styles.rockerSymbol}>−</Text>
           </RepeatableButton>
@@ -1313,20 +1434,26 @@ function App() {
         <View style={styles.rockerCard}>
           <RepeatableButton
             style={styles.rockerKey}
-            minRepeatCycleMs={85}
+            minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
+            initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
               handleTvCommand('CH_UP', { burstFrames: isRepeat ? 1 : 2 })
             }
+            onHoldStart={() => handleStartWifiHold('CH_UP')}
+            onHoldEnd={() => handleEndWifiHold('CH_UP')}
           >
             <Text style={styles.rockerSymbol}>▲</Text>
           </RepeatableButton>
           <Text style={styles.rockerLabel}>القناة</Text>
           <RepeatableButton
             style={styles.rockerKey}
-            minRepeatCycleMs={85}
+            minRepeatCycleMs={tvTransport === 'wifi' ? 45 : 85}
+            initialDelayMs={tvTransport === 'wifi' ? 180 : 150}
             onAction={({ isRepeat }) =>
               handleTvCommand('CH_DOWN', { burstFrames: isRepeat ? 1 : 2 })
             }
+            onHoldStart={() => handleStartWifiHold('CH_DOWN')}
+            onHoldEnd={() => handleEndWifiHold('CH_DOWN')}
           >
             <Text style={styles.rockerSymbol}>▼</Text>
           </RepeatableButton>
@@ -1364,8 +1491,13 @@ function App() {
     </View>
   );
 
-  const isSearchPageOpen =
-    isWifiSearchAvailable && isSearchInputOpen && searchQuery.trim().length > 0;
+  const isSearchPageOpen = isTvSearchAvailable && isSearchInputOpen;
+  const trimmedSearchQuery = searchQuery.trim();
+  const matchingSearchHistory = trimmedSearchQuery
+    ? searchHistory.filter((item) =>
+        item.toLowerCase().includes(trimmedSearchQuery.toLowerCase())
+      )
+    : searchHistory;
 
   const renderVideoItem = ({ item }) => {
     const isCasting = castingVideoId === item.videoId;
@@ -1409,7 +1541,7 @@ function App() {
       <StatusBar barStyle="light-content" backgroundColor="#0B0D11" />
 
       <View style={styles.header}>
-        {isWifiSearchAvailable && isSearchInputOpen ? (
+        {isTvSearchAvailable && isSearchInputOpen ? (
           <View style={styles.headerSearchRow}>
             <TouchableOpacity
               style={styles.headerBackBtn}
@@ -1428,7 +1560,9 @@ function App() {
               placeholderTextColor="#64748B"
               returnKeyType="search"
               autoFocus
-              onSubmitEditing={() => handleSearchYouTube()}
+              onSubmitEditing={() =>
+                handleSearchYouTube(undefined, { saveHistory: true })
+              }
             />
 
             {searchQuery.length > 0 ? (
@@ -1446,7 +1580,7 @@ function App() {
           <>
             <View style={styles.headerBrandGroup}>
               <Text style={styles.headerTitle}>الريموت الشامل</Text>
-              {isWifiSearchAvailable ? (
+              {isTvSearchAvailable ? (
                 <TouchableOpacity
                   style={styles.headerSearchIconBtn}
                   activeOpacity={0.75}
@@ -1458,15 +1592,39 @@ function App() {
               ) : null}
             </View>
 
-            <Text style={styles.headerStatus}>
-              {Platform.OS === 'web'
-                ? 'معاينة الويب (وضع المحاكاة)'
-                : hasIrHardware === null
-                ? 'جاري فحص IR...'
-                : hasIrHardware
-                ? 'IR Blaster جاهز'
-                : 'وضع Wi-Fi (لا يوجد IR)'}
-            </Text>
+            {isWifiMode ? (
+              <TouchableOpacity
+                style={styles.headerWifiBtn}
+                activeOpacity={0.75}
+                onPress={() => setShowWifiModal(true)}
+                accessibilityLabel="إعدادات والبحث عن الشاشات"
+              >
+                {isConnectingWifi ? (
+                  <ActivityIndicator size="small" color="#0EA5E9" />
+                ) : (
+                  <View
+                    style={[
+                      styles.statusDot,
+                      wifiStatus.isConnected ? styles.statusDotOn : styles.statusDotIdle,
+                    ]}
+                  />
+                )}
+                <Text style={styles.headerWifiLabel} numberOfLines={1}>
+                  {wifiStatus.deviceName || protocolDisplayLabel}
+                </Text>
+                <Text style={styles.headerWifiGear}>⚙</Text>
+              </TouchableOpacity>
+            ) : (
+              <Text style={styles.headerStatus}>
+                {Platform.OS === 'web'
+                  ? 'معاينة الويب (وضع المحاكاة)'
+                  : hasIrHardware === null
+                  ? 'جاري فحص IR...'
+                  : hasIrHardware
+                  ? 'IR Blaster جاهز'
+                  : 'وضع Wi-Fi (لا يوجد IR)'}
+              </Text>
+            )}
           </>
         )}
       </View>
@@ -1481,10 +1639,100 @@ function App() {
 
       {isSearchPageOpen ? (
         <View style={styles.searchPageWrap}>
-          {isSearching && searchResults.length === 0 ? (
-            <View style={styles.searchLoadingBox}>
-              <ActivityIndicator size="large" color="#0EA5E9" />
-              <Text style={styles.searchLoadingText}>جاري البحث في يوتيوب...</Text>
+          {networkNotice && networkNotice.message ? (
+            <View style={styles.networkWarnBanner}>
+              <Text style={styles.networkWarnText}>{networkNotice.message}</Text>
+              <View style={styles.networkWarnActions}>
+                <TouchableOpacity
+                  style={styles.networkWarnBtn}
+                  activeOpacity={0.75}
+                  onPress={() => refreshNetworkStatus({ verifyLanReachability: true })}
+                >
+                  <Text style={styles.networkWarnBtnText}>فحص مجدداً</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.networkWarnSetupBtn}
+                  activeOpacity={0.75}
+                  onPress={() => setShowWifiModal(true)}
+                >
+                  <Text style={styles.networkWarnSetupText}>إعداد الشاشة</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : null}
+          {trimmedSearchQuery.length === 0 ? (
+            <ScrollView
+              style={styles.scrollArea}
+              contentContainerStyle={styles.scrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              {searchHistory.length > 0 ? (
+                <View style={styles.historySection}>
+                  <View style={styles.historyHeader}>
+                    <Text style={styles.historyHeaderTitle}>عمليات البحث السابقة</Text>
+                    <TouchableOpacity
+                      onPress={handleClearAllSearchHistory}
+                      activeOpacity={0.75}
+                    >
+                      <Text style={styles.historyClearAllText}>مسح الكل</Text>
+                    </TouchableOpacity>
+                  </View>
+
+                  <View style={styles.historyList}>
+                    {searchHistory.map((term) => (
+                      <View key={term} style={styles.historyRow}>
+                        <TouchableOpacity
+                          style={styles.historyItemMain}
+                          activeOpacity={0.75}
+                          onPress={() => handleSelectSuggestion(term)}
+                        >
+                          <SearchIcon color="#64748B" size={16} />
+                          <Text style={styles.historyItemText} numberOfLines={1}>
+                            {term}
+                          </Text>
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.historyDeleteBtn}
+                          activeOpacity={0.7}
+                          onPress={() => handleRemoveSearchHistoryItem(term)}
+                          accessibilityLabel={`حذف ${term}`}
+                        >
+                          <Text style={styles.historyDeleteGlyph}>✕</Text>
+                        </TouchableOpacity>
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ) : (
+                <Text style={styles.emptySearchText}>
+                  اكتب اسم الفيديو أو القناة للبحث، وستظهر كلماتك السابقة هنا كاقتراحات تلقائياً.
+                </Text>
+              )}
+            </ScrollView>
+          ) : isSearching && searchResults.length === 0 ? (
+            <View style={styles.searchPageWrap}>
+              {matchingSearchHistory.length > 0 ? (
+                <View style={styles.matchingHistoryWrap}>
+                  {matchingSearchHistory.slice(0, 4).map((term) => (
+                    <TouchableOpacity
+                      key={`match-${term}`}
+                      style={styles.matchingHistoryRow}
+                      activeOpacity={0.75}
+                      onPress={() => handleSelectSuggestion(term)}
+                    >
+                      <SearchIcon color="#0EA5E9" size={15} />
+                      <Text style={styles.historyItemText} numberOfLines={1}>
+                        {term}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              ) : null}
+              <View style={styles.searchLoadingBox}>
+                <ActivityIndicator size="large" color="#0EA5E9" />
+                <Text style={styles.searchLoadingText}>جاري البحث في يوتيوب...</Text>
+              </View>
             </View>
           ) : (
             <FlatList
@@ -1816,6 +2064,18 @@ function App() {
               </TouchableOpacity>
             </View>
 
+            <View style={styles.modalStatusStrip}>
+              <View
+                style={[
+                  styles.statusDot,
+                  wifiStatus.isConnected ? styles.statusDotOn : styles.statusDotIdle,
+                ]}
+              />
+              <Text style={styles.modalStatusText} numberOfLines={1}>
+                {tvIp}:{tvPort} · {pairingBadgeText}
+              </Text>
+            </View>
+
             <View style={styles.modalScanRow}>
               <View style={styles.portField}>
                 <Text style={styles.inputLabel}>نطاق الشبكة (Subnet)</Text>
@@ -1833,29 +2093,43 @@ function App() {
                 onPress={() => handleScanSmartTvs()}
               >
                 <Text style={styles.btnTextBold}>
-                  {isDiscovering ? 'إيقاف الفحص' : 'البحث عن الشاشات (Scan)'}
+                  {isDiscovering
+                    ? `إيقاف (${scanProgress.scanned}/${scanProgress.total})`
+                    : 'البحث عن الشاشات'}
                 </Text>
               </TouchableOpacity>
             </View>
 
             {discoveredTvs.length > 0 ? (
               <View style={styles.modalDiscoveryList}>
-                {discoveredTvs.map((device) => (
-                  <TouchableOpacity
-                    key={`modal-${device.ip}-${device.protocol}`}
-                    style={styles.discoveredItem}
-                    onPress={() => handleSelectDiscoveredTv(device)}
-                  >
-                    <View style={styles.discoveredMeta}>
-                      <Text style={styles.discoveredName}>{device.name}</Text>
-                      <Text style={styles.discoveredSub}>
-                        {device.modelName} · {device.ip}:{device.port}
+                {discoveredTvs.map((device) => {
+                  const isSelected = device.ip === tvIp;
+                  return (
+                    <TouchableOpacity
+                      key={`modal-${device.ip}-${device.protocol}`}
+                      style={[
+                        styles.discoveredItem,
+                        isSelected && styles.discoveredItemActive,
+                      ]}
+                      onPress={() => handleSelectDiscoveredTv(device)}
+                    >
+                      <View style={styles.discoveredMeta}>
+                        <Text style={styles.discoveredName}>{device.name}</Text>
+                        <Text style={styles.discoveredSub}>
+                          {device.modelName} · {device.ip}:{device.port}
+                        </Text>
+                      </View>
+                      <Text style={styles.discoveredConnectTag}>
+                        {isSelected && wifiStatus.isConnected ? 'متصل' : 'اختيار'}
                       </Text>
-                    </View>
-                    <Text style={styles.discoveredConnectTag}>اختيار</Text>
-                  </TouchableOpacity>
-                ))}
+                    </TouchableOpacity>
+                  );
+                })}
               </View>
+            ) : !isDiscovering && hasScannedOnce ? (
+              <Text style={styles.emptySearchText}>
+                لم يتم العثور على شاشات على النطاق {subnetPrefix}.x — تأكد من تشغيل التلفاز.
+              </Text>
             ) : null}
 
             <Text style={styles.inputLabel}>عنوان IP المحلي للشاشة</Text>
@@ -2094,6 +2368,28 @@ const styles = StyleSheet.create({
   },
   headerTitle: { color: '#F1F5F9', fontSize: 19, fontWeight: '700' },
   headerStatus: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
+  headerWifiBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    maxWidth: 165,
+    minHeight: 34,
+    paddingHorizontal: 10,
+    borderRadius: 17,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    gap: 6,
+  },
+  headerWifiLabel: {
+    color: '#F1F5F9',
+    fontSize: 11,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  headerWifiGear: {
+    color: '#94A3B8',
+    fontSize: 13,
+  },
   feedbackBar: {
     marginHorizontal: 18,
     marginTop: 12,
@@ -2107,8 +2403,8 @@ const styles = StyleSheet.create({
   feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
   feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { padding: 14, paddingBottom: 24 },
-  sectionStack: { gap: 12 },
+  scrollContent: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 16 },
+  sectionStack: { gap: 10 },
   segmentBox: {
     flexDirection: 'row',
     backgroundColor: '#131720',
@@ -2142,49 +2438,39 @@ const styles = StyleSheet.create({
   },
   chipBtnActive: { borderColor: '#0EA5E9', backgroundColor: 'rgba(14,165,233,0.15)' },
   chipText: { color: '#F1F5F9', fontSize: 12, fontWeight: '600', textAlign: 'center' },
-  wifiSectionWrap: { gap: 8 },
-  wifiBar: {
+  connectingInlineRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    minHeight: 54,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 12,
-    backgroundColor: '#131720',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 4,
+  },
+  connectingInlineText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  modalStatusStrip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#0B0D11',
+    borderRadius: 10,
     borderWidth: 1,
     borderColor: '#1E2532',
-    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
-  wifiInfoTouchable: { flex: 1, gap: 3 },
-  wifiStatusHeader: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  modalStatusText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontFamily: 'monospace',
+    flex: 1,
+  },
   statusDot: { width: 8, height: 8, borderRadius: 4 },
   statusDotOn: { backgroundColor: '#22C55E' },
   statusDotIdle: { backgroundColor: '#64748B' },
-  wifiDeviceTitle: { color: '#F1F5F9', fontSize: 13, fontWeight: '700', flex: 1 },
-  wifiAddressText: { color: '#94A3B8', fontSize: 11, fontFamily: 'monospace' },
-  wifiBarActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  scanBtn: {
-    minHeight: 36,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: '#0EA5E9',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
   scanBtnActive: { backgroundColor: '#F59E0B' },
-  scanBtnText: { color: '#FFFFFF', fontSize: 12, fontWeight: '700' },
-  wifiEditBtn: {
-    minHeight: 36,
-    paddingHorizontal: 10,
-    borderRadius: 9,
-    backgroundColor: '#1A202C',
-    borderWidth: 1,
-    borderColor: '#252E3E',
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  wifiEditLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '700' },
   discoveryCard: {
     backgroundColor: '#131720',
     borderRadius: 12,
@@ -2256,7 +2542,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     position: 'relative',
     direction: 'ltr',
-    marginVertical: 4,
+    marginVertical: 0,
   },
   dpadWedgeOverlay: {
     position: 'absolute',
@@ -2362,7 +2648,7 @@ const styles = StyleSheet.create({
   },
   rockerSymbol: { color: '#F1F5F9', fontSize: 20, fontWeight: '700' },
   rockerLabel: { color: '#94A3B8', fontSize: 12, fontWeight: '600' },
-  smartAppsSection: { gap: 8, marginTop: 2 },
+  smartAppsSection: { gap: 6, marginTop: 0 },
   youtubeBtn: {
     flex: 1,
     minHeight: 48,
@@ -2384,6 +2670,129 @@ const styles = StyleSheet.create({
   searchPageWrap: {
     flex: 1,
     backgroundColor: '#0B0D11',
+  },
+  networkWarnBanner: {
+    marginHorizontal: 14,
+    marginTop: 10,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(245,158,11,0.14)',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+    gap: 8,
+  },
+  networkWarnText: {
+    color: '#FDE68A',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'right',
+    lineHeight: 18,
+  },
+  networkWarnActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: 8,
+  },
+  networkWarnBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(245,158,11,0.2)',
+    borderWidth: 1,
+    borderColor: '#F59E0B',
+  },
+  networkWarnBtnText: {
+    color: '#FEF3C7',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  networkWarnSetupBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+  },
+  networkWarnSetupText: {
+    color: '#F1F5F9',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  historySection: {
+    gap: 10,
+  },
+  historyHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 2,
+  },
+  historyHeaderTitle: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  historyClearAllText: {
+    color: '#EF4444',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  historyList: {
+    gap: 8,
+  },
+  historyRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#131720',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    minHeight: 46,
+    paddingHorizontal: 12,
+    gap: 8,
+  },
+  historyItemMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+  },
+  historyItemText: {
+    flex: 1,
+    color: '#F1F5F9',
+    fontSize: 14,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  historyDeleteBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: 15,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  historyDeleteGlyph: {
+    color: '#64748B',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  matchingHistoryWrap: {
+    paddingHorizontal: 14,
+    paddingTop: 10,
+    gap: 6,
+  },
+  matchingHistoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#131720',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    gap: 10,
   },
   searchLoadingBox: {
     flex: 1,

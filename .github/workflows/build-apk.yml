@@ -55,12 +55,16 @@ jobs:
 
           import android.content.Context
           import android.hardware.ConsumerIrManager
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
+          import android.os.Build
           import com.facebook.react.bridge.ReactApplicationContext
           import com.facebook.react.bridge.ReactContextBaseJavaModule
           import com.facebook.react.bridge.ReactMethod
           import com.facebook.react.bridge.Promise
           import com.facebook.react.bridge.ReadableArray
           import com.facebook.react.bridge.Arguments
+          import java.net.Inet4Address
           import java.util.concurrent.Executors
 
           class IrManagerModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
@@ -95,6 +99,84 @@ jobs:
               @ReactMethod
               fun hasIrEmitter(promise: Promise) {
                   promise.resolve(irManager?.hasIrEmitter() ?: false)
+              }
+
+              @ReactMethod
+              fun getNetworkInfo(promise: Promise) {
+                  try {
+                      val cm = reactApplicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager?
+                      val map = Arguments.createMap()
+                      if (cm == null) {
+                          map.putBoolean("isConnected", false)
+                          map.putBoolean("isWifi", false)
+                          map.putBoolean("isCellular", false)
+                          map.putBoolean("isEthernet", false)
+                          map.putNull("localIp")
+                          map.putInt("prefixLength", 24)
+                          promise.resolve(map)
+                          return
+                      }
+
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                          val activeNetwork = cm.activeNetwork
+                          val caps = if (activeNetwork != null) cm.getNetworkCapabilities(activeNetwork) else null
+                          val hasWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+                          val hasCellular = caps?.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) == true
+                          val hasEthernet = caps?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true
+                          val isConnected = caps != null && (hasWifi || hasCellular || hasEthernet || caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
+
+                          var localIp: String? = null
+                          var prefixLen = 24
+                          if (activeNetwork != null && (hasWifi || hasEthernet)) {
+                              val linkProps = cm.getLinkProperties(activeNetwork)
+                              if (linkProps != null) {
+                                  for (linkAddr in linkProps.linkAddresses) {
+                                      val addr = linkAddr.address
+                                      if (addr is Inet4Address && !addr.isLoopbackAddress) {
+                                          localIp = addr.hostAddress
+                                          prefixLen = linkAddr.prefixLength
+                                          break
+                                      }
+                                  }
+                              }
+                          }
+
+                          map.putBoolean("isConnected", isConnected)
+                          map.putBoolean("isWifi", hasWifi)
+                          map.putBoolean("isCellular", hasCellular)
+                          map.putBoolean("isEthernet", hasEthernet)
+                          if (localIp != null) {
+                              map.putString("localIp", localIp)
+                          } else {
+                              map.putNull("localIp")
+                          }
+                          map.putInt("prefixLength", prefixLen)
+                          promise.resolve(map)
+                      } else {
+                          @Suppress("DEPRECATION")
+                          val netInfo = cm.activeNetworkInfo
+                          @Suppress("DEPRECATION")
+                          val isConnected = netInfo?.isConnected == true
+                          @Suppress("DEPRECATION")
+                          val netType = netInfo?.type
+                          @Suppress("DEPRECATION")
+                          val isWifi = isConnected && netType == ConnectivityManager.TYPE_WIFI
+                          @Suppress("DEPRECATION")
+                          val isCellular = isConnected && netType == ConnectivityManager.TYPE_MOBILE
+                          @Suppress("DEPRECATION")
+                          val isEthernet = isConnected && netType == ConnectivityManager.TYPE_ETHERNET
+
+                          map.putBoolean("isConnected", isConnected)
+                          map.putBoolean("isWifi", isWifi)
+                          map.putBoolean("isCellular", isCellular)
+                          map.putBoolean("isEthernet", isEthernet)
+                          map.putNull("localIp")
+                          map.putInt("prefixLength", 24)
+                          promise.resolve(map)
+                      }
+                  } catch (e: Exception) {
+                      promise.reject("NETWORK_INFO_ERROR", e.message ?: "Failed to inspect network state.", e)
+                  }
               }
 
               @ReactMethod

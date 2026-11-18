@@ -1,4 +1,4 @@
-import { Platform } from 'react-native';
+import { NativeModules, Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const IS_WEB = Platform.OS === 'web';
@@ -23,6 +23,8 @@ const INVIDIOUS_INSTANCES = [
 
 const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
 const STORAGE_LAST_TV_KEY = '@universal_remote_last_tv_config';
+const STORAGE_SEARCH_HISTORY_KEY = '@universal_remote_youtube_search_history';
+const MAX_SEARCH_HISTORY_ITEMS = 12;
 const SAMSUNG_REMOTE_APP_NAME = 'Remote App';
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
@@ -142,6 +144,29 @@ function extractSubnetPrefix(ip) {
   return '192.168.1';
 }
 
+function ipv4ToUint32(ip) {
+  const parts = String(ip || '').trim().split('.');
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (let i = 0; i < 4; i += 1) {
+    if (!/^\d{1,3}$/.test(parts[i])) return null;
+    const octet = Number(parts[i]);
+    if (octet < 0 || octet > 255) return null;
+    value = ((value << 8) | octet) >>> 0;
+  }
+  return value >>> 0;
+}
+
+function isSameIpv4Subnet(ipA, ipB, prefixLength = 24) {
+  const a = ipv4ToUint32(ipA);
+  const b = ipv4ToUint32(ipB);
+  if (a === null || b === null) return false;
+  const prefix = Math.max(0, Math.min(32, Number(prefixLength) || 24));
+  if (prefix === 0) return true;
+  const mask = (0xffffffff << (32 - prefix)) >>> 0;
+  return (a & mask) === (b & mask);
+}
+
 function extractXmlTagValue(xmlText, tagName) {
   if (!xmlText) return '';
   const regex = new RegExp(`<${tagName}[^>]*>([^<]+)</${tagName}>`, 'i');
@@ -169,6 +194,8 @@ class WifiControlService {
     this.isScanning = false;
     this.scanAborted = false;
     this.manualDisconnect = false;
+    this.activeHeldKey = null;
+    this._holdSafetyTimer = null;
   }
 
   subscribe(listener) {
@@ -330,6 +357,49 @@ class WifiControlService {
     } catch (_) {
       return this.getStatus();
     }
+  }
+
+  async getSearchHistory() {
+    try {
+      const raw = await this._storageGet(STORAGE_SEARCH_HISTORY_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+        .slice(0, MAX_SEARCH_HISTORY_ITEMS);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async saveSearchHistoryItem(query) {
+    const cleanQuery = String(query || '').trim().replace(/\s+/g, ' ');
+    if (cleanQuery.length < 2) {
+      return this.getSearchHistory();
+    }
+    const existing = await this.getSearchHistory();
+    const lowerClean = cleanQuery.toLowerCase();
+    const filtered = existing.filter(
+      (item) => item.toLowerCase() !== lowerClean
+    );
+    const next = [cleanQuery, ...filtered].slice(0, MAX_SEARCH_HISTORY_ITEMS);
+    await this._storageSet(STORAGE_SEARCH_HISTORY_KEY, JSON.stringify(next));
+    return next;
+  }
+
+  async removeSearchHistoryItem(query) {
+    const cleanQuery = String(query || '').trim().toLowerCase();
+    const existing = await this.getSearchHistory();
+    const next = existing.filter((item) => item.toLowerCase() !== cleanQuery);
+    await this._storageSet(STORAGE_SEARCH_HISTORY_KEY, JSON.stringify(next));
+    return next;
+  }
+
+  async clearSearchHistory() {
+    await this._storageRemove(STORAGE_SEARCH_HISTORY_KEY);
+    return [];
   }
 
   configure({ protocol, ipAddress, port, dialPort, deviceName }) {
@@ -666,6 +736,7 @@ class WifiControlService {
           clearTimeout(handshakeTimer);
           handshakeTimer = null;
         }
+        this._clearHoldState();
         this.isConnected = false;
         this.isChannelReady = false;
         this._notify();
@@ -685,6 +756,7 @@ class WifiControlService {
           clearTimeout(handshakeTimer);
           handshakeTimer = null;
         }
+        this._clearHoldState();
         this.isConnected = false;
         this.isChannelReady = false;
         this._notify();
@@ -716,7 +788,16 @@ class WifiControlService {
     }
   }
 
+  _clearHoldState() {
+    if (this._holdSafetyTimer) {
+      clearTimeout(this._holdSafetyTimer);
+      this._holdSafetyTimer = null;
+    }
+    this.activeHeldKey = null;
+  }
+
   disconnect() {
+    this.releaseActiveHold();
     this.manualDisconnect = true;
     this._connectPromise = null;
     if (this.ws) {
@@ -837,6 +918,120 @@ class WifiControlService {
     return null;
   }
 
+  async _isTvReachableOnLan(ip = this.ipAddress, timeoutMs = 1300) {
+    const targetIp = String(ip || '').trim();
+    if (!targetIp) return false;
+
+    const probeUrl =
+      this.protocol === 'roku'
+        ? `http://${targetIp}:${Number(this.port) || 8060}/query/device-info`
+        : this.protocol === 'android_tv'
+        ? `http://${targetIp}:${Number(this.dialPort) || 8008}/setup/eureka_info`
+        : `http://${targetIp}:8001/api/v2/`;
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const res = await fetch(probeUrl, {
+        method: 'GET',
+        signal: controller.signal,
+      });
+      return Boolean(res && res.ok);
+    } catch (_) {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async checkSameWifiNetwork({ verifyLanReachability = true } = {}) {
+    if (IS_WEB) {
+      return {
+        sameNetwork: true,
+        isWifi: true,
+        isCellular: false,
+        reason: 'ok',
+        message: '',
+        simulated: true,
+      };
+    }
+
+    const irModule = NativeModules ? NativeModules.IrManagerModule : null;
+    let netInfo = null;
+
+    if (irModule && typeof irModule.getNetworkInfo === 'function') {
+      try {
+        netInfo = await irModule.getNetworkInfo();
+      } catch (_) {
+        netInfo = null;
+      }
+    }
+
+    if (netInfo) {
+      if (!netInfo.isWifi && !netInfo.isEthernet) {
+        if (netInfo.isCellular) {
+          return {
+            sameNetwork: false,
+            isWifi: false,
+            isCellular: true,
+            reason: 'cellular',
+            message:
+              'تنبيه: الهاتف يستخدم بيانات الهاتف حالياً ولا يستخدم نفس شبكة الواي فاي الخاصة بالشاشة. قم بتشغيل الواي فاي والاتصال بشبكة الشاشة.',
+          };
+        }
+        return {
+          sameNetwork: false,
+          isWifi: false,
+          isCellular: false,
+          reason: 'no_wifi',
+          message:
+            'تنبيه: الهاتف غير متصل بشبكة الواي فاي. يرجى الاتصال بنفس شبكة الواي فاي الخاصة بالشاشة.',
+        };
+      }
+
+      if (
+        netInfo.localIp &&
+        this.ipAddress &&
+        !isSameIpv4Subnet(netInfo.localIp, this.ipAddress, netInfo.prefixLength || 24)
+      ) {
+        return {
+          sameNetwork: false,
+          isWifi: true,
+          isCellular: false,
+          localIp: netInfo.localIp,
+          reason: 'different_wifi',
+          message: `تنبيه: الهاتف متصل بشبكة واي فاي مختلفة (${netInfo.localIp}) عن شبكة الشاشة (${this.ipAddress}). يرجى الاتصال بنفس الشبكة.`,
+        };
+      }
+    }
+
+    const socketReady = Boolean(
+      this.ws && this.ws.readyState === WebSocket.OPEN && this.isChannelReady
+    );
+    if (verifyLanReachability && !socketReady) {
+      const reachable = await this._isTvReachableOnLan(this.ipAddress, 1300);
+      if (!reachable) {
+        return {
+          sameNetwork: false,
+          isWifi: Boolean(netInfo && netInfo.isWifi),
+          isCellular: Boolean(netInfo && netInfo.isCellular),
+          localIp: netInfo ? netInfo.localIp : null,
+          reason: 'tv_unreachable',
+          message: `تنبيه: لا يمكن الوصول إلى الشاشة (${this.ipAddress}) على شبكة الواي فاي الحالية. تأكد أن الهاتف والشاشة على نفس شبكة الواي فاي.`,
+        };
+      }
+    }
+
+    return {
+      sameNetwork: true,
+      isWifi: netInfo ? Boolean(netInfo.isWifi || netInfo.isEthernet) : true,
+      isCellular: false,
+      localIp: netInfo ? netInfo.localIp : null,
+      reason: 'ok',
+      message: '',
+    };
+  }
+
   abortDiscovery() {
     this.scanAborted = true;
     this.isScanning = false;
@@ -939,27 +1134,111 @@ class WifiControlService {
     }
   }
 
-  _buildWsPayload(mapped) {
+  _buildWsPayload(mapped, cmd = 'Click') {
     if (this.protocol === 'samsung_tizen') {
+      const validCmd = cmd === 'Press' || cmd === 'Release' ? cmd : 'Click';
       return {
         method: 'ms.remote.control',
         params: {
-          Cmd: 'Click',
+          Cmd: validCmd,
           DataOfCmd: mapped.tizen,
           Option: 'false',
           TypeOfRemote: 'SendRemoteKey',
         },
       };
     }
+    const androidAction =
+      cmd === 'Press' ? 'DOWN' : cmd === 'Release' ? 'UP' : 'CLICK';
     return {
       type: 'KEY_EVENT',
       keyCode: mapped.androidTv,
-      action: 'CLICK',
+      action: androidAction,
       timestamp: Date.now(),
     };
   }
 
-  async sendCommand(commandKey) {
+  supportsNativeHold() {
+    if (this.protocol !== 'samsung_tizen') {
+      return false;
+    }
+    if (IS_WEB) {
+      return true;
+    }
+    return Boolean(
+      this.ws &&
+        this.ws.readyState === WebSocket.OPEN &&
+        this.isChannelReady
+    );
+  }
+
+  _sendWsImmediate(payload) {
+    if (IS_WEB) {
+      return true;
+    }
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isChannelReady) {
+      try {
+        this.ws.send(JSON.stringify(payload));
+        return true;
+      } catch (_) {
+        return false;
+      }
+    }
+    return false;
+  }
+
+  startKeyHold(commandKey) {
+    const mapped = WIFI_KEY_MAP[commandKey];
+    if (!mapped || !this.supportsNativeHold()) {
+      return false;
+    }
+
+    if (this.activeHeldKey && this.activeHeldKey !== commandKey) {
+      this.endKeyHold(this.activeHeldKey);
+    }
+
+    const payload = this._buildWsPayload(mapped, 'Press');
+    const sent = this._sendWsImmediate(payload);
+    if (!sent) {
+      return false;
+    }
+
+    this.activeHeldKey = commandKey;
+    if (this._holdSafetyTimer) {
+      clearTimeout(this._holdSafetyTimer);
+    }
+    this._holdSafetyTimer = setTimeout(() => {
+      this.endKeyHold(commandKey);
+    }, 12000);
+    return true;
+  }
+
+  endKeyHold(commandKey) {
+    const targetKey = commandKey || this.activeHeldKey;
+    if (!targetKey || !this.activeHeldKey) {
+      this._clearHoldState();
+      return false;
+    }
+    if (commandKey && this.activeHeldKey !== commandKey) {
+      return false;
+    }
+
+    this._clearHoldState();
+    const mapped = WIFI_KEY_MAP[targetKey];
+    if (!mapped) {
+      return false;
+    }
+    const payload = this._buildWsPayload(mapped, 'Release');
+    return this._sendWsImmediate(payload);
+  }
+
+  releaseActiveHold() {
+    if (this.activeHeldKey) {
+      return this.endKeyHold(this.activeHeldKey);
+    }
+    return false;
+  }
+
+  async sendCommand(commandKey, options = {}) {
     const mapped = WIFI_KEY_MAP[commandKey];
     if (!mapped) {
       throw new Error(`الأمر ${commandKey} غير مدعوم عبر الواي فاي.`);
@@ -992,7 +1271,12 @@ class WifiControlService {
       }
     }
 
-    const payload = this._buildWsPayload(mapped);
+    const cmd = options && options.cmd ? options.cmd : 'Click';
+    const payload = this._buildWsPayload(mapped, cmd);
+    if (this._sendWsImmediate(payload)) {
+      return { sent: true, protocol: this.protocol, payload };
+    }
+
     await this._sendWsJson(payload);
 
     return { sent: true, protocol: this.protocol, payload };
@@ -1007,8 +1291,7 @@ class WifiControlService {
       return { sent: true, mocked: true, payload };
     }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isChannelReady) {
-      this.ws.send(JSON.stringify(payload));
+    if (this._sendWsImmediate(payload)) {
       return { sent: true, payload };
     }
 

@@ -15,6 +15,11 @@ export const I18nManager = {
   forceRTL: () => {},
 };
 
+export const AppState = {
+  currentState: 'active',
+  addEventListener: () => ({ remove: () => {} }),
+};
+
 type RNStyle = Record<string, any> | false | null | undefined | RNStyle[];
 
 function flattenStyle(style: RNStyle): Record<string, any> {

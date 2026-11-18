@@ -279,33 +279,46 @@ function RepeatableButton({
   );
 }
 
-function SearchIcon({ color = '#F1F5F9', size = 18 }) {
-  const ringSize = Math.round(size * 0.68);
-  const handleLength = Math.round(size * 0.44);
+function SearchIcon({ color = '#F1F5F9', size = 20 }) {
+  const scale = size / 20;
+  const ringSize = Math.round(12 * scale);
+  const stroke = Math.max(2, Math.round(2 * scale));
+  const handleLength = Math.round(7 * scale);
+  const ringOffset = -2 * scale;
+  const handleOffset = 4.2 * scale;
+
   return (
-    <View style={{ width: size, height: size, position: 'relative' }}>
+    <View
+      style={{
+        width: size,
+        height: size,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
       <View
         style={{
+          position: 'absolute',
           width: ringSize,
           height: ringSize,
           borderRadius: ringSize / 2,
-          borderWidth: 2,
+          borderWidth: stroke,
           borderColor: color,
-          position: 'absolute',
-          top: 1,
-          left: 1,
+          transform: [{ translateX: ringOffset }, { translateY: ringOffset }],
         }}
       />
       <View
         style={{
-          width: handleLength,
-          height: 2,
-          borderRadius: 1,
-          backgroundColor: color,
           position: 'absolute',
-          bottom: 2,
-          right: 1,
-          transform: [{ rotate: '45deg' }],
+          width: handleLength,
+          height: stroke,
+          borderRadius: stroke / 2,
+          backgroundColor: color,
+          transform: [
+            { translateX: handleOffset },
+            { translateY: handleOffset },
+            { rotate: '45deg' },
+          ],
         }}
       />
     </View>
@@ -1429,7 +1442,7 @@ function App() {
                 onPress={handleOpenSearch}
                 accessibilityLabel="بحث"
               >
-                <SearchIcon color="#F1F5F9" size={18} />
+                <SearchIcon color="#F1F5F9" size={20} />
               </TouchableOpacity>
             </View>
 

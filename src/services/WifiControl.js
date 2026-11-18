@@ -157,6 +157,8 @@ class WifiControlService {
     this.dialPort = 8080;
     this.ws = null;
     this.isConnected = false;
+    this.isChannelReady = false;
+    this._connectPromise = null;
     this.pairingState = 'idle'; // 'idle' | 'connecting' | 'awaiting_approval' | 'paired' | 'unauthorized'
     this.authToken = null;
     this.deviceName = '';
@@ -178,6 +180,7 @@ class WifiControlService {
   getStatus() {
     return {
       isConnected: this.isConnected,
+      isChannelReady: this.isChannelReady,
       protocol: this.protocol,
       ipAddress: this.ipAddress,
       port: this.port,
@@ -376,6 +379,7 @@ class WifiControlService {
         await this.saveToken(this.ipAddress, mockToken);
       }
       this.isConnected = true;
+      this.isChannelReady = true;
       this.pairingState = 'paired';
       this._notify();
       return { connected: true, protocol: this.protocol, token: mockToken, mocked: true };
@@ -385,31 +389,29 @@ class WifiControlService {
       return this._verifyRokuRest();
     }
 
-    if (this.protocol === 'samsung_tizen') {
-      const savedToken = await this.getSavedToken(this.ipAddress);
-      // محاولة الاتصال أولاً عبر wss:// (منفذ 8002) ثم الرجوع احتياطياً إلى ws:// (منفذ 8001) عند الفشل
-      const primaryPort = Number(this.port) === 8001 ? 8002 : Number(this.port) || 8002;
-      const fallbackPort = primaryPort === 8002 ? 8001 : 8002;
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isChannelReady) {
+      return {
+        connected: true,
+        protocol: this.protocol,
+        token: this.authToken,
+      };
+    }
 
-      try {
-        const res = await this._connectTvSocket(primaryPort, savedToken);
-        if (this.port !== primaryPort) {
-          this.port = primaryPort;
-          this.saveLastTvConfig({
-            protocol: this.protocol,
-            ipAddress: this.ipAddress,
-            port: this.port,
-            dialPort: this.dialPort,
-            deviceName: this.deviceName,
-          });
-          this._notify();
-        }
-        return res;
-      } catch (primaryErr) {
-        if (this.pairingState !== 'unauthorized' && !this.manualDisconnect) {
-          try {
-            const fallbackRes = await this._connectTvSocket(fallbackPort, savedToken);
-            this.port = fallbackPort;
+    if (this._connectPromise) {
+      return this._connectPromise;
+    }
+
+    this._connectPromise = (async () => {
+      if (this.protocol === 'samsung_tizen') {
+        const savedToken = await this.getSavedToken(this.ipAddress);
+        // الاتصال عبر القناة الموثقة wss:// (منفذ 8002) مع احتياطي 8001 للشاشات القديمة فقط
+        const primaryPort = Number(this.port) === 8001 ? 8002 : Number(this.port) || 8002;
+        const fallbackPort = primaryPort === 8002 ? 8001 : 8002;
+
+        try {
+          const res = await this._connectTvSocket(primaryPort, savedToken);
+          if (this.port !== primaryPort) {
+            this.port = primaryPort;
             this.saveLastTvConfig({
               protocol: this.protocol,
               ipAddress: this.ipAddress,
@@ -418,16 +420,36 @@ class WifiControlService {
               deviceName: this.deviceName,
             });
             this._notify();
-            return fallbackRes;
-          } catch (_) {
-            throw primaryErr;
           }
+          return res;
+        } catch (primaryErr) {
+          if (this.pairingState !== 'unauthorized' && !this.manualDisconnect) {
+            try {
+              const fallbackRes = await this._connectTvSocket(fallbackPort, savedToken);
+              this.port = fallbackPort;
+              this.saveLastTvConfig({
+                protocol: this.protocol,
+                ipAddress: this.ipAddress,
+                port: this.port,
+                dialPort: this.dialPort,
+                deviceName: this.deviceName,
+              });
+              this._notify();
+              return fallbackRes;
+            } catch (_) {
+              throw primaryErr;
+            }
+          }
+          throw primaryErr;
         }
-        throw primaryErr;
       }
-    }
 
-    return this._connectTvSocket(this.port, null);
+      return this._connectTvSocket(this.port, null);
+    })().finally(() => {
+      this._connectPromise = null;
+    });
+
+    return this._connectPromise;
   }
 
   async _verifyRokuRest() {
@@ -446,11 +468,13 @@ class WifiControlService {
         throw new Error(`HTTP ${response.status}`);
       }
       this.isConnected = true;
+      this.isChannelReady = true;
       this.pairingState = 'paired';
       this._notify();
       return { connected: true, protocol: 'roku' };
     } catch (error) {
       this.isConnected = false;
+      this.isChannelReady = false;
       this.pairingState = 'idle';
       this._notify();
       throw new Error(`تعذر الاتصال بشاشة Roku على ${this.ipAddress}:${this.port}`);
@@ -474,7 +498,7 @@ class WifiControlService {
 
   _connectTvSocket(portOverride = this.port, tokenOverride = this.authToken) {
     return new Promise((resolve, reject) => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isChannelReady) {
         this.isConnected = true;
         this._notify();
         resolve({ connected: true, protocol: this.protocol, token: this.authToken });
@@ -494,6 +518,7 @@ class WifiControlService {
         this.ws = null;
       }
 
+      this.isChannelReady = false;
       this.pairingState = tokenOverride ? 'connecting' : 'awaiting_approval';
       this._notify();
 
@@ -507,7 +532,10 @@ class WifiControlService {
         if (settled) return;
         settled = true;
         clearTimeout(connectTimeoutId);
-        if (handshakeTimer) clearTimeout(handshakeTimer);
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
         resolve(payload);
       };
 
@@ -515,7 +543,10 @@ class WifiControlService {
         if (settled) return;
         settled = true;
         clearTimeout(connectTimeoutId);
-        if (handshakeTimer) clearTimeout(handshakeTimer);
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
         reject(err);
       };
 
@@ -527,6 +558,7 @@ class WifiControlService {
             // ignore
           }
           this.isConnected = false;
+          this.isChannelReady = false;
           this.pairingState = 'idle';
           this._notify();
           finishReject(
@@ -539,9 +571,9 @@ class WifiControlService {
         clearTimeout(connectTimeoutId);
         this.isConnected = true;
         this.reconnectAttempts = 0;
-        this._notify();
 
         if (this.protocol !== 'samsung_tizen') {
+          this.isChannelReady = true;
           this.pairingState = 'paired';
           this._notify();
           this._flushQueue();
@@ -549,9 +581,12 @@ class WifiControlService {
           return;
         }
 
-        // انتظار حدث استجابة الشاشة ms.channel.connect لاستخراج data.data.token
+        // إبقاء isChannelReady = false حتى يصل حدث المصادقة ms.channel.connect
+        this._notify();
+
         handshakeTimer = setTimeout(() => {
-          if (socket.readyState === WebSocket.OPEN) {
+          if (socket.readyState === WebSocket.OPEN && !settled) {
+            this.isChannelReady = true;
             if (tokenOverride) {
               this.pairingState = 'paired';
             }
@@ -577,6 +612,10 @@ class WifiControlService {
         if (!data || !data.event) return;
 
         if (data.event === 'ms.channel.connect') {
+          if (handshakeTimer) {
+            clearTimeout(handshakeTimer);
+            handshakeTimer = null;
+          }
           const receivedToken =
             (data.data && data.data.token) ||
             data.token ||
@@ -586,9 +625,10 @@ class WifiControlService {
             await this.saveToken(this.ipAddress, String(receivedToken));
           } else {
             this.pairingState = 'paired';
-            this._notify();
           }
           this.isConnected = true;
+          this.isChannelReady = true;
+          this._notify();
           this._flushQueue();
           finishResolve({
             connected: true,
@@ -597,6 +637,7 @@ class WifiControlService {
           });
         } else if (data.event === 'ms.channel.unauthorized') {
           this.isConnected = false;
+          this.isChannelReady = false;
           this.pairingState = 'unauthorized';
           if (tokenOverride) {
             await this.clearToken(this.ipAddress);
@@ -610,6 +651,7 @@ class WifiControlService {
           );
         } else if (data.event === 'ms.channel.timeOut') {
           this.isConnected = false;
+          this.isChannelReady = false;
           this.pairingState = 'idle';
           this._notify();
           finishReject(
@@ -620,8 +662,12 @@ class WifiControlService {
 
       socket.onclose = () => {
         clearTimeout(connectTimeoutId);
-        if (handshakeTimer) clearTimeout(handshakeTimer);
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
         this.isConnected = false;
+        this.isChannelReady = false;
         this._notify();
         if (!settled) {
           finishReject(
@@ -635,8 +681,12 @@ class WifiControlService {
 
       socket.onerror = () => {
         clearTimeout(connectTimeoutId);
-        if (handshakeTimer) clearTimeout(handshakeTimer);
+        if (handshakeTimer) {
+          clearTimeout(handshakeTimer);
+          handshakeTimer = null;
+        }
         this.isConnected = false;
+        this.isChannelReady = false;
         this._notify();
         finishReject(
           new Error(`فشل اتصال WebSocket مع الشاشة (${this.ipAddress}:${portOverride})`)
@@ -659,7 +709,7 @@ class WifiControlService {
   }
 
   _flushQueue() {
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isChannelReady) return;
     while (this.commandQueue.length > 0) {
       const payload = this.commandQueue.shift();
       this.ws.send(JSON.stringify(payload));
@@ -668,6 +718,7 @@ class WifiControlService {
 
   disconnect() {
     this.manualDisconnect = true;
+    this._connectPromise = null;
     if (this.ws) {
       this.ws.onopen = null;
       this.ws.onmessage = null;
@@ -681,6 +732,7 @@ class WifiControlService {
       this.ws = null;
     }
     this.isConnected = false;
+    this.isChannelReady = false;
     this.commandQueue = [];
     this._notify();
   }
@@ -949,12 +1001,13 @@ class WifiControlService {
   async _sendWsJson(payload) {
     if (IS_WEB) {
       this.isConnected = true;
+      this.isChannelReady = true;
       this.pairingState = 'paired';
       this._notify();
       return { sent: true, mocked: true, payload };
     }
 
-    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN && this.isChannelReady) {
       this.ws.send(JSON.stringify(payload));
       return { sent: true, payload };
     }
@@ -973,6 +1026,7 @@ class WifiControlService {
     if (
       this.ws &&
       this.ws.readyState === WebSocket.OPEN &&
+      this.isChannelReady &&
       this.commandQueue.includes(payload)
     ) {
       this._flushQueue();
@@ -1018,15 +1072,15 @@ class WifiControlService {
 
   /**
    * فتح تطبيق يوتيوب مباشرة على الشاشة الذكية
-   * - Samsung Tizen: يرسل أمر ed.apps.launch عبر WebSocket المقترن (111299001912)
-   *   مع مسارات REST (8002 / 8001) و DIAL كبدائل احتياطية
+   * - Samsung Tizen (مثل AU7000): يعتمد حصرياً على قناة WebSocket الموثقة (Port 8002)
+   *   عبر حدث ed.apps.launch (NATIVE_LAUNCH) بعد جاهزية ms.channel.connect
    */
   async launchYouTube() {
     if (IS_WEB) {
       return {
         launched: true,
         mocked: true,
-        method: this.protocol === 'samsung_tizen' ? 'websocket' : 'dial',
+        method: this.protocol === 'samsung_tizen' ? 'websocket_8002' : 'dial',
         endpoint:
           this.protocol === 'samsung_tizen'
             ? `wss://${this.ipAddress}:${this.port}`
@@ -1043,7 +1097,6 @@ class WifiControlService {
       return { launched: true, method: 'roku_ecp', endpoint: url };
     }
 
-    let wsLaunchError = null;
     if (this.protocol === 'samsung_tizen') {
       const tizenLaunchPayload = {
         method: 'ms.channel.emit',
@@ -1057,37 +1110,22 @@ class WifiControlService {
         },
       };
 
-      try {
-        await this._sendWsJson(tizenLaunchPayload);
-        return {
-          launched: true,
-          method: 'websocket',
-          appId: SAMSUNG_YOUTUBE_APP_ID,
-          endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
-        };
-      } catch (err) {
-        wsLaunchError = err;
-      }
+      await this._sendWsJson(tizenLaunchPayload);
+      return {
+        launched: true,
+        method: 'websocket_8002',
+        appId: SAMSUNG_YOUTUBE_APP_ID,
+        endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
+      };
     }
 
-    const candidateUrls =
-      this.protocol === 'samsung_tizen'
-        ? Array.from(
-            new Set([
-              `https://${this.ipAddress}:8002/api/v2/applications/${SAMSUNG_YOUTUBE_APP_ID}`,
-              `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_YOUTUBE_APP_ID}`,
-              `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube`,
-              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
-              `http://${this.ipAddress}:8008/apps/YouTube`,
-            ])
-          )
-        : Array.from(
-            new Set([
-              `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
-              `http://${this.ipAddress}:8008/apps/YouTube`,
-              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
-            ])
-          );
+    const candidateUrls = Array.from(
+      new Set([
+        `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
+        `http://${this.ipAddress}:8008/apps/YouTube`,
+        `http://${this.ipAddress}:8080/ws/apps/YouTube`,
+      ])
+    );
 
     for (const url of candidateUrls) {
       try {
@@ -1096,40 +1134,27 @@ class WifiControlService {
           headers: { 'Content-Type': 'text/plain; charset=utf-8' },
         });
         if (res.ok || res.status === 201 || res.status === 204) {
-          return { launched: true, method: 'rest_dial', endpoint: url };
+          return { launched: true, method: 'dial', endpoint: url };
         }
       } catch (_) {
         // تجربة المسار التالي
       }
     }
 
-    if (wsLaunchError && this.pairingState === 'unauthorized') {
-      throw wsLaunchError;
-    }
-
     throw new Error(
-      `تعذر فتح تطبيق يوتيوب على ${this.ipAddress}. تأكد من اتصال الهاتف والشاشة بنفس شبكة الواي فاي والموافقة على الاقتران.`
+      `تعذر فتح تطبيق يوتيوب على ${this.ipAddress}. تأكد من اتصال الهاتف والشاشة بنفس شبكة الواي فاي.`
     );
   }
 
   async _tryDialCast(cleanVideoId) {
     const dialBody = `v=${encodeURIComponent(cleanVideoId)}`;
-    const candidateUrls =
-      this.protocol === 'samsung_tizen'
-        ? Array.from(
-            new Set([
-              `http://${this.ipAddress}:${this.dialPort}/ws/apps/YouTube`,
-              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
-              `http://${this.ipAddress}:8008/apps/YouTube`,
-            ])
-          )
-        : Array.from(
-            new Set([
-              `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
-              `http://${this.ipAddress}:8008/apps/YouTube`,
-              `http://${this.ipAddress}:8080/ws/apps/YouTube`,
-            ])
-          );
+    const candidateUrls = Array.from(
+      new Set([
+        `http://${this.ipAddress}:${this.dialPort}/apps/YouTube`,
+        `http://${this.ipAddress}:8008/apps/YouTube`,
+        `http://${this.ipAddress}:8080/ws/apps/YouTube`,
+      ])
+    );
 
     for (const url of candidateUrls) {
       try {
@@ -1154,10 +1179,10 @@ class WifiControlService {
   }
 
   /**
-   * إرسال فيديو محدد (Cast) وتشغيله فوراً على الشاشة عبر الحل الهجين (3 مراحل):
-   * 1) DIAL POST (v=VIDEO_ID)
-   * 2) Samsung Tizen WebSocket DEEP_LINK (ed.apps.launch + metaTag)
-   * 3) التشغيل البارد (Cold-Start): فتح YouTube ثم الانتظار 2500ms وإعادة DIAL
+   * إرسال فيديو محدد (Cast) وتشغيله فوراً على الشاشة:
+   * - Samsung Tizen (مثل AU7000): يرسل حصرياً عبر قناة WebSocket الموثقة (8002)
+   *   باستخدام DEEP_LINK و metaTag بعد جاهزية ms.channel.connect (بدون DIAL المحظور)
+   * - Android TV / Chromecast: يستخدم DIAL ثم التشغيل البارد عند الحاجة
    */
   async castYouTubeVideo(videoId) {
     const cleanVideoId = extractYoutubeVideoId(videoId) || String(videoId || '').trim();
@@ -1180,14 +1205,6 @@ class WifiControlService {
       return { casted: true, stage: 'roku_ecp', videoId: cleanVideoId, endpoint: url };
     }
 
-    // المرحلة 1: محاولة البث السريع عبر DIAL
-    const stage1Result = await this._tryDialCast(cleanVideoId);
-    if (stage1Result) {
-      return stage1Result;
-    }
-
-    // المرحلة 2: تمرير Deep Link عبر WebSocket الخاص بشاشات Samsung Tizen
-    let deepLinkError = null;
     if (this.protocol === 'samsung_tizen') {
       const deepLinkPayload = {
         method: 'ms.channel.emit',
@@ -1202,42 +1219,33 @@ class WifiControlService {
         },
       };
 
-      try {
-        await this._sendWsJson(deepLinkPayload);
-        return {
-          casted: true,
-          stage: 'tizen_deep_link',
-          videoId: cleanVideoId,
-          endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
-        };
-      } catch (err) {
-        deepLinkError = err;
-      }
+      await this._sendWsJson(deepLinkPayload);
+      return {
+        casted: true,
+        stage: 'websocket_8002_deep_link',
+        videoId: cleanVideoId,
+        endpoint: `${Number(this.port) === 8002 ? 'wss' : 'ws'}://${this.ipAddress}:${this.port}`,
+      };
     }
 
-    // المرحلة 3: التشغيل البارد (فتح التطبيق ثم الانتظار 2.5 ثانية وإعادة إرسال DIAL)
-    try {
-      await this.launchYouTube();
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-      const stage3Result = await this._tryDialCast(cleanVideoId);
-      if (stage3Result) {
-        return {
-          ...stage3Result,
-          stage: 'cold_start_dial_retry',
-        };
-      }
-    } catch (coldStartError) {
-      if (this.pairingState === 'unauthorized') {
-        throw coldStartError;
-      }
+    // Android TV / Chromecast: محاولة DIAL ثم التشغيل البارد عند الحاجة
+    const stage1Result = await this._tryDialCast(cleanVideoId);
+    if (stage1Result) {
+      return stage1Result;
     }
 
-    if (deepLinkError && this.pairingState === 'unauthorized') {
-      throw deepLinkError;
+    await this.launchYouTube();
+    await new Promise((resolve) => setTimeout(resolve, 2500));
+    const stage2Result = await this._tryDialCast(cleanVideoId);
+    if (stage2Result) {
+      return {
+        ...stage2Result,
+        stage: 'cold_start_dial_retry',
+      };
     }
 
     throw new Error(
-      `تعذر تشغيل الفيديو (${cleanVideoId}) على ${this.ipAddress}. تأكد من وجود تطبيق YouTube على الشاشة والموافقة على الاقتران.`
+      `تعذر تشغيل الفيديو (${cleanVideoId}) عبر DIAL على ${this.ipAddress}.`
     );
   }
 

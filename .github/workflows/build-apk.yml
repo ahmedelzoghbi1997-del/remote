@@ -42,14 +42,151 @@ jobs:
           rsync -av --exclude='package.json' --exclude='package-lock.json' --exclude='node_modules' my_ai_code/ universalremote/
           cp -f my_ai_code/App.js universalremote/App.js || true
 
-      - name: Inject Android Native IR Module & Permissions
+      - name: Inject Android Native Modules & Permissions
         run: |
-          grep -q 'TRANSMIT_IR' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.TRANSMIT_IR" \/>' universalremote/android/app/src/main/AndroidManifest.xml
-          grep -q 'android.permission.VIBRATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.VIBRATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
-          grep -q 'ACCESS_NETWORK_STATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
-          grep -q 'ACCESS_WIFI_STATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
-          grep -q 'usesCleartextTraffic' universalremote/android/app/src/main/AndroidManifest.xml || sed -i 's/<application/<application android:usesCleartextTraffic="true"/' universalremote/android/app/src/main/AndroidManifest.xml
-          
+          python3 - << 'PYEOF'
+          import os
+          import re
+
+          manifest_path = "universalremote/android/app/src/main/AndroidManifest.xml"
+          with open(manifest_path, "r", encoding="utf-8") as f:
+              manifest = f.read()
+
+          permissions = [
+              "android.permission.TRANSMIT_IR",
+              "android.permission.VIBRATE",
+              "android.permission.ACCESS_NETWORK_STATE",
+              "android.permission.ACCESS_WIFI_STATE",
+              "android.permission.FOREGROUND_SERVICE",
+              "android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK",
+              "android.permission.POST_NOTIFICATIONS",
+              "android.permission.CHANGE_WIFI_MULTICAST_STATE",
+              "android.permission.WAKE_LOCK",
+          ]
+          for perm in permissions:
+              if perm not in manifest:
+                  manifest = manifest.replace(
+                      '<uses-permission android:name="android.permission.INTERNET" />',
+                      f'<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="{perm}" />',
+                      1,
+                  )
+
+          if 'android:usesCleartextTraffic="true"' not in manifest:
+              manifest = manifest.replace(
+                  "<application",
+                  '<application android:usesCleartextTraffic="true"',
+                  1,
+              )
+
+          if "android:launchMode=" not in manifest:
+              manifest = manifest.replace(
+                  'android:name=".MainActivity"',
+                  'android:name=".MainActivity"\n        android:launchMode="singleTask"',
+                  1,
+              )
+          else:
+              manifest = re.sub(
+                  r'android:launchMode="[^"]+"',
+                  'android:launchMode="singleTask"',
+                  manifest,
+                  count=1,
+              )
+
+          if ".DlnaCastService" not in manifest:
+              service_xml = (
+                  '\n      <service\n'
+                  '        android:name=".DlnaCastService"\n'
+                  '        android:enabled="true"\n'
+                  '        android:exported="false"\n'
+                  '        android:foregroundServiceType="mediaPlayback" />\n'
+              )
+              manifest = manifest.replace("</application>", f"{service_xml}    </application>", 1)
+
+          if "application/vnd.apple.mpegurl" not in manifest:
+              cast_filters = """
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="content" />
+            <data android:scheme="file" />
+            <data android:scheme="http" />
+            <data android:scheme="https" />
+            <data android:mimeType="video/*" />
+            <data android:mimeType="application/vnd.apple.mpegurl" />
+            <data android:mimeType="application/x-mpegURL" />
+            <data android:mimeType="application/dash+xml" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="http" />
+            <data android:scheme="https" />
+            <data android:host="*" />
+            <data android:pathPattern=".*\\.mp4" />
+            <data android:pathPattern=".*\\.MP4" />
+            <data android:pathPattern=".*\\.mkv" />
+            <data android:pathPattern=".*\\.MKV" />
+            <data android:pathPattern=".*\\.ts" />
+            <data android:pathPattern=".*\\.m3u8" />
+            <data android:pathPattern=".*\\.M3U8" />
+            <data android:pathPattern=".*\\.webm" />
+            <data android:pathPattern=".*\\.mov" />
+            <data android:pathPattern=".*\\.avi" />
+        </intent-filter>
+        <intent-filter>
+            <action android:name="android.intent.action.SEND" />
+            <category android:name="android.intent.category.DEFAULT" />
+            <data android:mimeType="video/*" />
+            <data android:mimeType="text/plain" />
+        </intent-filter>"""
+              manifest = manifest.replace("</activity>", f"{cast_filters}\n      </activity>", 1)
+
+          with open(manifest_path, "w", encoding="utf-8") as f:
+              f.write(manifest)
+
+          main_act_path = "universalremote/android/app/src/main/java/com/universalremote/MainActivity.kt"
+          if os.path.exists(main_act_path):
+              with open(main_act_path, "r", encoding="utf-8") as f:
+                  act = f.read()
+
+              for imp in ["import android.content.Intent", "import android.os.Bundle"]:
+                  if imp not in act:
+                      act = act.replace("package com.universalremote", f"package com.universalremote\n\n{imp}", 1)
+
+              if "storeInitialIntent" not in act:
+                  if re.search(r"override fun onCreate\s*\(", act):
+                      act = re.sub(
+                          r"(super\.onCreate\([^\)]*\))",
+                          r"\1\n    DlnaCastModule.storeInitialIntent(intent)",
+                          act,
+                          count=1,
+                      )
+                  else:
+                      act = re.sub(
+                          r"(class MainActivity\s*:\s*ReactActivity\(\)\s*\{)",
+                          r"\1\n  override fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n    DlnaCastModule.storeInitialIntent(intent)\n  }\n",
+                          act,
+                          count=1,
+                      )
+
+              if "override fun onNewIntent" not in act:
+                  on_new_intent_block = (
+                      "\n  override fun onNewIntent(intent: Intent) {\n"
+                      "    super.onNewIntent(intent)\n"
+                      "    setIntent(intent)\n"
+                      "    DlnaCastModule.handleNewIntent(this, intent)\n"
+                      "  }\n"
+                  )
+                  last_brace = act.rfind("}")
+                  if last_brace != -1:
+                      act = act[:last_brace] + on_new_intent_block + act[last_brace:]
+
+              with open(main_act_path, "w", encoding="utf-8") as f:
+                  f.write(act)
+          PYEOF
+
           mkdir -p universalremote/android/app/src/main/java/com/universalremote
           cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/IrManagerModule.kt
           package com.universalremote
@@ -216,7 +353,7 @@ jobs:
               }
           }
           EOF
-          
+
           cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/HapticsModule.kt
           package com.universalremote
 
@@ -610,6 +747,2143 @@ jobs:
           }
           EOF
 
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/DlnaHttpServer.kt
+          package com.universalremote
+
+          import android.content.Context
+          import android.content.res.AssetFileDescriptor
+          import android.net.ConnectivityManager
+          import android.net.NetworkCapabilities
+          import android.net.Uri
+          import android.os.Build
+          import android.provider.OpenableColumns
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import java.io.BufferedInputStream
+          import java.io.BufferedOutputStream
+          import java.io.BufferedReader
+          import java.io.InputStream
+          import java.io.InputStreamReader
+          import java.io.OutputStream
+          import java.net.Inet4Address
+          import java.net.NetworkInterface
+          import java.net.ServerSocket
+          import java.net.Socket
+          import java.net.URI
+          import java.nio.charset.StandardCharsets
+          import java.util.Locale
+          import java.util.UUID
+          import java.util.concurrent.ConcurrentHashMap
+          import java.util.concurrent.ExecutorService
+          import java.util.concurrent.Executors
+          import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicInteger
+
+          class DlnaHttpServer(private val context: Context) {
+              companion object {
+                  private const val BUFFER_SIZE = 65536
+                  private val URI_ATTR_REGEX = Regex("""(URI\s*=\s*")([^"]+)(")""", RegexOption.IGNORE_CASE)
+                  private val HOP_BY_HOP_HEADERS = setOf(
+                      "host",
+                      "connection",
+                      "keep-alive",
+                      "proxy-authenticate",
+                      "proxy-authorization",
+                      "te",
+                      "trailer",
+                      "transfer-encoding",
+                      "upgrade"
+                  )
+              }
+
+              private val httpClient: OkHttpClient = OkHttpClient.Builder()
+                  .connectTimeout(12, TimeUnit.SECONDS)
+                  .readTimeout(0, TimeUnit.SECONDS)
+                  .followRedirects(true)
+                  .followSslRedirects(true)
+                  .build()
+
+              @Volatile
+              private var serverSocket: ServerSocket? = null
+
+              @Volatile
+              private var acceptThread: Thread? = null
+
+              @Volatile
+              private var clientExecutor: ExecutorService? = null
+
+              @Volatile
+              private var running = false
+
+              @Volatile
+              private var activeToken: String = ""
+
+              @Volatile
+              private var activeSourceType: String = "LOCAL" // LOCAL | PROXY
+
+              @Volatile
+              private var activeLocalUri: Uri? = null
+
+              @Volatile
+              private var activeMimeType: String = "video/mp4"
+
+              @Volatile
+              private var activeRemoteUrl: String = ""
+
+              @Volatile
+              private var activeHeaders: Map<String, String> = emptyMap()
+
+              @Volatile
+              private var activeLocalBaseUrl: String = ""
+
+              private val proxyTargetMap = ConcurrentHashMap<String, String>()
+              private val subIdCounter = AtomicInteger(1)
+
+              fun getPort(): Int = serverSocket?.localPort ?: 0
+
+              fun getWifiIpv4Address(): String? {
+                  try {
+                      val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+                      if (cm != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                          val networks = cm.allNetworks
+                          for (net in networks) {
+                              val caps = cm.getNetworkCapabilities(net) ?: continue
+                              if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                              val linkProps = cm.getLinkProperties(net) ?: continue
+                              for (linkAddr in linkProps.linkAddresses) {
+                                  val addr = linkAddr.address
+                                  if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
+                                      return addr.hostAddress
+                                  }
+                              }
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  }
+
+                  try {
+                      val ifaces = NetworkInterface.getNetworkInterfaces()
+                      while (ifaces != null && ifaces.hasMoreElements()) {
+                          val iface = ifaces.nextElement()
+                          if (!iface.isUp || iface.isLoopback) continue
+                          val name = iface.name?.lowercase(Locale.US) ?: ""
+                          if (!name.startsWith("wlan") && !name.startsWith("eth")) continue
+                          val addrs = iface.inetAddresses
+                          while (addrs.hasMoreElements()) {
+                              val addr = addrs.nextElement()
+                              if (addr is Inet4Address && !addr.isLoopbackAddress && addr.isSiteLocalAddress) {
+                                  return addr.hostAddress
+                              }
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  }
+                  return null
+              }
+
+              @Synchronized
+              fun ensureStarted(): Int {
+                  if (running && serverSocket != null && serverSocket?.isClosed == false) {
+                      return serverSocket!!.localPort
+                  }
+                  stopServer()
+                  val ss = ServerSocket(0)
+                  ss.reuseAddress = true
+                  serverSocket = ss
+                  val executor = Executors.newCachedThreadPool()
+                  clientExecutor = executor
+                  running = true
+                  acceptThread = Thread({
+                      while (running && !ss.isClosed) {
+                          try {
+                              val client = ss.accept()
+                              executor.execute {
+                                  handleClient(client)
+                              }
+                          } catch (_: Throwable) {
+                              if (!running || ss.isClosed) break
+                          }
+                      }
+                  }, "DlnaHttpAcceptThread").apply {
+                      isDaemon = true
+                      start()
+                  }
+                  return ss.localPort
+              }
+
+              @Synchronized
+              fun stopServer() {
+                  running = false
+                  activeToken = ""
+                  proxyTargetMap.clear()
+                  try {
+                      serverSocket?.close()
+                  } catch (_: Throwable) {
+                  }
+                  serverSocket = null
+                  try {
+                      clientExecutor?.shutdownNow()
+                  } catch (_: Throwable) {
+                  }
+                  clientExecutor = null
+                  acceptThread = null
+              }
+
+              fun prepareLocalSession(uri: Uri, mimeType: String, fileExt: String): String {
+                  val wifiIp = getWifiIpv4Address() ?: throw IllegalStateException("Wi-Fi IPv4 غير متوفر. تأكد من الاتصال بالواي فاي.")
+                  val port = ensureStarted()
+                  val token = UUID.randomUUID().toString().replace("-", "")
+                  proxyTargetMap.clear()
+                  activeSourceType = "LOCAL"
+                  activeLocalUri = uri
+                  activeMimeType = mimeType
+                  activeRemoteUrl = ""
+                  activeHeaders = emptyMap()
+                  activeToken = token
+                  val safeExt = sanitizeExt(fileExt, mimeType)
+                  activeLocalBaseUrl = "http://$wifiIp:$port"
+                  return "$activeLocalBaseUrl/s/$token/media.$safeExt"
+              }
+
+              fun prepareProxySession(remoteUrl: String, headers: Map<String, String>, mimeType: String, fileExt: String): String {
+                  val wifiIp = getWifiIpv4Address() ?: throw IllegalStateException("Wi-Fi IPv4 غير متوفر. تأكد من الاتصال بالواي فاي.")
+                  val port = ensureStarted()
+                  val token = UUID.randomUUID().toString().replace("-", "")
+                  proxyTargetMap.clear()
+                  subIdCounter.set(1)
+                  activeSourceType = "PROXY"
+                  activeLocalUri = null
+                  activeMimeType = mimeType
+                  activeRemoteUrl = remoteUrl
+                  activeHeaders = headers.toMap()
+                  activeToken = token
+                  val safeExt = sanitizeExt(fileExt, mimeType)
+                  activeLocalBaseUrl = "http://$wifiIp:$port"
+                  return "$activeLocalBaseUrl/s/$token/media.$safeExt"
+              }
+
+              private fun sanitizeExt(ext: String, mime: String): String {
+                  val clean = ext.trim().trimStart('.').lowercase(Locale.US)
+                  if (clean in setOf("mp4", "mkv", "ts", "m3u8", "webm", "mov", "avi", "m4v", "mp3", "aac")) {
+                      return clean
+                  }
+                  val lowerMime = mime.lowercase(Locale.US)
+                  return when {
+                      lowerMime.contains("mpegurl") || lowerMime.contains("m3u") -> "m3u8"
+                      lowerMime.contains("matroska") -> "mkv"
+                      lowerMime.contains("mp2t") -> "ts"
+                      lowerMime.contains("webm") -> "webm"
+                      lowerMime.contains("quicktime") -> "mov"
+                      else -> "mp4"
+                  }
+              }
+
+              private fun handleClient(rawSocket: Socket) {
+                  rawSocket.use { socket ->
+                      try {
+                          socket.soTimeout = 30000
+                          val input = BufferedInputStream(socket.getInputStream())
+                          val output = BufferedOutputStream(socket.getOutputStream())
+                          val reader = BufferedReader(InputStreamReader(input, StandardCharsets.US_ASCII))
+
+                          val requestLine = reader.readLine() ?: return
+                          val parts = requestLine.trim().split(Regex("\\s+"))
+                          if (parts.size < 2) {
+                              sendErrorResponse(output, 400, "Bad Request")
+                              return
+                          }
+                          val method = parts[0].uppercase(Locale.US)
+                          val rawTarget = parts[1]
+                          val reqHeaders = HashMap<String, String>()
+                          while (true) {
+                              val line = reader.readLine() ?: break
+                              if (line.isEmpty()) break
+                              val colon = line.indexOf(':')
+                              if (colon > 0) {
+                                  val key = line.substring(0, colon).trim().lowercase(Locale.US)
+                                  val value = line.substring(colon + 1).trim()
+                                  reqHeaders[key] = value
+                              }
+                          }
+
+                          if (method != "GET" && method != "HEAD") {
+                              sendErrorResponse(output, 405, "Method Not Allowed")
+                              return
+                          }
+                          val isHead = (method == "HEAD")
+                          val pathOnly = rawTarget.substringBefore('?')
+                          val segments = pathOnly.trimStart('/').split('/')
+
+                          if (segments.size < 3) {
+                              sendErrorResponse(output, 404, "Not Found")
+                              return
+                          }
+
+                          val prefix = segments[0]
+                          val token = segments[1]
+                          if (activeToken.isEmpty() || token != activeToken) {
+                              sendErrorResponse(output, 403, "Forbidden")
+                              return
+                          }
+
+                          if (prefix == "s") {
+                              if (activeSourceType == "LOCAL") {
+                                  val uri = activeLocalUri
+                                  if (uri == null) {
+                                      sendErrorResponse(output, 404, "No Local Media")
+                                      return
+                                  }
+                                  serveLocalContentUri(uri, activeMimeType, reqHeaders["range"], isHead, output)
+                              } else {
+                                  val upstream = activeRemoteUrl
+                                  if (upstream.isEmpty()) {
+                                      sendErrorResponse(output, 404, "No Proxy Media")
+                                      return
+                                  }
+                                  serveProxiedUrl(upstream, pathOnly, reqHeaders["range"], isHead, output)
+                              }
+                          } else if (prefix == "p" && segments.size >= 3) {
+                              val subId = segments[2]
+                              val upstream = proxyTargetMap[subId]
+                              if (upstream.isNullOrEmpty()) {
+                                  sendErrorResponse(output, 404, "Segment Not Found")
+                                  return
+                              }
+                              serveProxiedUrl(upstream, pathOnly, reqHeaders["range"], isHead, output)
+                          } else {
+                              sendErrorResponse(output, 404, "Not Found")
+                          }
+                      } catch (_: Throwable) {
+                      }
+                  }
+              }
+
+              private fun serveLocalContentUri(
+                  uri: Uri,
+                  mimeType: String,
+                  rangeHeader: String?,
+                  isHead: Boolean,
+                  output: OutputStream
+              ) {
+                  val afd = try {
+                      context.contentResolver.openAssetFileDescriptor(uri, "r")
+                  } catch (_: Throwable) {
+                      null
+                  }
+                  if (afd == null) {
+                      sendErrorResponse(output, 404, "Cannot Open File")
+                      return
+                  }
+
+                  afd.use { descriptor ->
+                      var totalLength = descriptor.length
+                      if (totalLength == AssetFileDescriptor.UNKNOWN_LENGTH || totalLength < 0L) {
+                          totalLength = queryOpenableSize(uri)
+                      }
+
+                      if (totalLength <= 0L) {
+                          // الحجم غير معروف تماماً -> الرد بـ 200 OK بدون Range لضمان استقرار البث
+                          val headers = buildString {
+                              append("HTTP/1.1 200 OK\r\n")
+                              append("Content-Type: ").append(mimeType).append("\r\n")
+                              append("Accept-Ranges: none\r\n")
+                              append("transferMode.dlna.org: Streaming\r\n")
+                              append("contentFeatures.dlna.org: DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                              append("Connection: close\r\n")
+                              append("\r\n")
+                          }
+                          output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                          output.flush()
+                          if (!isHead) {
+                              descriptor.createInputStream().use { stream ->
+                                  streamAll(stream, output, Long.MAX_VALUE)
+                              }
+                          }
+                          return
+                      }
+
+                      val parsedRange = parseByteRange(rangeHeader, totalLength)
+                      if (parsedRange == null && !rangeHeader.isNullOrBlank()) {
+                          val headers = buildString {
+                              append("HTTP/1.1 416 Range Not Satisfiable\r\n")
+                              append("Content-Range: bytes */").append(totalLength).append("\r\n")
+                              append("Content-Length: 0\r\n")
+                              append("Connection: close\r\n")
+                              append("\r\n")
+                          }
+                          output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                          output.flush()
+                          return
+                      }
+
+                      val isPartial = parsedRange != null
+                      val start = parsedRange?.first ?: 0L
+                      val end = parsedRange?.second ?: (totalLength - 1L)
+                      val contentLen = (end - start + 1L).coerceAtLeast(0L)
+
+                      val headers = buildString {
+                          if (isPartial) {
+                              append("HTTP/1.1 206 Partial Content\r\n")
+                              append("Content-Range: bytes ").append(start).append("-").append(end).append("/").append(totalLength).append("\r\n")
+                          } else {
+                              append("HTTP/1.1 200 OK\r\n")
+                          }
+                          append("Content-Type: ").append(mimeType).append("\r\n")
+                          append("Content-Length: ").append(contentLen).append("\r\n")
+                          append("Accept-Ranges: bytes\r\n")
+                          append("transferMode.dlna.org: Streaming\r\n")
+                          append("contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                          append("Connection: close\r\n")
+                          append("\r\n")
+                      }
+                      output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                      output.flush()
+
+                      if (!isHead && contentLen > 0L) {
+                          descriptor.createInputStream().use { stream ->
+                              if (start > 0L) {
+                                  skipExact(stream, start)
+                              }
+                              streamAll(stream, output, contentLen)
+                          }
+                      }
+                  }
+              }
+
+              private fun queryOpenableSize(uri: Uri): Long {
+                  return try {
+                      context.contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->
+                          if (cursor.moveToFirst()) {
+                              val idx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                              if (idx >= 0 && !cursor.isNull(idx)) cursor.getLong(idx) else -1L
+                          } else {
+                              -1L
+                          }
+                      } ?: -1L
+                  } catch (_: Throwable) {
+                      -1L
+                  }
+              }
+
+              private fun serveProxiedUrl(
+                  targetUrl: String,
+                  localPath: String,
+                  clientRange: String?,
+                  isHead: Boolean,
+                  output: OutputStream
+              ) {
+                  val reqBuilder = Request.Builder().url(targetUrl)
+                  for ((k, v) in activeHeaders) {
+                      val lower = k.lowercase(Locale.US)
+                      if (lower in HOP_BY_HOP_HEADERS || lower == "range" || lower == "content-length") continue
+                      reqBuilder.header(k, v)
+                  }
+                  val looksLikeM3u8Path = localPath.lowercase(Locale.US).endsWith(".m3u8") ||
+                      targetUrl.substringBefore('?').lowercase(Locale.US).endsWith(".m3u8")
+                  if (!clientRange.isNullOrBlank() && !looksLikeM3u8Path) {
+                      reqBuilder.header("Range", clientRange)
+                  }
+                  if (isHead) {
+                      reqBuilder.head()
+                  } else {
+                      reqBuilder.get()
+                  }
+
+                  val call = httpClient.newCall(reqBuilder.build())
+                  call.execute().use { resp ->
+                      val finalUrl = resp.request.url.toString()
+                      val contentType = resp.header("Content-Type") ?: guessMimeFromUrl(finalUrl, activeMimeType)
+                      val lowerType = contentType.lowercase(Locale.US)
+                      val finalPathNoQuery = resp.request.url.encodedPath.lowercase(Locale.US)
+                      val isHlsPlaylist = resp.isSuccessful && (
+                          lowerType.contains("mpegurl") ||
+                              lowerType.contains("m3u") ||
+                              finalPathNoQuery.endsWith(".m3u8") ||
+                              looksLikeM3u8Path
+                          )
+
+                      if (isHlsPlaylist && !isHead && resp.body != null) {
+                          val playlistText = resp.body!!.string()
+                          if (playlistText.trimStart().startsWith("#EXTM3U") || finalPathNoQuery.endsWith(".m3u8")) {
+                              val rewritten = rewriteM3u8Playlist(playlistText, finalUrl)
+                              val bytes = rewritten.toByteArray(StandardCharsets.UTF_8)
+                              val headers = buildString {
+                                  append("HTTP/1.1 200 OK\r\n")
+                                  append("Content-Type: application/vnd.apple.mpegurl\r\n")
+                                  append("Content-Length: ").append(bytes.size).append("\r\n")
+                                  append("Cache-Control: no-cache\r\n")
+                                  append("transferMode.dlna.org: Streaming\r\n")
+                                  append("contentFeatures.dlna.org: DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                                  append("Connection: close\r\n")
+                                  append("\r\n")
+                              }
+                              output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                              output.write(bytes)
+                              output.flush()
+                              return
+                          } else {
+                              val rawBytes = playlistText.toByteArray(StandardCharsets.UTF_8)
+                              val headers = buildString {
+                                  append("HTTP/1.1 ").append(resp.code).append(" ").append(resp.message.ifBlank { "OK" }).append("\r\n")
+                                  append("Content-Type: ").append(contentType).append("\r\n")
+                                  append("Content-Length: ").append(rawBytes.size).append("\r\n")
+                                  append("transferMode.dlna.org: Streaming\r\n")
+                                  append("contentFeatures.dlna.org: DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                                  append("Connection: close\r\n")
+                                  append("\r\n")
+                              }
+                              output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                              output.write(rawBytes)
+                              output.flush()
+                              return
+                          }
+                      }
+
+                      val respLen = resp.header("Content-Length")
+                      val respRange = resp.header("Content-Range")
+                      val acceptRanges = resp.header("Accept-Ranges")
+                      val dlnaOp = if (looksLikeM3u8Path || lowerType.contains("mpegurl")) "00" else "01"
+
+                      val headers = buildString {
+                          append("HTTP/1.1 ").append(resp.code).append(" ").append(resp.message.ifBlank { "OK" }).append("\r\n")
+                          append("Content-Type: ").append(contentType).append("\r\n")
+                          if (!respLen.isNullOrBlank()) {
+                              append("Content-Length: ").append(respLen).append("\r\n")
+                          }
+                          if (!respRange.isNullOrBlank()) {
+                              append("Content-Range: ").append(respRange).append("\r\n")
+                          }
+                          if (!acceptRanges.isNullOrBlank()) {
+                              append("Accept-Ranges: ").append(acceptRanges).append("\r\n")
+                          }
+                          append("transferMode.dlna.org: Streaming\r\n")
+                          append("contentFeatures.dlna.org: DLNA.ORG_OP=").append(dlnaOp).append(";DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                          append("Connection: close\r\n")
+                          append("\r\n")
+                      }
+                      output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                      output.flush()
+
+                      if (!isHead && resp.body != null) {
+                          resp.body!!.byteStream().use { stream ->
+                              streamAll(stream, output, Long.MAX_VALUE)
+                          }
+                      }
+                  }
+              }
+
+              private fun rewriteM3u8Playlist(body: String, finalBaseUrl: String): String {
+                  val baseUri = URI.create(finalBaseUrl)
+                  val lines = body.split("\n")
+                  val sb = StringBuilder(body.length + 512)
+                  for (i in lines.indices) {
+                      val rawLine = lines[i].trimEnd('\r')
+                      val trimmed = rawLine.trim()
+                      if (trimmed.isEmpty()) {
+                          sb.append('\n')
+                          continue
+                      }
+                      if (trimmed.startsWith("#")) {
+                          if (trimmed.contains("URI=\"", ignoreCase = true)) {
+                              val replaced = URI_ATTR_REGEX.replace(rawLine) { m ->
+                                  val relUri = m.groupValues[2]
+                                  val proxied = registerProxySubUrl(baseUri, relUri, defaultExt = "key")
+                                  "${m.groupValues[1]}$proxied${m.groupValues[3]}"
+                              }
+                              sb.append(replaced).append('\n')
+                          } else {
+                              sb.append(rawLine).append('\n')
+                          }
+                      } else {
+                          val proxied = registerProxySubUrl(baseUri, trimmed, defaultExt = "ts")
+                          sb.append(proxied).append('\n')
+                      }
+                  }
+                  return sb.toString()
+              }
+
+              private fun registerProxySubUrl(baseUri: URI, relativeOrAbsolute: String, defaultExt: String): String {
+                  val resolved = try {
+                      baseUri.resolve(relativeOrAbsolute).toString()
+                  } catch (_: Throwable) {
+                      relativeOrAbsolute
+                  }
+                  val subId = subIdCounter.getAndIncrement().toString()
+                  proxyTargetMap[subId] = resolved
+                  val cleanPath = resolved.substringBefore('?').substringBefore('#')
+                  val rawName = cleanPath.substringAfterLast('/', "seg.$defaultExt").ifBlank { "seg.$defaultExt" }
+                  val ext = rawName.substringAfterLast('.', defaultExt).lowercase(Locale.US)
+                  val safeExt = if (ext.length in 2..5 && ext.all { it.isLetterOrDigit() }) ext else defaultExt
+                  return "$activeLocalBaseUrl/p/$activeToken/$subId/part.$safeExt"
+              }
+
+              private fun guessMimeFromUrl(url: String, fallback: String): String {
+                  val lower = url.substringBefore('?').lowercase(Locale.US)
+                  return when {
+                      lower.endsWith(".m3u8") -> "application/vnd.apple.mpegurl"
+                      lower.endsWith(".mp4") || lower.endsWith(".m4v") -> "video/mp4"
+                      lower.endsWith(".mkv") -> "video/x-matroska"
+                      lower.endsWith(".ts") -> "video/mp2t"
+                      lower.endsWith(".webm") -> "video/webm"
+                      lower.endsWith(".mov") -> "video/quicktime"
+                      lower.endsWith(".avi") -> "video/x-msvideo"
+                      else -> fallback.ifBlank { "video/mp4" }
+                  }
+              }
+
+              private fun parseByteRange(rangeHeader: String?, totalLength: Long): Pair<Long, Long>? {
+                  if (rangeHeader.isNullOrBlank()) return null
+                  val trimmed = rangeHeader.trim()
+                  if (!trimmed.startsWith("bytes=", ignoreCase = true)) return null
+                  val spec = trimmed.substring(6).substringBefore(',').trim()
+                  val dash = spec.indexOf('-')
+                  if (dash < 0) return null
+                  val startStr = spec.substring(0, dash).trim()
+                  val endStr = spec.substring(dash + 1).trim()
+                  return try {
+                      if (startStr.isEmpty()) {
+                          val suffix = endStr.toLong()
+                          if (suffix <= 0L) return null
+                          val start = (totalLength - suffix).coerceAtLeast(0L)
+                          Pair(start, totalLength - 1L)
+                      } else {
+                          val start = startStr.toLong()
+                          val end = if (endStr.isEmpty()) totalLength - 1L else endStr.toLong().coerceAtMost(totalLength - 1L)
+                          if (start < 0L || start >= totalLength || end < start) null else Pair(start, end)
+                      }
+                  } catch (_: Throwable) {
+                      null
+                  }
+              }
+
+              private fun skipExact(input: InputStream, bytesToSkip: Long) {
+                  var remaining = bytesToSkip
+                  val skipBuf = ByteArray(16384)
+                  while (remaining > 0L) {
+                      val skipped = input.skip(remaining)
+                      if (skipped > 0L) {
+                          remaining -= skipped
+                      } else {
+                          val n = input.read(skipBuf, 0, minOf(skipBuf.size.toLong(), remaining).toInt())
+                          if (n < 0) break
+                          remaining -= n.toLong()
+                      }
+                  }
+              }
+
+              private fun streamAll(input: InputStream, output: OutputStream, maxBytes: Long) {
+                  val buffer = ByteArray(BUFFER_SIZE)
+                  var remaining = maxBytes
+                  while (remaining > 0L) {
+                      val toRead = if (remaining < buffer.size.toLong()) remaining.toInt() else buffer.size
+                      val read = input.read(buffer, 0, toRead)
+                      if (read <= 0) break
+                      output.write(buffer, 0, read)
+                      if (remaining != Long.MAX_VALUE) {
+                          remaining -= read.toLong()
+                      }
+                  }
+                  output.flush()
+              }
+
+              private fun sendErrorResponse(output: OutputStream, code: Int, reason: String) {
+                  val bodyBytes = "$code $reason".toByteArray(StandardCharsets.UTF_8)
+                  val headers = buildString {
+                      append("HTTP/1.1 ").append(code).append(" ").append(reason).append("\r\n")
+                      append("Content-Type: text/plain; charset=utf-8\r\n")
+                      append("Content-Length: ").append(bodyBytes.size).append("\r\n")
+                      append("Connection: close\r\n")
+                      append("\r\n")
+                  }
+                  output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                  output.write(bodyBytes)
+                  output.flush()
+              }
+          }
+          EOF
+
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/DlnaSoapClient.kt
+          package com.universalremote
+
+          import android.content.Context
+          import android.net.wifi.WifiManager
+          import okhttp3.MediaType.Companion.toMediaType
+          import okhttp3.OkHttpClient
+          import okhttp3.Request
+          import okhttp3.RequestBody.Companion.toRequestBody
+          import org.w3c.dom.Element
+          import java.io.ByteArrayInputStream
+          import java.net.DatagramPacket
+          import java.net.DatagramSocket
+          import java.net.InetAddress
+          import java.net.InetSocketAddress
+          import java.net.URI
+          import java.nio.charset.StandardCharsets
+          import java.util.Locale
+          import java.util.concurrent.TimeUnit
+          import javax.xml.parsers.DocumentBuilderFactory
+
+          data class DlnaRendererDevice(
+              val udn: String,
+              val name: String,
+              val manufacturer: String,
+              val modelName: String,
+              val ip: String,
+              val port: Int,
+              val location: String,
+              val avTransportControlUrl: String,
+              val renderingControlUrl: String
+          )
+
+          data class DlnaTransportInfo(
+              val state: String,
+              val status: String
+          )
+
+          data class DlnaPositionInfo(
+              val positionSec: Int,
+              val durationSec: Int
+          )
+
+          class DlnaSoapClient(private val context: Context) {
+              companion object {
+                  const val AV_TRANSPORT_SERVICE = "urn:schemas-upnp-org:service:AVTransport:1"
+                  const val RENDERING_CONTROL_SERVICE = "urn:schemas-upnp-org:service:RenderingControl:1"
+                  private val SOAP_XML_MEDIA_TYPE = "text/xml; charset=\"utf-8\"".toMediaType()
+              }
+
+              private val client: OkHttpClient = OkHttpClient.Builder()
+                  .connectTimeout(5, TimeUnit.SECONDS)
+                  .readTimeout(6, TimeUnit.SECONDS)
+                  .writeTimeout(5, TimeUnit.SECONDS)
+                  .build()
+
+              fun discoverRenderers(priorityHostIp: String?, timeoutMs: Long = 2600L): List<DlnaRendererDevice> {
+                  val locations = LinkedHashSet<String>()
+                  val devicesByKey = LinkedHashMap<String, DlnaRendererDevice>()
+
+                  if (!priorityHostIp.isNullOrBlank()) {
+                      val cleanIp = priorityHostIp.trim()
+                      locations.add("http://$cleanIp:9197/dmr")
+                  }
+
+                  val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                  val multicastLock = wifiManager?.createMulticastLock("DlnaSsdpLock")?.apply {
+                      setReferenceCounted(false)
+                  }
+
+                  var socket: DatagramSocket? = null
+                  try {
+                      multicastLock?.acquire()
+                      socket = DatagramSocket(null).apply {
+                          reuseAddress = true
+                          soTimeout = 550
+                          bind(InetSocketAddress(0))
+                      }
+
+                      val ssdpAddr = InetAddress.getByName("239.255.255.250")
+                      val queries = listOf(
+                          "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: urn:schemas-upnp-org:device:MediaRenderer:1\r\n\r\n",
+                          "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 2\r\nST: urn:schemas-upnp-org:service:AVTransport:1\r\n\r\n"
+                      )
+                      for (q in queries) {
+                          val bytes = q.toByteArray(StandardCharsets.UTF_8)
+                          socket.send(DatagramPacket(bytes, bytes.size, ssdpAddr, 1900))
+                      }
+
+                      val deadline = System.currentTimeMillis() + timeoutMs
+                      val buf = ByteArray(4096)
+                      while (System.currentTimeMillis() < deadline) {
+                          try {
+                              val packet = DatagramPacket(buf, buf.size)
+                              socket.receive(packet)
+                              val msg = String(packet.data, 0, packet.length, StandardCharsets.UTF_8)
+                              val loc = extractSsdpLocation(msg)
+                              if (!loc.isNullOrBlank()) {
+                                  locations.add(loc)
+                              }
+                          } catch (_: java.net.SocketTimeoutException) {
+                          } catch (_: Throwable) {
+                              break
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  } finally {
+                      try {
+                          socket?.close()
+                      } catch (_: Throwable) {
+                      }
+                      try {
+                          if (multicastLock?.isHeld == true) {
+                              multicastLock.release()
+                          }
+                      } catch (_: Throwable) {
+                      }
+                  }
+
+                  for (loc in locations) {
+                      val device = fetchAndParseDmr(loc)
+                      if (device != null) {
+                          val key = device.udn.ifBlank { "${device.ip}:${device.port}" }
+                          if (!devicesByKey.containsKey(key)) {
+                              devicesByKey[key] = device
+                          }
+                      }
+                  }
+                  return devicesByKey.values.toList()
+              }
+
+              private fun extractSsdpLocation(raw: String): String? {
+                  for (line in raw.lines()) {
+                      if (line.startsWith("LOCATION:", ignoreCase = true)) {
+                          return line.substringAfter(':').trim()
+                      }
+                  }
+                  return null
+              }
+
+              fun fetchAndParseDmr(locationUrl: String): DlnaRendererDevice? {
+                  return try {
+                      val req = Request.Builder().url(locationUrl).get().build()
+                      client.newCall(req).execute().use { resp ->
+                          if (!resp.isSuccessful) return null
+                          val xml = resp.body?.string() ?: return null
+                          parseDmrDescription(locationUrl, xml)
+                      }
+                  } catch (_: Throwable) {
+                      null
+                  }
+              }
+
+              private fun parseDmrDescription(locationUrl: String, xml: String): DlnaRendererDevice? {
+                  return try {
+                      val baseUri = URI.create(locationUrl)
+                      val host = baseUri.host ?: return null
+                      val port = if (baseUri.port > 0) baseUri.port else 9197
+
+                      val factory = DocumentBuilderFactory.newInstance().apply {
+                          isNamespaceAware = false
+                      }
+                      val doc = factory.newDocumentBuilder().parse(ByteArrayInputStream(xml.toByteArray(StandardCharsets.UTF_8)))
+                      val root = doc.documentElement
+
+                      val friendlyName = findFirstTagText(root, "friendlyName") ?: "DLNA Smart TV"
+                      val manufacturer = findFirstTagText(root, "manufacturer") ?: ""
+                      val modelName = findFirstTagText(root, "modelName") ?: ""
+                      val udn = findFirstTagText(root, "UDN") ?: ""
+
+                      var avControlUrl = ""
+                      var rcControlUrl = ""
+
+                      val serviceNodes = root.getElementsByTagName("service")
+                      for (i in 0 until serviceNodes.length) {
+                          val el = serviceNodes.item(i) as? Element ?: continue
+                          val st = findFirstTagText(el, "serviceType") ?: ""
+                          val ctrl = findFirstTagText(el, "controlURL") ?: ""
+                          if (st.contains("AVTransport", ignoreCase = true) && ctrl.isNotBlank()) {
+                              avControlUrl = baseUri.resolve(ctrl).toString()
+                          } else if (st.contains("RenderingControl", ignoreCase = true) && ctrl.isNotBlank()) {
+                              rcControlUrl = baseUri.resolve(ctrl).toString()
+                          }
+                      }
+
+                      if (avControlUrl.isBlank()) {
+                          avControlUrl = baseUri.resolve("/upnp/control/AVTransport1").toString()
+                      }
+                      if (rcControlUrl.isBlank()) {
+                          rcControlUrl = baseUri.resolve("/upnp/control/RenderingControl1").toString()
+                      }
+
+                      DlnaRendererDevice(
+                          udn = udn,
+                          name = friendlyName,
+                          manufacturer = manufacturer,
+                          modelName = modelName,
+                          ip = host,
+                          port = port,
+                          location = locationUrl,
+                          avTransportControlUrl = avControlUrl,
+                          renderingControlUrl = rcControlUrl
+                      )
+                  } catch (_: Throwable) {
+                      null
+                  }
+              }
+
+              fun buildDidlLiteMetadata(
+                  mediaUrl: String,
+                  title: String,
+                  mimeType: String,
+                  isSeekable: Boolean
+              ): String {
+                  val cleanMime = mimeType.ifBlank { "video/mp4" }
+                  val isHls = cleanMime.contains("mpegurl", ignoreCase = true) ||
+                      cleanMime.contains("m3u", ignoreCase = true) ||
+                      mediaUrl.substringBefore('?').lowercase(Locale.US).endsWith(".m3u8")
+                  val dlnaOp = if (isHls || !isSeekable) "00" else "01"
+                  val protocolInfo = "http-get:*:$cleanMime:DLNA.ORG_OP=$dlnaOp;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000"
+
+                  return buildString {
+                      append("<DIDL-Lite xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\" ")
+                      append("xmlns:dc=\"http://purl.org/dc/elements/1.1/\" ")
+                      append("xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\">")
+                      append("<item id=\"0\" parentID=\"-1\" restricted=\"1\">")
+                      append("<dc:title>").append(xmlEscape(title.ifBlank { "Video Stream" })).append("</dc:title>")
+                      append("<upnp:class>object.item.videoItem.movie</upnp:class>")
+                      append("<res protocolInfo=\"").append(xmlEscape(protocolInfo)).append("\">")
+                      append(xmlEscape(mediaUrl))
+                      append("</res>")
+                      append("</item>")
+                      append("</DIDL-Lite>")
+                  }
+              }
+
+              fun setAvTransportUri(
+                  controlUrl: String,
+                  mediaUrl: String,
+                  title: String,
+                  mimeType: String,
+                  isSeekable: Boolean
+              ) {
+                  val didl = buildDidlLiteMetadata(mediaUrl, title, mimeType, isSeekable)
+                  val body = """
+                      <InstanceID>0</InstanceID>
+                      <CurrentURI>${xmlEscape(mediaUrl)}</CurrentURI>
+                      <CurrentURIMetaData>${xmlEscape(didl)}</CurrentURIMetaData>
+                  """.trimIndent()
+                  callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "SetAVTransportURI", body)
+              }
+
+              fun play(controlUrl: String) {
+                  val body = "<InstanceID>0</InstanceID><Speed>1</Speed>"
+                  callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "Play", body)
+              }
+
+              fun pause(controlUrl: String) {
+                  val body = "<InstanceID>0</InstanceID>"
+                  callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "Pause", body)
+              }
+
+              fun stop(controlUrl: String) {
+                  val body = "<InstanceID>0</InstanceID>"
+                  callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "Stop", body)
+              }
+
+              fun seekSeconds(controlUrl: String, targetSeconds: Int) {
+                  val clamped = targetSeconds.coerceAtLeast(0)
+                  val h = clamped / 3600
+                  val m = (clamped % 3600) / 60
+                  val s = clamped % 60
+                  val targetHms = String.format(Locale.US, "%02d:%02d:%02d", h, m, s)
+                  val body = """
+                      <InstanceID>0</InstanceID>
+                      <Unit>REL_TIME</Unit>
+                      <Target>$targetHms</Target>
+                  """.trimIndent()
+                  callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "Seek", body)
+              }
+
+              fun getTransportInfo(controlUrl: String): DlnaTransportInfo {
+                  val xml = callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "GetTransportInfo", "<InstanceID>0</InstanceID>")
+                  val state = extractTagValue(xml, "CurrentTransportState").ifBlank { "STOPPED" }
+                  val status = extractTagValue(xml, "CurrentTransportStatus").ifBlank { "OK" }
+                  return DlnaTransportInfo(state = state, status = status)
+              }
+
+              fun getPositionInfo(controlUrl: String): DlnaPositionInfo {
+                  val xml = callSoapAction(controlUrl, AV_TRANSPORT_SERVICE, "GetPositionInfo", "<InstanceID>0</InstanceID>")
+                  val relTimeRaw = extractTagValue(xml, "RelTime")
+                  val durationRaw = extractTagValue(xml, "TrackDuration")
+                  return DlnaPositionInfo(
+                      positionSec = parseHmsSafe(relTimeRaw),
+                      durationSec = parseHmsSafe(durationRaw)
+                  )
+              }
+
+              fun getVolume(controlUrl: String): Int {
+                  val body = "<InstanceID>0</InstanceID><Channel>Master</Channel>"
+                  val xml = callSoapAction(controlUrl, RENDERING_CONTROL_SERVICE, "GetVolume", body)
+                  return extractTagValue(xml, "CurrentVolume").toIntOrNull()?.coerceIn(0, 100) ?: 0
+              }
+
+              fun setVolume(controlUrl: String, volume: Int) {
+                  val clamped = volume.coerceIn(0, 100)
+                  val body = "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredVolume>$clamped</DesiredVolume>"
+                  callSoapAction(controlUrl, RENDERING_CONTROL_SERVICE, "SetVolume", body)
+              }
+
+              fun getMute(controlUrl: String): Boolean {
+                  val body = "<InstanceID>0</InstanceID><Channel>Master</Channel>"
+                  val xml = callSoapAction(controlUrl, RENDERING_CONTROL_SERVICE, "GetMute", body)
+                  val raw = extractTagValue(xml, "CurrentMute").trim().lowercase(Locale.US)
+                  return raw == "1" || raw == "true"
+              }
+
+              fun setMute(controlUrl: String, muted: Boolean) {
+                  val desired = if (muted) 1 else 0
+                  val body = "<InstanceID>0</InstanceID><Channel>Master</Channel><DesiredMute>$desired</DesiredMute>"
+                  callSoapAction(controlUrl, RENDERING_CONTROL_SERVICE, "SetMute", body)
+              }
+
+              private fun callSoapAction(
+                  controlUrl: String,
+                  serviceType: String,
+                  action: String,
+                  innerBodyXml: String
+              ): String {
+                  val envelope = buildString {
+                      append("<?xml version=\"1.0\" encoding=\"utf-8\"?>")
+                      append("<s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\" ")
+                      append("s:encodingStyle=\"http://schemas.xmlsoap.org/soap/encoding/\">")
+                      append("<s:Body>")
+                      append("<u:").append(action).append(" xmlns:u=\"").append(serviceType).append("\">")
+                      append(innerBodyXml)
+                      append("</u:").append(action).append(">")
+                      append("</s:Body>")
+                      append("</s:Envelope>")
+                  }
+
+                  val req = Request.Builder()
+                      .url(controlUrl)
+                      .header("Content-Type", "text/xml; charset=\"utf-8\"")
+                      .header("SOAPACTION", "\"$serviceType#$action\"")
+                      .header("Connection", "close")
+                      .post(envelope.toRequestBody(SOAP_XML_MEDIA_TYPE))
+                      .build()
+
+                  client.newCall(req).execute().use { resp ->
+                      val respBody = resp.body?.string().orEmpty()
+                      if (!resp.isSuccessful) {
+                          val errCode = extractTagValue(respBody, "errorCode")
+                          val errDesc = extractTagValue(respBody, "errorDescription")
+                          val detail = if (errCode.isNotBlank() || errDesc.isNotBlank()) {
+                              "UPnP Error $errCode: $errDesc".trim()
+                          } else {
+                              "HTTP ${resp.code} ${resp.message}"
+                          }
+                          throw RuntimeException(detail)
+                      }
+                      return respBody
+                  }
+              }
+
+              private fun parseHmsSafe(raw: String?): Int {
+                  if (raw.isNullOrBlank()) return 0
+                  val trimmed = raw.trim().uppercase(Locale.US)
+                  if (trimmed.contains("NOT_") || trimmed.contains("--") || trimmed == "UNKNOWN") {
+                      return 0
+                  }
+                  val withoutFrac = trimmed.substringBefore('.')
+                  val parts = withoutFrac.split(':')
+                  return try {
+                      when (parts.size) {
+                          3 -> {
+                              val h = parts[0].toInt()
+                              val m = parts[1].toInt()
+                              val s = parts[2].toInt()
+                              (h * 3600 + m * 60 + s).coerceAtLeast(0)
+                          }
+                          2 -> {
+                              val m = parts[0].toInt()
+                              val s = parts[1].toInt()
+                              (m * 60 + s).coerceAtLeast(0)
+                          }
+                          else -> 0
+                      }
+                  } catch (_: Throwable) {
+                      0
+                  }
+              }
+
+              private fun findFirstTagText(root: Element, tagName: String): String? {
+                  val list = root.getElementsByTagName(tagName)
+                  if (list.length > 0) {
+                      val text = list.item(0)?.textContent?.trim()
+                      if (!text.isNullOrEmpty()) return text
+                  }
+                  return null
+              }
+
+              private fun extractTagValue(xml: String, tagName: String): String {
+                  val regex = Regex("<(?:[a-zA-Z0-9_]+:)?$tagName[^>]*>([\\s\\S]*?)</(?:[a-zA-Z0-9_]+:)?$tagName>", RegexOption.IGNORE_CASE)
+                  val match = regex.find(xml)
+                  return match?.groupValues?.getOrNull(1)?.trim().orEmpty()
+              }
+
+              private fun xmlEscape(value: String): String {
+                  val sb = StringBuilder(value.length + 16)
+                  for (ch in value) {
+                      when (ch) {
+                          '&' -> sb.append("&amp;")
+                          '<' -> sb.append("&lt;")
+                          '>' -> sb.append("&gt;")
+                          '"' -> sb.append("&quot;")
+                          '\'' -> sb.append("&apos;")
+                          else -> sb.append(ch)
+                      }
+                  }
+                  return sb.toString()
+              }
+          }
+          EOF
+
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/DlnaCastCoordinator.kt
+          package com.universalremote
+
+          import android.content.Context
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Build
+          import androidx.core.content.ContextCompat
+          import com.facebook.react.bridge.Arguments
+          import com.facebook.react.bridge.WritableMap
+          import java.util.Locale
+          import java.util.concurrent.Executors
+          import java.util.concurrent.ScheduledExecutorService
+          import java.util.concurrent.ScheduledFuture
+          import java.util.concurrent.TimeUnit
+
+          data class DlnaPlaybackSnapshot(
+              val active: Boolean = false,
+              val transportState: String = "STOPPED",
+              val deviceName: String = "",
+              val deviceIp: String = "",
+              val title: String = "",
+              val sourceMode: String = "",
+              val mimeType: String = "video/mp4",
+              val positionSec: Int = 0,
+              val durationSec: Int = 0,
+              val isSeekable: Boolean = true,
+              val volume: Int = 15,
+              val muted: Boolean = false,
+              val error: String = ""
+          ) {
+              fun toWritableMap(): WritableMap {
+                  val map = Arguments.createMap()
+                  map.putBoolean("active", active)
+                  map.putString("transportState", transportState)
+                  map.putString("deviceName", deviceName)
+                  map.putString("deviceIp", deviceIp)
+                  map.putString("title", title)
+                  map.putString("sourceMode", sourceMode)
+                  map.putString("mimeType", mimeType)
+                  map.putInt("positionSec", positionSec)
+                  map.putInt("durationSec", durationSec)
+                  map.putBoolean("isSeekable", isSeekable)
+                  map.putInt("volume", volume)
+                  map.putBoolean("muted", muted)
+                  map.putString("error", error)
+                  return map
+              }
+          }
+
+          object DlnaCastCoordinator {
+              private lateinit var appContext: Context
+              private lateinit var httpServer: DlnaHttpServer
+              private lateinit var soapClient: DlnaSoapClient
+
+              private val commandExecutor = Executors.newSingleThreadExecutor()
+              private val pollExecutor: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor()
+
+              @Volatile
+              private var initialized = false
+
+              @Volatile
+              private var activeDevice: DlnaRendererDevice? = null
+
+              @Volatile
+              private var snapshot = DlnaPlaybackSnapshot()
+
+              @Volatile
+              private var stateListener: ((DlnaPlaybackSnapshot) -> Unit)? = null
+
+              @Volatile
+              private var notificationUpdater: ((DlnaPlaybackSnapshot) -> Unit)? = null
+
+              @Volatile
+              private var pollTask: ScheduledFuture<*>? = null
+
+              @Synchronized
+              fun init(context: Context) {
+                  if (initialized) return
+                  appContext = context.applicationContext
+                  httpServer = DlnaHttpServer(appContext)
+                  soapClient = DlnaSoapClient(appContext)
+                  initialized = true
+              }
+
+              fun setStateListener(listener: ((DlnaPlaybackSnapshot) -> Unit)?) {
+                  stateListener = listener
+              }
+
+              fun setNotificationUpdater(updater: ((DlnaPlaybackSnapshot) -> Unit)?) {
+                  notificationUpdater = updater
+              }
+
+              fun getCurrentSnapshot(): DlnaPlaybackSnapshot = snapshot
+
+              fun discoverRenderers(priorityIp: String?): List<DlnaRendererDevice> {
+                  return soapClient.discoverRenderers(priorityIp)
+              }
+
+              private fun publishSnapshot(next: DlnaPlaybackSnapshot) {
+                  snapshot = next
+                  stateListener?.invoke(next)
+                  notificationUpdater?.invoke(next)
+              }
+
+              fun castLocalUri(
+                  device: DlnaRendererDevice,
+                  uri: Uri,
+                  title: String,
+                  mimeType: String,
+                  fileExt: String
+              ) {
+                  commandExecutor.submit {
+                      castInternal(device, title, mimeType, "LOCAL_HTTP_206", seekableHint = true) {
+                          httpServer.prepareLocalSession(uri, mimeType, fileExt)
+                      }
+                  }.get()
+              }
+
+              fun castRemoteUrl(
+                  device: DlnaRendererDevice,
+                  url: String,
+                  title: String,
+                  mimeType: String,
+                  fileExt: String,
+                  useProxy: Boolean,
+                  headers: Map<String, String>
+              ) {
+                  val isHls = mimeType.contains("mpegurl", ignoreCase = true) ||
+                      mimeType.contains("m3u", ignoreCase = true) ||
+                      url.substringBefore('?').lowercase(Locale.US).endsWith(".m3u8")
+                  val mode = if (useProxy) "LOCAL_PROXY" else "DIRECT_URL"
+                  commandExecutor.submit {
+                      castInternal(device, title, mimeType, mode, seekableHint = !isHls) {
+                          if (useProxy) {
+                              httpServer.prepareProxySession(url, headers, mimeType, fileExt)
+                          } else {
+                              url
+                          }
+                      }
+                  }.get()
+              }
+
+              private fun castInternal(
+                  device: DlnaRendererDevice,
+                  title: String,
+                  mimeType: String,
+                  sourceMode: String,
+                  seekableHint: Boolean,
+                  urlProducer: () -> String
+              ) {
+                  val finalUrl = urlProducer()
+                  activeDevice = device
+
+                  startForegroundServiceSafe()
+
+                  publishSnapshot(
+                      DlnaPlaybackSnapshot(
+                          active = true,
+                          transportState = "TRANSITIONING",
+                          deviceName = device.name,
+                          deviceIp = device.ip,
+                          title = title.ifBlank { "Video Stream" },
+                          sourceMode = sourceMode,
+                          mimeType = mimeType,
+                          positionSec = 0,
+                          durationSec = 0,
+                          isSeekable = seekableHint,
+                          volume = snapshot.volume,
+                          muted = snapshot.muted,
+                          error = ""
+                      )
+                  )
+
+                  try {
+                      try {
+                          soapClient.stop(device.avTransportControlUrl)
+                          Thread.sleep(160)
+                      } catch (_: Throwable) {
+                      }
+
+                      soapClient.setAvTransportUri(
+                          device.avTransportControlUrl,
+                          finalUrl,
+                          title.ifBlank { "Video Stream" },
+                          mimeType,
+                          seekableHint
+                      )
+                      soapClient.play(device.avTransportControlUrl)
+
+                      val vol = try {
+                          soapClient.getVolume(device.renderingControlUrl)
+                      } catch (_: Throwable) {
+                          snapshot.volume
+                      }
+                      val muted = try {
+                          soapClient.getMute(device.renderingControlUrl)
+                      } catch (_: Throwable) {
+                          false
+                      }
+
+                      publishSnapshot(
+                          snapshot.copy(
+                              transportState = "PLAYING",
+                              volume = vol,
+                              muted = muted,
+                              error = ""
+                          )
+                      )
+                      startPolling()
+                  } catch (e: Throwable) {
+                      publishSnapshot(
+                          snapshot.copy(
+                              active = false,
+                              transportState = "STOPPED",
+                              error = e.message ?: "تعذر بدء البث إلى الشاشة"
+                          )
+                      )
+                      stopForegroundServiceSafe()
+                      throw e
+                  }
+              }
+
+              fun play() {
+                  val dev = activeDevice ?: return
+                  commandExecutor.execute {
+                      try {
+                          soapClient.play(dev.avTransportControlUrl)
+                          publishSnapshot(snapshot.copy(transportState = "PLAYING", error = ""))
+                      } catch (e: Throwable) {
+                          publishSnapshot(snapshot.copy(error = e.message ?: ""))
+                      }
+                  }
+              }
+
+              fun pause() {
+                  val dev = activeDevice ?: return
+                  commandExecutor.execute {
+                      try {
+                          soapClient.pause(dev.avTransportControlUrl)
+                          publishSnapshot(snapshot.copy(transportState = "PAUSED_PLAYBACK", error = ""))
+                      } catch (e: Throwable) {
+                          publishSnapshot(snapshot.copy(error = e.message ?: ""))
+                      }
+                  }
+              }
+
+              fun togglePlayPause() {
+                  val state = snapshot.transportState
+                  if (state == "PLAYING" || state == "TRANSITIONING") {
+                      pause()
+                  } else {
+                      play()
+                  }
+              }
+
+              fun seekSeconds(seconds: Int) {
+                  val dev = activeDevice ?: return
+                  val clamped = seconds.coerceAtLeast(0)
+                  commandExecutor.execute {
+                      try {
+                          soapClient.seekSeconds(dev.avTransportControlUrl, clamped)
+                          publishSnapshot(snapshot.copy(positionSec = clamped, error = ""))
+                      } catch (e: Throwable) {
+                          publishSnapshot(snapshot.copy(error = e.message ?: ""))
+                      }
+                  }
+              }
+
+              fun setVolume(volume: Int) {
+                  val dev = activeDevice ?: return
+                  val clamped = volume.coerceIn(0, 100)
+                  commandExecutor.execute {
+                      try {
+                          soapClient.setVolume(dev.renderingControlUrl, clamped)
+                          publishSnapshot(snapshot.copy(volume = clamped, error = ""))
+                      } catch (e: Throwable) {
+                          publishSnapshot(snapshot.copy(error = e.message ?: ""))
+                      }
+                  }
+              }
+
+              fun setMute(muted: Boolean) {
+                  val dev = activeDevice ?: return
+                  commandExecutor.execute {
+                      try {
+                          soapClient.setMute(dev.renderingControlUrl, muted)
+                          publishSnapshot(snapshot.copy(muted = muted, error = ""))
+                      } catch (e: Throwable) {
+                          publishSnapshot(snapshot.copy(error = e.message ?: ""))
+                      }
+                  }
+              }
+
+              fun stopCast() {
+                  stopPolling()
+                  val dev = activeDevice
+                  activeDevice = null
+                  commandExecutor.execute {
+                      if (dev != null) {
+                          try {
+                              soapClient.stop(dev.avTransportControlUrl)
+                          } catch (_: Throwable) {
+                          }
+                      }
+                      httpServer.stopServer()
+                      publishSnapshot(
+                          DlnaPlaybackSnapshot(
+                              active = false,
+                              transportState = "STOPPED"
+                          )
+                      )
+                      stopForegroundServiceSafe()
+                  }
+              }
+
+              private fun startPolling() {
+                  stopPolling()
+                  pollTask = pollExecutor.scheduleWithFixedDelay({
+                      val dev = activeDevice ?: return@scheduleWithFixedDelay
+                      if (!snapshot.active) return@scheduleWithFixedDelay
+                      try {
+                          val transport = soapClient.getTransportInfo(dev.avTransportControlUrl)
+                          val pos = soapClient.getPositionInfo(dev.avTransportControlUrl)
+                          val vol = try {
+                              soapClient.getVolume(dev.renderingControlUrl)
+                          } catch (_: Throwable) {
+                              snapshot.volume
+                          }
+                          val muted = try {
+                              soapClient.getMute(dev.renderingControlUrl)
+                          } catch (_: Throwable) {
+                              snapshot.muted
+                          }
+
+                          val isLiveOrHls = snapshot.mimeType.contains("mpegurl", ignoreCase = true) ||
+                              (transport.state == "PLAYING" && pos.durationSec <= 0)
+                          val seekableNow = !isLiveOrHls && pos.durationSec > 0
+
+                          if (transport.state == "STOPPED" && snapshot.transportState != "TRANSITIONING") {
+                              stopPolling()
+                              activeDevice = null
+                              httpServer.stopServer()
+                              publishSnapshot(DlnaPlaybackSnapshot(active = false, transportState = "STOPPED"))
+                              stopForegroundServiceSafe()
+                          } else {
+                              publishSnapshot(
+                                  snapshot.copy(
+                                      transportState = transport.state,
+                                      positionSec = pos.positionSec,
+                                      durationSec = pos.durationSec,
+                                      isSeekable = seekableNow,
+                                      volume = vol,
+                                      muted = muted,
+                                      error = ""
+                                  )
+                              )
+                          }
+                      } catch (_: Throwable) {
+                      }
+                  }, 1000L, 1000L, TimeUnit.MILLISECONDS)
+              }
+
+              private fun stopPolling() {
+                  pollTask?.cancel(false)
+                  pollTask = null
+              }
+
+              private fun startForegroundServiceSafe() {
+                  if (!initialized) return
+                  try {
+                      val intent = Intent(appContext, DlnaCastService::class.java).apply {
+                          action = DlnaCastService.ACTION_START_FOREGROUND
+                      }
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          ContextCompat.startForegroundService(appContext, intent)
+                      } else {
+                          appContext.startService(intent)
+                      }
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              private fun stopForegroundServiceSafe() {
+                  if (!initialized) return
+                  try {
+                      appContext.stopService(Intent(appContext, DlnaCastService::class.java))
+                  } catch (_: Throwable) {
+                  }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/DlnaCastService.kt
+          package com.universalremote
+
+          import android.app.Notification
+          import android.app.NotificationChannel
+          import android.app.NotificationManager
+          import android.app.PendingIntent
+          import android.app.Service
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.ServiceInfo
+          import android.net.wifi.WifiManager
+          import android.os.Build
+          import android.os.IBinder
+          import android.os.PowerManager
+          import androidx.core.app.NotificationCompat
+
+          class DlnaCastService : Service() {
+              companion object {
+                  const val CHANNEL_ID = "dlna_cast_playback"
+                  const val NOTIFICATION_ID = 4107
+                  const val ACTION_START_FOREGROUND = "com.universalremote.action.START_CAST_FG"
+                  const val ACTION_TOGGLE_PLAY_PAUSE = "com.universalremote.action.TOGGLE_CAST_PLAY_PAUSE"
+                  const val ACTION_STOP_CAST = "com.universalremote.action.STOP_CAST"
+              }
+
+              private var wifiLock: WifiManager.WifiLock? = null
+              private var wakeLock: PowerManager.WakeLock? = null
+              private var isForegroundStarted = false
+
+              override fun onCreate() {
+                  super.onCreate()
+                  DlnaCastCoordinator.init(applicationContext)
+                  createNotificationChannel()
+                  acquireLocks()
+                  DlnaCastCoordinator.setNotificationUpdater { snap ->
+                      if (snap.active) {
+                          val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                          mgr?.notify(NOTIFICATION_ID, buildNotification(snap))
+                      }
+                  }
+              }
+
+              override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+                  when (intent?.action) {
+                      ACTION_STOP_CAST -> {
+                          DlnaCastCoordinator.stopCast()
+                          stopForegroundSafely()
+                          stopSelf()
+                          return START_NOT_STICKY
+                      }
+                      ACTION_TOGGLE_PLAY_PAUSE -> {
+                          DlnaCastCoordinator.togglePlayPause()
+                          val snap = DlnaCastCoordinator.getCurrentSnapshot()
+                          ensureForeground(snap)
+                          return START_STICKY
+                      }
+                      else -> {
+                          val snap = DlnaCastCoordinator.getCurrentSnapshot()
+                          ensureForeground(snap)
+                          return START_STICKY
+                      }
+                  }
+              }
+
+              private fun ensureForeground(snapshot: DlnaPlaybackSnapshot) {
+                  val notification = buildNotification(snapshot)
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                      startForeground(
+                          NOTIFICATION_ID,
+                          notification,
+                          ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                      )
+                  } else {
+                      startForeground(NOTIFICATION_ID, notification)
+                  }
+                  isForegroundStarted = true
+              }
+
+              private fun buildNotification(snapshot: DlnaPlaybackSnapshot): Notification {
+                  val pendingFlags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                      PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+                  } else {
+                      PendingIntent.FLAG_UPDATE_CURRENT
+                  }
+
+                  val openAppIntent = Intent(this, MainActivity::class.java).apply {
+                      flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                  }
+                  val contentPi = PendingIntent.getActivity(this, 10, openAppIntent, pendingFlags)
+
+                  val toggleIntent = Intent(this, DlnaCastService::class.java).apply {
+                      action = ACTION_TOGGLE_PLAY_PAUSE
+                  }
+                  val togglePi = PendingIntent.getService(this, 11, toggleIntent, pendingFlags)
+
+                  val stopIntent = Intent(this, DlnaCastService::class.java).apply {
+                      action = ACTION_STOP_CAST
+                  }
+                  val stopPi = PendingIntent.getService(this, 12, stopIntent, pendingFlags)
+
+                  val isPlaying = snapshot.transportState == "PLAYING" || snapshot.transportState == "TRANSITIONING"
+                  val toggleLabel = if (isPlaying) "إيقاف مؤقت" else "تشغيل"
+                  val statusSubtitle = when (snapshot.transportState) {
+                      "PLAYING" -> "جاري البث على ${snapshot.deviceName.ifBlank { "الشاشة" }}"
+                      "PAUSED_PLAYBACK" -> "متوقف مؤقتاً · ${snapshot.deviceName.ifBlank { "الشاشة" }}"
+                      "TRANSITIONING" -> "جاري التحضير على ${snapshot.deviceName.ifBlank { "الشاشة" }}"
+                      else -> "DLNA Cast"
+                  }
+
+                  return NotificationCompat.Builder(this, CHANNEL_ID)
+                      .setSmallIcon(android.R.drawable.ic_media_play)
+                      .setContentTitle(snapshot.title.ifBlank { "بث الفيديو (DLNA 4K)" })
+                      .setContentText(statusSubtitle)
+                      .setContentIntent(contentPi)
+                      .setOngoing(true)
+                      .setOnlyAlertOnce(true)
+                      .setPriority(NotificationCompat.PRIORITY_LOW)
+                      .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                      .addAction(0, toggleLabel, togglePi)
+                      .addAction(0, "إيقاف البث", stopPi)
+                      .build()
+              }
+
+              private fun createNotificationChannel() {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      val channel = NotificationChannel(
+                          CHANNEL_ID,
+                          "بث الفيديو DLNA",
+                          NotificationManager.IMPORTANCE_LOW
+                      ).apply {
+                          description = "التحكم في تشغيل وبث الفيديو إلى الشاشة في الخلفية"
+                          setShowBadge(false)
+                      }
+                      val mgr = getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
+                      mgr?.createNotificationChannel(channel)
+                  }
+              }
+
+              private fun acquireLocks() {
+                  try {
+                      val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+                      if (wm != null && wifiLock == null) {
+                          val lockMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                              WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                          } else {
+                              @Suppress("DEPRECATION")
+                              WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                          }
+                          wifiLock = wm.createWifiLock(lockMode, "UniversalRemote:DlnaWifiLock").apply {
+                              setReferenceCounted(false)
+                              acquire()
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  }
+
+                  try {
+                      val pm = applicationContext.getSystemService(Context.POWER_SERVICE) as? PowerManager
+                      if (pm != null && wakeLock == null) {
+                          wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "UniversalRemote:DlnaWakeLock").apply {
+                              setReferenceCounted(false)
+                              acquire(4 * 60 * 60 * 1000L)
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              private fun releaseLocks() {
+                  try {
+                      if (wifiLock?.isHeld == true) {
+                          wifiLock?.release()
+                      }
+                  } catch (_: Throwable) {
+                  }
+                  wifiLock = null
+                  try {
+                      if (wakeLock?.isHeld == true) {
+                          wakeLock?.release()
+                      }
+                  } catch (_: Throwable) {
+                  }
+                  wakeLock = null
+              }
+
+              private fun stopForegroundSafely() {
+                  if (!isForegroundStarted) return
+                  isForegroundStarted = false
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+                      stopForeground(STOP_FOREGROUND_REMOVE)
+                  } else {
+                      @Suppress("DEPRECATION")
+                      stopForeground(true)
+                  }
+              }
+
+              override fun onDestroy() {
+                  DlnaCastCoordinator.setNotificationUpdater(null)
+                  releaseLocks()
+                  stopForegroundSafely()
+                  super.onDestroy()
+              }
+
+              override fun onBind(intent: Intent?): IBinder? = null
+          }
+          EOF
+
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/DlnaCastModule.kt
+          package com.universalremote
+
+          import android.app.Activity
+          import android.content.Context
+          import android.content.Intent
+          import android.net.Uri
+          import android.os.Build
+          import android.os.Bundle
+          import android.provider.OpenableColumns
+          import com.facebook.react.ReactInstanceManager
+          import com.facebook.react.bridge.ActivityEventListener
+          import com.facebook.react.bridge.Arguments
+          import com.facebook.react.bridge.Promise
+          import com.facebook.react.bridge.ReactApplicationContext
+          import com.facebook.react.bridge.ReactContext
+          import com.facebook.react.bridge.ReactContextBaseJavaModule
+          import com.facebook.react.bridge.ReactMethod
+          import com.facebook.react.bridge.ReadableMap
+          import com.facebook.react.bridge.WritableMap
+          import com.facebook.react.modules.core.DeviceEventManagerModule
+          import java.util.Locale
+          import java.util.concurrent.Executors
+
+          class DlnaCastModule(reactContext: ReactApplicationContext) :
+              ReactContextBaseJavaModule(reactContext), ActivityEventListener {
+
+              companion object {
+                  private const val PICK_VIDEO_REQUEST_CODE = 44019
+                  private const val EVENT_STATE = "DlnaPlaybackState"
+                  private const val EVENT_INTENT = "DlnaCastIntentReceived"
+                  private val URL_EXTRACT_REGEX = Regex("https?://\\S+", RegexOption.IGNORE_CASE)
+
+                  @Volatile
+                  private var pendingIntentData: WritableMap? = null
+
+                  fun storeInitialIntent(intent: Intent?) {
+                      val parsed = parseCastIntentToMap(intent)
+                      if (parsed != null) {
+                          pendingIntentData = parsed
+                      }
+                  }
+
+                  fun handleNewIntent(activity: Activity, intent: Intent?) {
+                      val parsed = parseCastIntentToMap(intent) ?: return
+                      pendingIntentData = parsed
+                      try {
+                          val reactApp = activity.application as? com.facebook.react.ReactApplication
+                          val rnCtx = reactApp?.reactNativeHost?.reactInstanceManager?.currentReactContext
+                          if (rnCtx != null && rnCtx.hasActiveReactInstance()) {
+                              pendingIntentData = null
+                              rnCtx
+                                  .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                                  .emit(EVENT_INTENT, parsed)
+                          }
+                      } catch (_: Throwable) {
+                      }
+                  }
+
+                  fun parseCastIntentToMap(intent: Intent?): WritableMap? {
+                      if (intent == null) return null
+                      val action = intent.action ?: return null
+                      var targetUrl = ""
+                      var isLocalContent = false
+                      var title = intent.getStringExtra(Intent.EXTRA_SUBJECT)
+                          ?: intent.getStringExtra("title")
+                          ?: ""
+
+                      when (action) {
+                          Intent.ACTION_VIEW -> {
+                              val dataUri = intent.data
+                              val str = intent.dataString ?: dataUri?.toString().orEmpty()
+                              if (str.isBlank()) return null
+                              val scheme = dataUri?.scheme?.lowercase(Locale.US) ?: ""
+                              isLocalContent = scheme == "content" || scheme == "file"
+                              targetUrl = str
+                          }
+                          Intent.ACTION_SEND -> {
+                              val streamUri: Uri? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                  intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+                              } else {
+                                  @Suppress("DEPRECATION")
+                                  intent.getParcelableExtra(Intent.EXTRA_STREAM)
+                              }
+                              if (streamUri != null) {
+                                  targetUrl = streamUri.toString()
+                                  isLocalContent = true
+                              } else {
+                                  val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT).orEmpty()
+                                  val match = URL_EXTRACT_REGEX.find(sharedText)
+                                  if (match != null) {
+                                      targetUrl = match.value.trimEnd('.', ',', ')', ']', '"', '\'')
+                                      if (title.isBlank()) {
+                                          title = sharedText.replace(match.value, "").trim()
+                                      }
+                                  }
+                              }
+                          }
+                          else -> return null
+                      }
+
+                      if (targetUrl.isBlank()) return null
+
+                      val headersMap = Arguments.createMap()
+                      extractHeadersFromExtras(intent.extras, headersMap)
+
+                      val result = Arguments.createMap()
+                      result.putString("url", targetUrl)
+                      result.putBoolean("isLocalUri", isLocalContent)
+                      result.putString("title", title)
+                      result.putString("mimeType", intent.type ?: "")
+                      result.putMap("headers", headersMap)
+                      return result
+                  }
+
+                  private fun extractHeadersFromExtras(extras: Bundle?, outMap: WritableMap) {
+                      if (extras == null) return
+
+                      fun putHeaderNormalized(rawKey: String?, rawValue: Any?) {
+                          val k = rawKey?.trim().orEmpty()
+                          val v = rawValue?.toString()?.trim().orEmpty()
+                          if (k.isBlank() || v.isBlank()) return
+                          val canonicalKey = when (k.lowercase(Locale.US)) {
+                              "referer", "referrer" -> "Referer"
+                              "user-agent" -> "User-Agent"
+                              "cookie" -> "Cookie"
+                              "origin" -> "Origin"
+                              "authorization" -> "Authorization"
+                              else -> k
+                          }
+                          outMap.putString(canonicalKey, v)
+                      }
+
+                      // 1) البحث عن المفتاحين headers أو HTTP_HEADERS بكافة الصيغ (String[], ArrayList, Bundle, HashMap)
+                      for (extraKey in extras.keySet()) {
+                          val lowerKey = extraKey.lowercase(Locale.US)
+                          @Suppress("DEPRECATION")
+                          val extraVal = extras.get(extraKey)
+                          if (lowerKey == "headers" || lowerKey == "android.media.intent.extra.http_headers") {
+                              when (extraVal) {
+                                  is Array<*> -> {
+                                      val list = extraVal.mapNotNull { it?.toString() }
+                                      var idx = 0
+                                      while (idx + 1 < list.size) {
+                                          putHeaderNormalized(list[idx], list[idx + 1])
+                                          idx += 2
+                                      }
+                                  }
+                                  is List<*> -> {
+                                      val list = extraVal.mapNotNull { it?.toString() }
+                                      var idx = 0
+                                      while (idx + 1 < list.size) {
+                                          putHeaderNormalized(list[idx], list[idx + 1])
+                                          idx += 2
+                                      }
+                                  }
+                                  is Bundle -> {
+                                      for (subKey in extraVal.keySet()) {
+                                          @Suppress("DEPRECATION")
+                                          putHeaderNormalized(subKey, extraVal.get(subKey))
+                                      }
+                                  }
+                                  is Map<*, *> -> {
+                                      for ((mk, mv) in extraVal) {
+                                          putHeaderNormalized(mk?.toString(), mv)
+                                      }
+                                  }
+                              }
+                          } else if (lowerKey in setOf("referer", "referrer", "user-agent", "cookie", "origin", "authorization")) {
+                              // 3) المفاتيح الفردية بدون حساسية لحالة الأحرف
+                              putHeaderNormalized(extraKey, extraVal)
+                          }
+                      }
+                  }
+              }
+
+              private val bgExecutor = Executors.newCachedThreadPool()
+
+              @Volatile
+              private var pickPromise: Promise? = null
+
+              init {
+                  DlnaCastCoordinator.init(reactContext)
+                  reactContext.addActivityEventListener(this)
+                  DlnaCastCoordinator.setStateListener { snap ->
+                      emitEvent(EVENT_STATE, snap.toWritableMap())
+                  }
+              }
+
+              override fun getName(): String = "DlnaCastModule"
+
+              private fun emitEvent(name: String, params: WritableMap) {
+                  try {
+                      if (reactApplicationContext.hasActiveReactInstance()) {
+                          reactApplicationContext
+                              .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                              .emit(name, params)
+                      }
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              @ReactMethod
+              fun addListener(eventName: String) {
+                  // مطلوب لـ NativeEventEmitter
+              }
+
+              @ReactMethod
+              fun removeListeners(count: Int) {
+                  // مطلوب لـ NativeEventEmitter
+              }
+
+              @ReactMethod
+              fun getInitialIntent(promise: Promise) {
+                  val item = pendingIntentData
+                  pendingIntentData = null
+                  promise.resolve(item)
+              }
+
+              @ReactMethod
+              fun getPlaybackState(promise: Promise) {
+                  promise.resolve(DlnaCastCoordinator.getCurrentSnapshot().toWritableMap())
+              }
+
+              @ReactMethod
+              fun discoverRenderers(priorityIp: String?, promise: Promise) {
+                  bgExecutor.execute {
+                      try {
+                          val list = DlnaCastCoordinator.discoverRenderers(priorityIp)
+                          val arr = Arguments.createArray()
+                          for (d in list) {
+                              val m = Arguments.createMap()
+                              m.putString("udn", d.udn)
+                              m.putString("name", d.name)
+                              m.putString("manufacturer", d.manufacturer)
+                              m.putString("modelName", d.modelName)
+                              m.putString("ip", d.ip)
+                              m.putInt("port", d.port)
+                              m.putString("location", d.location)
+                              m.putString("avTransportControlUrl", d.avTransportControlUrl)
+                              m.putString("renderingControlUrl", d.renderingControlUrl)
+                              arr.pushMap(m)
+                          }
+                          promise.resolve(arr)
+                      } catch (e: Throwable) {
+                          promise.reject("DLNA_DISCOVERY_ERROR", e.message ?: "Failed SSDP discovery", e)
+                      }
+                  }
+              }
+
+              @ReactMethod
+              fun pickLocalVideo(promise: Promise) {
+                  val activity = currentActivity
+                  if (activity == null) {
+                      promise.reject("NO_ACTIVITY", "لا توجد نافذة نشطة لفتح مستعرض الملفات")
+                      return
+                  }
+                  pickPromise?.reject("PICK_CANCELLED", "تم استبدال طلب الاختيار")
+                  pickPromise = promise
+                  try {
+                      val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                          addCategory(Intent.CATEGORY_OPENABLE)
+                          type = "video/*"
+                          addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                          addFlags(Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION)
+                      }
+                      activity.startActivityForResult(intent, PICK_VIDEO_REQUEST_CODE)
+                  } catch (e: Throwable) {
+                      pickPromise = null
+                      promise.reject("PICK_ERROR", e.message ?: "تعذر فتح منتقي الفيديو", e)
+                  }
+              }
+
+              override fun onActivityResult(activity: Activity, requestCode: Int, resultCode: Int, data: Intent?) {
+                  if (requestCode != PICK_VIDEO_REQUEST_CODE) return
+                  val promise = pickPromise ?: return
+                  pickPromise = null
+
+                  if (resultCode != Activity.RESULT_OK || data?.data == null) {
+                      promise.reject("PICK_CANCELLED", "لم يتم اختيار أي ملف فيديو")
+                      return
+                  }
+
+                  val uri = data.data!!
+                  try {
+                      val takeFlags = data.flags and Intent.FLAG_GRANT_READ_URI_PERMISSION
+                      if (takeFlags != 0) {
+                          reactApplicationContext.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                      }
+                  } catch (_: Throwable) {
+                  }
+
+                  var displayName = "video.mp4"
+                  var sizeBytes = -1L
+                  try {
+                      reactApplicationContext.contentResolver.query(
+                          uri,
+                          arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE),
+                          null,
+                          null,
+                          null
+                      )?.use { cursor ->
+                          if (cursor.moveToFirst()) {
+                              val nameIdx = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                              if (nameIdx >= 0 && !cursor.isNull(nameIdx)) {
+                                  displayName = cursor.getString(nameIdx) ?: displayName
+                              }
+                              val sizeIdx = cursor.getColumnIndex(OpenableColumns.SIZE)
+                              if (sizeIdx >= 0 && !cursor.isNull(sizeIdx)) {
+                                  sizeBytes = cursor.getLong(sizeIdx)
+                              }
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  }
+
+                  val mime = reactApplicationContext.contentResolver.getType(uri) ?: "video/mp4"
+                  val result = Arguments.createMap()
+                  result.putString("uri", uri.toString())
+                  result.putString("name", displayName)
+                  result.putDouble("sizeBytes", sizeBytes.toDouble())
+                  result.putString("mimeType", mime)
+                  promise.resolve(result)
+              }
+
+              override fun onNewIntent(intent: Intent) {
+                  val parsed = parseCastIntentToMap(intent) ?: return
+                  emitEvent(EVENT_INTENT, parsed)
+              }
+
+              @ReactMethod
+              fun castLocalFile(deviceMap: ReadableMap, contentUri: String, title: String?, mimeType: String?, promise: Promise) {
+                  bgExecutor.execute {
+                      try {
+                          val device = parseDeviceMap(deviceMap)
+                          val uri = Uri.parse(contentUri)
+                          val resolvedMime = mimeType?.takeIf { it.isNotBlank() }
+                              ?: reactApplicationContext.contentResolver.getType(uri)
+                              ?: "video/mp4"
+                          val cleanTitle = title?.takeIf { it.isNotBlank() } ?: "Local Video"
+                          val ext = cleanTitle.substringAfterLast('.', "")
+                          DlnaCastCoordinator.castLocalUri(device, uri, cleanTitle, resolvedMime, ext)
+                          promise.resolve(DlnaCastCoordinator.getCurrentSnapshot().toWritableMap())
+                      } catch (e: Throwable) {
+                          promise.reject("DLNA_CAST_LOCAL_ERROR", e.message ?: "فشل بث الملف المحلي", e)
+                      }
+                  }
+              }
+
+              @ReactMethod
+              fun castRemoteUrl(
+                  deviceMap: ReadableMap,
+                  url: String,
+                  title: String?,
+                  useProxy: Boolean,
+                  headersMap: ReadableMap?,
+                  promise: Promise
+              ) {
+                  bgExecutor.execute {
+                      try {
+                          val device = parseDeviceMap(deviceMap)
+                          val headers = HashMap<String, String>()
+                          if (headersMap != null) {
+                              val iter = headersMap.keySetIterator()
+                              while (iter.hasNextKey()) {
+                                  val k = iter.nextKey()
+                                  val v = headersMap.getString(k)
+                                  if (!v.isNullOrBlank()) {
+                                      headers[k] = v
+                                  }
+                              }
+                          }
+                          val lowerPath = url.substringBefore('?').lowercase(Locale.US)
+                          val guessedMime = when {
+                              lowerPath.endsWith(".m3u8") -> "application/vnd.apple.mpegurl"
+                              lowerPath.endsWith(".mkv") -> "video/x-matroska"
+                              lowerPath.endsWith(".ts") -> "video/mp2t"
+                              lowerPath.endsWith(".webm") -> "video/webm"
+                              lowerPath.endsWith(".mov") -> "video/quicktime"
+                              else -> "video/mp4"
+                          }
+                          val ext = lowerPath.substringAfterLast('/', "").substringAfterLast('.', "")
+                          val cleanTitle = title?.takeIf { it.isNotBlank() } ?: "Stream Video"
+                          DlnaCastCoordinator.castRemoteUrl(device, url, cleanTitle, guessedMime, ext, useProxy, headers)
+                          promise.resolve(DlnaCastCoordinator.getCurrentSnapshot().toWritableMap())
+                      } catch (e: Throwable) {
+                          promise.reject("DLNA_CAST_REMOTE_ERROR", e.message ?: "فشل بث الرابط إلى الشاشة", e)
+                      }
+                  }
+              }
+
+              @ReactMethod
+              fun play(promise: Promise) {
+                  DlnaCastCoordinator.play()
+                  promise.resolve(true)
+              }
+
+              @ReactMethod
+              fun pause(promise: Promise) {
+                  DlnaCastCoordinator.pause()
+                  promise.resolve(true)
+              }
+
+              @ReactMethod
+              fun stop(promise: Promise) {
+                  DlnaCastCoordinator.stopCast()
+                  promise.resolve(true)
+              }
+
+              @ReactMethod
+              fun seek(seconds: Int, promise: Promise) {
+                  DlnaCastCoordinator.seekSeconds(seconds)
+                  promise.resolve(true)
+              }
+
+              @ReactMethod
+              fun setVolume(volume: Int, promise: Promise) {
+                  DlnaCastCoordinator.setVolume(volume)
+                  promise.resolve(true)
+              }
+
+              @ReactMethod
+              fun setMute(muted: Boolean, promise: Promise) {
+                  DlnaCastCoordinator.setMute(muted)
+                  promise.resolve(true)
+              }
+
+              private fun parseDeviceMap(m: ReadableMap): DlnaRendererDevice {
+                  val ip = m.getString("ip").orEmpty().trim()
+                  val port = if (m.hasKey("port")) m.getInt("port") else 9197
+                  val avUrl = m.getString("avTransportControlUrl")?.takeIf { it.isNotBlank() }
+                      ?: "http://$ip:$port/upnp/control/AVTransport1"
+                  val rcUrl = m.getString("renderingControlUrl")?.takeIf { it.isNotBlank() }
+                      ?: "http://$ip:$port/upnp/control/RenderingControl1"
+                  return DlnaRendererDevice(
+                      udn = m.getString("udn").orEmpty(),
+                      name = m.getString("name") ?: "Smart TV",
+                      manufacturer = m.getString("manufacturer").orEmpty(),
+                      modelName = m.getString("modelName").orEmpty(),
+                      ip = ip,
+                      port = port,
+                      location = m.getString("location").orEmpty(),
+                      avTransportControlUrl = avUrl,
+                      renderingControlUrl = rcUrl
+                  )
+              }
+
+              override fun onCatalystInstanceDestroy() {
+                  reactApplicationContext.removeActivityEventListener(this)
+                  DlnaCastCoordinator.setStateListener(null)
+                  bgExecutor.shutdownNow()
+                  super.onCatalystInstanceDestroy()
+              }
+          }
+          EOF
+
           cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/IrManagerPackage.kt
           package com.universalremote
 
@@ -622,7 +2896,12 @@ jobs:
 
           class IrManagerPackage : ReactPackage {
               override fun createViewManagers(reactContext: ReactApplicationContext): MutableList<ViewManager<View, ReactShadowNode<*>>> = mutableListOf()
-              override fun createNativeModules(reactContext: ReactApplicationContext): MutableList<NativeModule> = listOf(IrManagerModule(reactContext), HapticsModule(reactContext)).toMutableList()
+              override fun createNativeModules(reactContext: ReactApplicationContext): MutableList<NativeModule> =
+                  listOf(
+                      IrManagerModule(reactContext),
+                      HapticsModule(reactContext),
+                      DlnaCastModule(reactContext)
+                  ).toMutableList()
           }
           EOF
           

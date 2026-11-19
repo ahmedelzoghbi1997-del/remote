@@ -20,6 +20,11 @@ import {
 } from 'react-native';
 import WifiControl from './src/services/WifiControl';
 import HapticsManager, { HAPTIC_PATTERNS } from './src/services/HapticsManager';
+import DlnaCastService, {
+  DEFAULT_DLNA_PLAYBACK_STATE,
+  formatSecondsHms,
+} from './src/services/DlnaCastService';
+import DlnaCastModal from './src/components/DlnaCastModal';
 import {
   encodeMideaAcPattern,
   MIDEA_MAX_TEMP,
@@ -397,6 +402,47 @@ function HapticsIcon({ color = '#F1F5F9', size = 18 }) {
   );
 }
 
+function CastIcon({ color = '#F1F5F9', size = 18 }) {
+  const stroke = Math.max(1.8, Math.round(size * 0.11));
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
+      <View
+        style={{
+          width: Math.round(size * 0.92),
+          height: Math.round(size * 0.72),
+          borderRadius: 3,
+          borderWidth: stroke,
+          borderColor: color,
+          justifyContent: 'flex-end',
+          alignItems: 'flex-start',
+          padding: Math.max(2, Math.round(size * 0.12)),
+          overflow: 'hidden',
+        }}
+      >
+        <View
+          style={{
+            width: Math.round(size * 0.36),
+            height: Math.round(size * 0.36),
+            borderRadius: Math.round(size * 0.18),
+            borderTopWidth: stroke,
+            borderRightWidth: stroke,
+            borderColor: color,
+            marginLeft: -Math.round(size * 0.16),
+            marginBottom: -Math.round(size * 0.16),
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
 const DPAD_WEDGE_ROTATION = {
   UP: '0deg',
   RIGHT: '90deg',
@@ -722,6 +768,13 @@ function App() {
   const [isPowerHolding, setIsPowerHolding] = useState(false);
   const [powerHintText, setPowerHintText] = useState('');
 
+  // حالة البث المباشر DLNA / UPnP 4K Caster
+  const [showDlnaModal, setShowDlnaModal] = useState(false);
+  const [dlnaPlaybackState, setDlnaPlaybackState] = useState(() => ({
+    ...DEFAULT_DLNA_PLAYBACK_STATE,
+  }));
+  const [incomingCastIntent, setIncomingCastIntent] = useState(null);
+
   const isSendingRef = useRef(false);
   const hasIrHardwareRef = useRef(null);
   const searchDebounceRef = useRef(null);
@@ -739,6 +792,36 @@ function App() {
         setWifiStatus(status);
       }
     });
+
+    const unsubDlnaState = DlnaCastService.subscribeState((snap) => {
+      if (mounted && snap) {
+        setDlnaPlaybackState(snap);
+      }
+    });
+
+    const unsubDlnaIntent = DlnaCastService.subscribeIncomingIntent((payload) => {
+      if (mounted && payload && payload.url) {
+        setIncomingCastIntent(payload);
+        setShowDlnaModal(true);
+      }
+    });
+
+    DlnaCastService.getPlaybackState()
+      .then((snap) => {
+        if (mounted && snap) {
+          setDlnaPlaybackState(snap);
+        }
+      })
+      .catch(() => {});
+
+    DlnaCastService.getInitialIntent()
+      .then((payload) => {
+        if (mounted && payload && payload.url) {
+          setIncomingCastIntent(payload);
+          setShowDlnaModal(true);
+        }
+      })
+      .catch(() => {});
 
     HapticsManager.init()
       .then((cfg) => {
@@ -809,6 +892,8 @@ function App() {
         powerHintTimerRef.current = null;
       }
       HapticsManager.stopHoldFeedback();
+      unsubDlnaState();
+      unsubDlnaIntent();
       unsubscribe();
       WifiControl.abortDiscovery();
       WifiControl.disconnect();
@@ -1983,7 +2068,7 @@ function App() {
               <Text
                 style={[
                   styles.headerTitle,
-                  fallbackScreenW < 360 ? { fontSize: 17 } : null,
+                  fallbackScreenW < 380 ? { fontSize: 16 } : null,
                 ]}
               >
                 الريموت الشامل
@@ -1996,9 +2081,24 @@ function App() {
                   onPress={handleOpenSearch}
                   accessibilityLabel="بحث"
                 >
-                  <SearchIcon color="#F1F5F9" size={20} />
+                  <SearchIcon color="#F1F5F9" size={18} />
                 </TouchableOpacity>
               ) : null}
+              <TouchableOpacity
+                style={[
+                  styles.headerSearchIconBtn,
+                  dlnaPlaybackState.active && styles.headerHapticsActiveBtn,
+                ]}
+                activeOpacity={0.75}
+                onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                onPress={() => setShowDlnaModal(true)}
+                accessibilityLabel="بث الفيديو DLNA"
+              >
+                <CastIcon
+                  color={dlnaPlaybackState.active ? '#38BDF8' : '#F1F5F9'}
+                  size={17}
+                />
+              </TouchableOpacity>
               <TouchableOpacity
                 style={[
                   styles.headerSearchIconBtn,
@@ -2011,7 +2111,7 @@ function App() {
               >
                 <HapticsIcon
                   color={hapticsConfig.enabled ? '#38BDF8' : '#64748B'}
-                  size={18}
+                  size={17}
                 />
               </TouchableOpacity>
             </View>
@@ -2020,7 +2120,7 @@ function App() {
               <TouchableOpacity
                 style={[
                   styles.headerWifiBtn,
-                  { maxWidth: Math.round(fallbackScreenW * 0.36) },
+                  { maxWidth: Math.round(fallbackScreenW * 0.30) },
                 ]}
                 activeOpacity={0.75}
                 onPress={() => setShowWifiModal(true)}
@@ -2556,6 +2656,73 @@ function App() {
         </ScrollView>
       )}
 
+      {!isSearchPageOpen && dlnaPlaybackState.active ? (
+        <View style={styles.miniCastBar}>
+          <TouchableOpacity
+            style={styles.miniCastInfo}
+            activeOpacity={0.8}
+            onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+            onPress={() => setShowDlnaModal(true)}
+          >
+            <View
+              style={[
+                styles.statusDot,
+                dlnaPlaybackState.transportState === 'PLAYING'
+                  ? styles.statusDotOn
+                  : { backgroundColor: '#F59E0B' },
+              ]}
+            />
+            <View style={styles.miniCastTexts}>
+              <Text style={styles.miniCastTitle} numberOfLines={1}>
+                {dlnaPlaybackState.title || 'بث DLNA نشط'}
+              </Text>
+              <Text style={styles.miniCastSub} numberOfLines={1}>
+                {dlnaPlaybackState.deviceName} ·{' '}
+                {dlnaPlaybackState.isSeekable && dlnaPlaybackState.durationSec > 0
+                  ? `${formatSecondsHms(dlnaPlaybackState.positionSec)} / ${formatSecondsHms(dlnaPlaybackState.durationSec)}`
+                  : dlnaPlaybackState.transportState === 'PAUSED_PLAYBACK'
+                  ? 'متوقف مؤقتاً'
+                  : 'بث مباشر'}
+              </Text>
+            </View>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.miniCastActionBtn}
+            activeOpacity={0.75}
+            onPress={() => {
+              HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+              const playingNow =
+                dlnaPlaybackState.transportState === 'PLAYING' ||
+                dlnaPlaybackState.transportState === 'TRANSITIONING';
+              if (playingNow) {
+                DlnaCastService.pause();
+              } else {
+                DlnaCastService.play();
+              }
+            }}
+          >
+            <Text style={styles.miniCastActionText}>
+              {dlnaPlaybackState.transportState === 'PLAYING' ||
+              dlnaPlaybackState.transportState === 'TRANSITIONING'
+                ? 'إيقاف مؤقت'
+                : 'تشغيل'}
+            </Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.miniCastStopBtn}
+            activeOpacity={0.75}
+            onPress={() => {
+              HapticsManager.trigger(HAPTIC_PATTERNS.POWER_TV);
+              DlnaCastService.stop();
+            }}
+          >
+            <Text style={styles.miniCastStopText}>✕</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {!isSearchPageOpen ? (
         <View style={styles.tabBar}>
           <TouchableOpacity
@@ -2912,6 +3079,15 @@ function App() {
           </View>
         </View>
       </Modal>
+      <DlnaCastModal
+        visible={showDlnaModal}
+        onClose={() => setShowDlnaModal(false)}
+        defaultTvIp={tvIp}
+        playbackState={dlnaPlaybackState}
+        incomingIntent={incomingCastIntent}
+        onClearIncomingIntent={() => setIncomingCastIntent(null)}
+        onErrorBanner={(msg) => setFeedback({ text: msg, tone: 'error' })}
+      />
     </SafeAreaView>
   );
 }
@@ -2932,12 +3108,12 @@ const styles = StyleSheet.create({
   headerBrandGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 8,
   },
   headerSearchIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
@@ -3644,6 +3820,66 @@ const styles = StyleSheet.create({
     fontVariant: ['tabular-nums'],
     flexShrink: 1,
     textAlign: 'left',
+  },
+  miniCastBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#111827',
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(14,165,233,0.45)',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    gap: 8,
+  },
+  miniCastInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  miniCastTexts: {
+    flex: 1,
+    gap: 1,
+  },
+  miniCastTitle: {
+    color: '#F1F5F9',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  miniCastSub: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontVariant: ['tabular-nums'],
+    textAlign: 'right',
+  },
+  miniCastActionBtn: {
+    minHeight: 32,
+    paddingHorizontal: 10,
+    borderRadius: 9,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  miniCastActionText: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  miniCastStopBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 9,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  miniCastStopText: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    fontWeight: '700',
   },
   tabBar: {
     flexDirection: 'row',

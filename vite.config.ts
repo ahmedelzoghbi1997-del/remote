@@ -6,14 +6,17 @@ import { defineConfig, type Plugin } from 'vite';
 
 function rnJsxPlugin(): Plugin {
   const rootAppJs = path.resolve(__dirname, 'App.js');
-  const wifiServiceJs = path.resolve(__dirname, 'src/services/WifiControl.js');
+  const srcJsPrefix = path.resolve(__dirname, 'src') + path.sep;
 
   return {
     name: 'rn-jsx-loader',
     enforce: 'pre',
     async transform(code, id) {
       const cleanId = id.split('?')[0];
-      if (cleanId === rootAppJs || cleanId === wifiServiceJs) {
+      if (
+        cleanId === rootAppJs ||
+        (cleanId.startsWith(srcJsPrefix) && cleanId.endsWith('.js'))
+      ) {
         const result = await esbuildTransform(code, {
           loader: 'jsx',
           jsx: 'automatic',

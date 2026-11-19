@@ -45,6 +45,7 @@ jobs:
       - name: Inject Android Native IR Module & Permissions
         run: |
           grep -q 'TRANSMIT_IR' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.TRANSMIT_IR" \/>' universalremote/android/app/src/main/AndroidManifest.xml
+          grep -q 'android.permission.VIBRATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.VIBRATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
           grep -q 'ACCESS_NETWORK_STATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
           grep -q 'ACCESS_WIFI_STATE' universalremote/android/app/src/main/AndroidManifest.xml || sed -i '/<uses-permission android:name="android.permission.INTERNET" \/>/a \    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" \/>' universalremote/android/app/src/main/AndroidManifest.xml
           grep -q 'usesCleartextTraffic' universalremote/android/app/src/main/AndroidManifest.xml || sed -i 's/<application/<application android:usesCleartextTraffic="true"/' universalremote/android/app/src/main/AndroidManifest.xml
@@ -216,6 +217,399 @@ jobs:
           }
           EOF
           
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/HapticsModule.kt
+          package com.universalremote
+
+          import android.annotation.TargetApi
+          import android.content.Context
+          import android.media.AudioAttributes
+          import android.os.Build
+          import android.os.VibrationAttributes
+          import android.os.VibrationEffect
+          import android.os.Vibrator
+          import android.os.VibratorManager
+          import com.facebook.react.bridge.ReactApplicationContext
+          import com.facebook.react.bridge.ReactContextBaseJavaModule
+          import com.facebook.react.bridge.ReactMethod
+          import kotlin.math.roundToInt
+
+          class HapticsModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
+              private val vibrator: Vibrator? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                  (reactContext.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as? VibratorManager)?.defaultVibrator
+              } else {
+                  @Suppress("DEPRECATION")
+                  reactContext.getSystemService(Context.VIBRATOR_SERVICE) as? Vibrator
+              }
+
+              private val hasHardware: Boolean = vibrator?.hasVibrator() == true
+
+              private val hasAmplitudeControl: Boolean = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && hasHardware) {
+                  vibrator?.hasAmplitudeControl() == true
+              } else {
+                  false
+              }
+
+              private val supportsClick: Boolean
+              private val supportsTick: Boolean
+              private val supportsLowTick: Boolean
+              private val supportsThud: Boolean
+
+              private val effectCachesByTier: Map<String, Map<String, VibrationEffect>>
+              private val legacyDurations: Map<String, Long> = mapOf(
+                  "NAV_TAP" to 10L,
+                  "NAV_REPEAT" to 7L,
+                  "OK_CONFIRM" to 24L,
+                  "POWER_ALERT" to 8L,
+                  "POWER_TV" to 68L,
+                  "AC_TEMP_UP" to 12L,
+                  "AC_TEMP_DOWN" to 10L,
+                  "AC_LIMIT_HIT" to 26L,
+                  "AC_MODE_STEP" to 14L,
+                  "AC_POWER_ON" to 38L,
+                  "AC_POWER_OFF" to 34L
+              )
+
+              @Volatile
+              private var activeCache: Map<String, VibrationEffect> = emptyMap()
+
+              private val touchVibrationAttributes: Any? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                  VibrationAttributes.Builder()
+                      .setUsage(VibrationAttributes.USAGE_TOUCH)
+                      .build()
+              } else {
+                  null
+              }
+
+              @Suppress("DEPRECATION")
+              private val touchAudioAttributes: AudioAttributes? =
+                  if (Build.VERSION.SDK_INT in Build.VERSION_CODES.LOLLIPOP until Build.VERSION_CODES.TIRAMISU) {
+                      AudioAttributes.Builder()
+                          .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
+                          .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                          .build()
+                  } else {
+                      null
+                  }
+
+              init {
+                  if (hasHardware && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && vibrator != null) {
+                      val support = vibrator.arePrimitivesSupported(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          VibrationEffect.Composition.PRIMITIVE_THUD
+                      )
+                      supportsClick = support.getOrElse(0) { false }
+                      supportsTick = support.getOrElse(1) { false }
+                      supportsLowTick = support.getOrElse(2) { false }
+                      supportsThud = support.getOrElse(3) { false }
+                  } else if (hasHardware && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && vibrator != null) {
+                      val support = vibrator.arePrimitivesSupported(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          VibrationEffect.Composition.PRIMITIVE_TICK
+                      )
+                      supportsClick = support.getOrElse(0) { false }
+                      supportsTick = support.getOrElse(1) { false }
+                      supportsLowTick = false
+                      supportsThud = false
+                  } else {
+                      supportsClick = false
+                      supportsTick = false
+                      supportsLowTick = false
+                      supportsThud = false
+                  }
+
+                  effectCachesByTier = if (hasHardware && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                      mapOf(
+                          "light" to buildTierCache(0.60f),
+                          "medium" to buildTierCache(0.85f),
+                          "strong" to buildTierCache(1.00f)
+                      )
+                  } else {
+                      emptyMap()
+                  }
+                  activeCache = effectCachesByTier["medium"] ?: emptyMap()
+              }
+
+              override fun getName(): String {
+                  return "HapticsModule"
+              }
+
+              @TargetApi(Build.VERSION_CODES.O)
+              private fun scaledAmp(base: Int, scale: Float): Int {
+                  if (!hasAmplitudeControl) {
+                      return VibrationEffect.DEFAULT_AMPLITUDE
+                  }
+                  return (base * scale).roundToInt().coerceIn(1, 255)
+              }
+
+              private fun scaledFloat(base: Float, scale: Float): Float {
+                  return (base * scale).coerceIn(0.05f, 1.0f)
+              }
+
+              @TargetApi(Build.VERSION_CODES.O)
+              private fun composeSinglePrimitive(primitiveId: Int, primitiveScale: Float): VibrationEffect {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                      return VibrationEffect.startComposition()
+                          .addPrimitive(primitiveId, primitiveScale.coerceIn(0.05f, 1.0f))
+                          .compose()
+                  }
+                  return VibrationEffect.createOneShot(10L, VibrationEffect.DEFAULT_AMPLITUDE)
+              }
+
+              @TargetApi(Build.VERSION_CODES.O)
+              private fun composeDoublePrimitive(
+                  firstId: Int,
+                  firstScale: Float,
+                  gapMs: Int,
+                  secondId: Int,
+                  secondScale: Float
+              ): VibrationEffect {
+                  if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                      return VibrationEffect.startComposition()
+                          .addPrimitive(firstId, firstScale.coerceIn(0.05f, 1.0f))
+                          .addPrimitive(secondId, secondScale.coerceIn(0.05f, 1.0f), gapMs)
+                          .compose()
+                  }
+                  return VibrationEffect.createOneShot(24L, VibrationEffect.DEFAULT_AMPLITUDE)
+              }
+
+              @TargetApi(Build.VERSION_CODES.O)
+              private fun buildTierCache(scale: Float): Map<String, VibrationEffect> {
+                  val map = HashMap<String, VibrationEffect>(12)
+
+                  map["NAV_TAP"] = when {
+                      supportsClick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.55f, scale)
+                      )
+                      supportsTick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.65f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(10L, scaledAmp(195, scale))
+                  }
+
+                  map["NAV_REPEAT"] = when {
+                      supportsTick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.40f, scale)
+                      )
+                      supportsClick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.38f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(7L, scaledAmp(125, scale))
+                  }
+
+                  map["OK_CONFIRM"] = when {
+                      supportsClick && supportsThud -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.72f, scale),
+                          18,
+                          VibrationEffect.Composition.PRIMITIVE_THUD,
+                          scaledFloat(0.95f, scale)
+                      )
+                      supportsClick && supportsLowTick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.70f, scale),
+                          18,
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          scaledFloat(0.95f, scale)
+                      )
+                      hasAmplitudeControl -> VibrationEffect.createWaveform(
+                          longArrayOf(0L, 11L, 20L, 16L),
+                          intArrayOf(0, scaledAmp(150, scale), 0, scaledAmp(255, scale)),
+                          -1
+                      )
+                      supportsClick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.68f, scale),
+                          20,
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(1.00f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(24L, VibrationEffect.DEFAULT_AMPLITUDE)
+                  }
+
+                  map["POWER_ALERT"] = when {
+                      supportsTick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.42f, scale)
+                      )
+                      supportsClick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.40f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(8L, scaledAmp(120, scale))
+                  }
+
+                  map["POWER_TV"] = when {
+                      supportsLowTick && supportsThud -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          scaledFloat(0.95f, scale),
+                          32,
+                          VibrationEffect.Composition.PRIMITIVE_THUD,
+                          scaledFloat(1.00f, scale)
+                      )
+                      hasAmplitudeControl -> VibrationEffect.createWaveform(
+                          longArrayOf(0L, 32L, 34L, 48L),
+                          intArrayOf(0, scaledAmp(210, scale), 0, scaledAmp(255, scale)),
+                          -1
+                      )
+                      supportsLowTick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          scaledFloat(0.95f, scale),
+                          34,
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          scaledFloat(1.00f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(68L, VibrationEffect.DEFAULT_AMPLITUDE)
+                  }
+
+                  map["AC_TEMP_UP"] = when {
+                      supportsClick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.72f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(12L, scaledAmp(215, scale))
+                  }
+
+                  map["AC_TEMP_DOWN"] = when {
+                      supportsTick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.62f, scale)
+                      )
+                      supportsClick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.56f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(10L, scaledAmp(175, scale))
+                  }
+
+                  map["AC_LIMIT_HIT"] = when {
+                      supportsTick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.80f, scale),
+                          24,
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.80f, scale)
+                      )
+                      hasAmplitudeControl -> VibrationEffect.createWaveform(
+                          longArrayOf(0L, 11L, 24L, 11L),
+                          intArrayOf(0, scaledAmp(225, scale), 0, scaledAmp(225, scale)),
+                          -1
+                      )
+                      else -> VibrationEffect.createOneShot(26L, VibrationEffect.DEFAULT_AMPLITUDE)
+                  }
+
+                  map["AC_MODE_STEP"] = when {
+                      supportsClick -> composeSinglePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_CLICK,
+                          scaledFloat(0.78f, scale)
+                      )
+                      else -> VibrationEffect.createOneShot(14L, scaledAmp(210, scale))
+                  }
+
+                  map["AC_POWER_ON"] = when {
+                      supportsTick && supportsThud -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.55f, scale),
+                          20,
+                          VibrationEffect.Composition.PRIMITIVE_THUD,
+                          scaledFloat(0.95f, scale)
+                      )
+                      supportsTick && supportsLowTick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.55f, scale),
+                          20,
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          scaledFloat(0.95f, scale)
+                      )
+                      hasAmplitudeControl -> VibrationEffect.createWaveform(
+                          longArrayOf(0L, 14L, 22L, 28L),
+                          intArrayOf(0, scaledAmp(140, scale), 0, scaledAmp(245, scale)),
+                          -1
+                      )
+                      else -> VibrationEffect.createOneShot(38L, VibrationEffect.DEFAULT_AMPLITUDE)
+                  }
+
+                  map["AC_POWER_OFF"] = when {
+                      supportsThud && supportsTick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_THUD,
+                          scaledFloat(0.90f, scale),
+                          20,
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.48f, scale)
+                      )
+                      supportsLowTick && supportsTick -> composeDoublePrimitive(
+                          VibrationEffect.Composition.PRIMITIVE_LOW_TICK,
+                          scaledFloat(0.90f, scale),
+                          20,
+                          VibrationEffect.Composition.PRIMITIVE_TICK,
+                          scaledFloat(0.48f, scale)
+                      )
+                      hasAmplitudeControl -> VibrationEffect.createWaveform(
+                          longArrayOf(0L, 28L, 22L, 14L),
+                          intArrayOf(0, scaledAmp(245, scale), 0, scaledAmp(130, scale)),
+                          -1
+                      )
+                      else -> VibrationEffect.createOneShot(34L, VibrationEffect.DEFAULT_AMPLITUDE)
+                  }
+
+                  return map
+              }
+
+              @ReactMethod
+              fun setIntensity(level: String) {
+                  val normalized = when (level.trim().lowercase()) {
+                      "light" -> "light"
+                      "strong" -> "strong"
+                      else -> "medium"
+                  }
+                  if (effectCachesByTier.isNotEmpty()) {
+                      activeCache = effectCachesByTier[normalized] ?: effectCachesByTier["medium"] ?: emptyMap()
+                  }
+              }
+
+              @ReactMethod
+              fun trigger(patternKey: String) {
+                  val v = vibrator ?: return
+                  if (!hasHardware) return
+                  try {
+                      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                          val effect = activeCache[patternKey] ?: return
+                          if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && touchVibrationAttributes is VibrationAttributes) {
+                              v.vibrate(effect, touchVibrationAttributes)
+                          } else if (touchAudioAttributes != null) {
+                              @Suppress("DEPRECATION")
+                              v.vibrate(effect, touchAudioAttributes)
+                          } else {
+                              v.vibrate(effect)
+                          }
+                      } else {
+                          val ms = legacyDurations[patternKey] ?: return
+                          @Suppress("DEPRECATION")
+                          if (touchAudioAttributes != null) {
+                              v.vibrate(ms, touchAudioAttributes)
+                          } else {
+                              v.vibrate(ms)
+                          }
+                      }
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              @ReactMethod
+              fun cancel() {
+                  try {
+                      vibrator?.cancel()
+                  } catch (_: Throwable) {
+                  }
+              }
+          }
+          EOF
+
           cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/IrManagerPackage.kt
           package com.universalremote
 
@@ -228,7 +622,7 @@ jobs:
 
           class IrManagerPackage : ReactPackage {
               override fun createViewManagers(reactContext: ReactApplicationContext): MutableList<ViewManager<View, ReactShadowNode<*>>> = mutableListOf()
-              override fun createNativeModules(reactContext: ReactApplicationContext): MutableList<NativeModule> = listOf(IrManagerModule(reactContext)).toMutableList()
+              override fun createNativeModules(reactContext: ReactApplicationContext): MutableList<NativeModule> = listOf(IrManagerModule(reactContext), HapticsModule(reactContext)).toMutableList()
           }
           EOF
           

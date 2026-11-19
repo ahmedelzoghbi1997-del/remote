@@ -19,6 +19,7 @@ import {
   useWindowDimensions,
 } from 'react-native';
 import WifiControl from './src/services/WifiControl';
+import HapticsManager, { HAPTIC_PATTERNS } from './src/services/HapticsManager';
 import {
   encodeMideaAcPattern,
   MIDEA_MAX_TEMP,
@@ -216,6 +217,7 @@ function RepeatableButton({
   const stopRepeating = () => {
     holdingRef.current = false;
     sessionRef.current += 1;
+    HapticsManager.stopHoldFeedback();
     if (holdTimerRef.current) {
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
@@ -245,6 +247,8 @@ function RepeatableButton({
     holdingRef.current = true;
     const sessionId = sessionRef.current;
 
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+
     if (latestActiveChangeRef.current) {
       latestActiveChangeRef.current(true);
     }
@@ -263,10 +267,12 @@ function RepeatableButton({
       }
       if (latestHoldStartRef.current && latestHoldStartRef.current() === true) {
         nativeHoldActiveRef.current = true;
+        HapticsManager.startHoldFeedback(Math.max(0, 280 - initialDelayMs), 65);
         return;
       }
       while (holdingRef.current && sessionRef.current === sessionId) {
         const startedAt = Date.now();
+        HapticsManager.trigger(HAPTIC_PATTERNS.NAV_REPEAT);
         if (latestActionRef.current) {
           await Promise.resolve(
             latestActionRef.current({ isRepeat: true })
@@ -341,6 +347,50 @@ function SearchIcon({ color = '#F1F5F9', size = 20 }) {
             { translateY: handleOffset },
             { rotate: '45deg' },
           ],
+        }}
+      />
+    </View>
+  );
+}
+
+function HapticsIcon({ color = '#F1F5F9', size = 18 }) {
+  const barW = Math.max(2, Math.round(size * 0.14));
+  const barGap = Math.max(2, Math.round(size * 0.14));
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: barGap,
+      }}
+    >
+      <View
+        style={{
+          width: barW,
+          height: Math.round(size * 0.44),
+          borderRadius: barW / 2,
+          backgroundColor: color,
+          opacity: 0.72,
+        }}
+      />
+      <View
+        style={{
+          width: barW,
+          height: Math.round(size * 0.84),
+          borderRadius: barW / 2,
+          backgroundColor: color,
+        }}
+      />
+      <View
+        style={{
+          width: barW,
+          height: Math.round(size * 0.56),
+          borderRadius: barW / 2,
+          backgroundColor: color,
+          opacity: 0.85,
         }}
       />
     </View>
@@ -500,6 +550,7 @@ function DpadRingControl({
   const stopRepeating = () => {
     holdingRef.current = false;
     sessionRef.current += 1;
+    HapticsManager.stopHoldFeedback();
     if (holdTimerRef.current) {
       clearTimeout(holdTimerRef.current);
       holdTimerRef.current = null;
@@ -536,6 +587,8 @@ function DpadRingControl({
     holdingRef.current = true;
     const sessionId = sessionRef.current;
 
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+
     if (latestActiveChangeRef.current) {
       latestActiveChangeRef.current(dir);
     }
@@ -554,10 +607,12 @@ function DpadRingControl({
       }
       if (latestHoldStartRef.current && latestHoldStartRef.current(dir) === true) {
         nativeHoldDirRef.current = dir;
+        HapticsManager.startHoldFeedback(Math.max(0, 280 - initialDelayMs), 65);
         return;
       }
       while (holdingRef.current && sessionRef.current === sessionId) {
         const startedAt = Date.now();
+        HapticsManager.trigger(HAPTIC_PATTERNS.NAV_REPEAT);
         if (latestActionRef.current) {
           await Promise.resolve(
             latestActionRef.current(dir, { isRepeat: true })
@@ -662,10 +717,18 @@ function App() {
   const [draftTimerAction, setDraftTimerAction] = useState('off');
 
   const [activeDpadDir, setActiveDpadDir] = useState(null);
+  const [hapticsConfig, setHapticsConfig] = useState(() => HapticsManager.getConfig());
+  const [showHapticsModal, setShowHapticsModal] = useState(false);
+  const [isPowerHolding, setIsPowerHolding] = useState(false);
+  const [powerHintText, setPowerHintText] = useState('');
+
   const isSendingRef = useRef(false);
   const hasIrHardwareRef = useRef(null);
   const searchDebounceRef = useRef(null);
   const historySettleTimerRef = useRef(null);
+  const powerHoldTimerRef = useRef(null);
+  const powerHintTimerRef = useRef(null);
+  const powerTriggeredRef = useRef(false);
   const searchRequestIdRef = useRef(0);
 
   useEffect(() => {
@@ -676,6 +739,14 @@ function App() {
         setWifiStatus(status);
       }
     });
+
+    HapticsManager.init()
+      .then((cfg) => {
+        if (mounted && cfg) {
+          setHapticsConfig(cfg);
+        }
+      })
+      .catch(() => {});
 
     WifiControl.getSearchHistory()
       .then((historyItems) => {
@@ -729,6 +800,15 @@ function App() {
         clearTimeout(historySettleTimerRef.current);
         historySettleTimerRef.current = null;
       }
+      if (powerHoldTimerRef.current) {
+        clearTimeout(powerHoldTimerRef.current);
+        powerHoldTimerRef.current = null;
+      }
+      if (powerHintTimerRef.current) {
+        clearTimeout(powerHintTimerRef.current);
+        powerHintTimerRef.current = null;
+      }
+      HapticsManager.stopHoldFeedback();
       unsubscribe();
       WifiControl.abortDiscovery();
       WifiControl.disconnect();
@@ -765,9 +845,20 @@ function App() {
     clearErrorBanner();
   };
 
+  const cancelPowerHold = () => {
+    if (powerHoldTimerRef.current) {
+      clearTimeout(powerHoldTimerRef.current);
+      powerHoldTimerRef.current = null;
+    }
+    setIsPowerHolding(false);
+  };
+
   useEffect(() => {
     if (activeTab !== 'tv' || tvTransport !== 'wifi') {
       WifiControl.releaseActiveHold();
+    }
+    if (activeTab !== 'tv') {
+      cancelPowerHold();
     }
   }, [activeTab, tvTransport]);
 
@@ -798,6 +889,8 @@ function App() {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState !== 'active') {
         WifiControl.releaseActiveHold();
+        HapticsManager.stopHoldFeedback();
+        cancelPowerHold();
       } else if (isSearchInputOpen) {
         refreshNetworkStatus({ verifyLanReachability: true });
       }
@@ -822,6 +915,51 @@ function App() {
       return;
     }
     WifiControl.endKeyHold(commandKey);
+  };
+
+  const handlePowerPressIn = () => {
+    cancelPowerHold();
+    powerTriggeredRef.current = false;
+    if (powerHintTimerRef.current) {
+      clearTimeout(powerHintTimerRef.current);
+      powerHintTimerRef.current = null;
+    }
+    setPowerHintText('');
+    setIsPowerHolding(true);
+    HapticsManager.trigger(HAPTIC_PATTERNS.POWER_ALERT);
+
+    powerHoldTimerRef.current = setTimeout(() => {
+      powerHoldTimerRef.current = null;
+      powerTriggeredRef.current = true;
+      setIsPowerHolding(false);
+      HapticsManager.trigger(HAPTIC_PATTERNS.POWER_TV);
+      handleTvCommand('POWER');
+    }, 350);
+  };
+
+  const handlePowerPressOut = () => {
+    const releasedEarly = Boolean(powerHoldTimerRef.current) && !powerTriggeredRef.current;
+    cancelPowerHold();
+    if (releasedEarly) {
+      setPowerHintText('اضغط مطولاً');
+      if (powerHintTimerRef.current) {
+        clearTimeout(powerHintTimerRef.current);
+      }
+      powerHintTimerRef.current = setTimeout(() => {
+        powerHintTimerRef.current = null;
+        setPowerHintText('');
+      }, 1100);
+    }
+  };
+
+  const handleUpdateHaptics = async (nextPartial) => {
+    const updated = await HapticsManager.setConfig(nextPartial);
+    setHapticsConfig(updated);
+    if (updated.enabled && nextPartial.intensity) {
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+    } else if (updated.enabled && nextPartial.enabled === true) {
+      HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    }
   };
 
   const handleTvCommand = async (commandKey, options = {}) => {
@@ -1451,6 +1589,7 @@ function App() {
             { minHeight: tvMetrics.segmentBtnH },
             tvTransport === 'ir' && styles.segmentIrActive,
           ]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => setTvTransport('ir')}
         >
           <Text style={[styles.segmentText, { fontSize: tvMetrics.segmentFontSize }]}>
@@ -1463,6 +1602,7 @@ function App() {
             { minHeight: tvMetrics.segmentBtnH },
             tvTransport === 'wifi' && styles.segmentWifiActive,
           ]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => setTvTransport('wifi')}
         >
           <Text style={[styles.segmentText, { fontSize: tvMetrics.segmentFontSize }]}>
@@ -1482,15 +1622,29 @@ function App() {
 
       <View style={[styles.rowGap, { gap: tvMetrics.rowGap }]}>
         <TouchableOpacity
-          style={[styles.powerBtn, { minHeight: tvMetrics.powerBtnH }]}
-          onPress={() => handleTvCommand('POWER')}
+          style={[
+            styles.powerBtn,
+            { minHeight: tvMetrics.powerBtnH },
+            isPowerHolding && styles.powerBtnHolding,
+          ]}
+          activeOpacity={0.85}
+          onPressIn={handlePowerPressIn}
+          onPressOut={handlePowerPressOut}
+          accessibilityLabel="طاقة التلفاز (اضغط مطولاً)"
         >
-          <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
-            طاقة
+          <Text
+            style={[
+              styles.btnTextBold,
+              { fontSize: powerHintText ? Math.max(11, tvMetrics.btnBoldFontSize - 2) : tvMetrics.btnBoldFontSize },
+            ]}
+            numberOfLines={1}
+          >
+            {isPowerHolding ? 'تأكيد...' : powerHintText || 'طاقة'}
           </Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, { minHeight: tvMetrics.powerBtnH }]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => handleTvCommand('INPUT')}
         >
           <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
@@ -1499,6 +1653,7 @@ function App() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.actionBtn, { minHeight: tvMetrics.powerBtnH }]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => handleTvCommand('MUTE')}
         >
           <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
@@ -1614,7 +1769,10 @@ function App() {
             activeDpadDir === 'OK' && styles.dpadOkBtnActive,
           ]}
           activeOpacity={0.85}
-          onPressIn={() => setActiveDpadDir('OK')}
+          onPressIn={() => {
+            HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+            setActiveDpadDir('OK');
+          }}
           onPressOut={() => setActiveDpadDir(null)}
           onPress={() => handleTvCommand('OK')}
         >
@@ -1627,12 +1785,14 @@ function App() {
       <View style={[styles.rowGap, { gap: tvMetrics.rowGap }]}>
         <TouchableOpacity
           style={[styles.navBtn, { minHeight: tvMetrics.navBtnH }]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => handleTvCommand('BACK')}
         >
           <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>رجوع</Text>
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.navBtn, { minHeight: tvMetrics.navBtnH }]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => handleTvCommand('HOME')}
         >
           <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
@@ -1641,6 +1801,7 @@ function App() {
         </TouchableOpacity>
         <TouchableOpacity
           style={[styles.navBtn, { minHeight: tvMetrics.navBtnH }]}
+          onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
           onPress={() => handleTvCommand('MENU')}
         >
           <Text style={[styles.btnText, { fontSize: tvMetrics.btnFontSize }]}>
@@ -1831,19 +1992,35 @@ function App() {
                 <TouchableOpacity
                   style={styles.headerSearchIconBtn}
                   activeOpacity={0.75}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
                   onPress={handleOpenSearch}
                   accessibilityLabel="بحث"
                 >
                   <SearchIcon color="#F1F5F9" size={20} />
                 </TouchableOpacity>
               ) : null}
+              <TouchableOpacity
+                style={[
+                  styles.headerSearchIconBtn,
+                  hapticsConfig.enabled && styles.headerHapticsActiveBtn,
+                ]}
+                activeOpacity={0.75}
+                onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                onPress={() => setShowHapticsModal(true)}
+                accessibilityLabel="إعدادات الاهتزاز"
+              >
+                <HapticsIcon
+                  color={hapticsConfig.enabled ? '#38BDF8' : '#64748B'}
+                  size={18}
+                />
+              </TouchableOpacity>
             </View>
 
             {isWifiMode ? (
               <TouchableOpacity
                 style={[
                   styles.headerWifiBtn,
-                  { maxWidth: Math.round(fallbackScreenW * 0.43) },
+                  { maxWidth: Math.round(fallbackScreenW * 0.36) },
                 ]}
                 activeOpacity={0.75}
                 onPress={() => setShowWifiModal(true)}
@@ -2037,6 +2214,7 @@ function App() {
                 <TouchableOpacity
                   style={[styles.youtubeBtn, { minHeight: tvMetrics.streamingBtnH }]}
                   activeOpacity={0.8}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
                   onPress={() => handleLaunchYouTube()}
                   disabled={isLaunchingYouTube}
                 >
@@ -2052,6 +2230,7 @@ function App() {
                 <TouchableOpacity
                   style={[styles.netflixBtn, { minHeight: tvMetrics.streamingBtnH }]}
                   activeOpacity={0.8}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
                   onPress={() => handleTvCommand('NETFLIX')}
                 >
                   <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
@@ -2103,6 +2282,7 @@ function App() {
                     { minHeight: acMetrics.brandH },
                     acBrand === b.key && styles.chipBtnActive,
                   ]}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                   onPress={() => {
                     setAcBrand(b.key);
                     setAcTimerConfig(null);
@@ -2148,6 +2328,13 @@ function App() {
             <View style={[styles.acRowGap, { gap: acMetrics.rowGap }]}>
               <TouchableOpacity
                 style={[styles.tempStepBtn, { height: acMetrics.stepBtnH }]}
+                onPressIn={() => {
+                  HapticsManager.trigger(
+                    acState.temperature <= acMinTemp
+                      ? HAPTIC_PATTERNS.AC_LIMIT_HIT
+                      : HAPTIC_PATTERNS.AC_TEMP_DOWN
+                  );
+                }}
                 onPress={() => {
                   const nextTemp = Math.max(acMinTemp, acState.temperature - 1);
                   if (nextTemp !== acState.temperature) {
@@ -2168,6 +2355,11 @@ function App() {
                   { height: acMetrics.stepBtnH },
                   acState.power ? styles.acPowerOn : styles.acPowerOff,
                 ]}
+                onPressIn={() =>
+                  HapticsManager.trigger(
+                    !acState.power ? HAPTIC_PATTERNS.AC_POWER_ON : HAPTIC_PATTERNS.AC_POWER_OFF
+                  )
+                }
                 onPress={() => {
                   const nextPower = !acState.power;
                   updateAcAndTransmit({ ...acState, power: nextPower });
@@ -2180,6 +2372,13 @@ function App() {
 
               <TouchableOpacity
                 style={[styles.tempStepBtn, { height: acMetrics.stepBtnH }]}
+                onPressIn={() => {
+                  HapticsManager.trigger(
+                    acState.temperature >= acMaxTemp
+                      ? HAPTIC_PATTERNS.AC_LIMIT_HIT
+                      : HAPTIC_PATTERNS.AC_TEMP_UP
+                  );
+                }}
                 onPress={() => {
                   const nextTemp = Math.min(acMaxTemp, acState.temperature + 1);
                   if (nextTemp !== acState.temperature) {
@@ -2207,6 +2406,7 @@ function App() {
                       active &&
                         (m.key === 'heat' ? styles.modeHeatActive : styles.modeCoolActive),
                     ]}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                     onPress={() =>
                       updateAcAndTransmit({ ...acState, power: true, mode: m.key })
                     }
@@ -2220,6 +2420,7 @@ function App() {
             <View style={[styles.acRowGap, { gap: acMetrics.rowGap }]}>
               <TouchableOpacity
                 style={[styles.extraCard, { minHeight: acMetrics.extraH }]}
+                onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                 onPress={() => {
                   const idx = FAN_SPEEDS.findIndex((f) => f.key === acState.fanSpeed);
                   const nextFan = FAN_SPEEDS[(idx + 1) % FAN_SPEEDS.length];
@@ -2236,6 +2437,7 @@ function App() {
 
               <TouchableOpacity
                 style={[styles.extraCard, { minHeight: acMetrics.extraH }]}
+                onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                 onPress={() => {
                   const nextSwing = !acState.swing;
                   updateAcAndTransmit(
@@ -2260,6 +2462,7 @@ function App() {
                       { minHeight: acMetrics.featureH },
                       acState.turbo && styles.modeCoolActive,
                     ]}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                     onPress={() =>
                       updateAcAndTransmit(
                         { ...acState, power: true, turbo: !acState.turbo },
@@ -2279,6 +2482,7 @@ function App() {
                       { minHeight: acMetrics.featureH },
                       acState.led && styles.modeCoolActive,
                     ]}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                     onPress={() =>
                       updateAcAndTransmit(
                         { ...acState, led: !acState.led },
@@ -2298,6 +2502,7 @@ function App() {
                       { minHeight: acMetrics.featureH },
                       acState.clean && styles.modeCoolActive,
                     ]}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                     onPress={() =>
                       updateAcAndTransmit(
                         { ...acState, clean: !acState.clean },
@@ -2317,6 +2522,7 @@ function App() {
                       { minHeight: acMetrics.featureH },
                       acState.sleep && styles.modeCoolActive,
                     ]}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.AC_MODE_STEP)}
                     onPress={handleSleepToggle}
                   >
                     <Text style={styles.acFeatureTitle}>نوم</Text>
@@ -2332,6 +2538,7 @@ function App() {
                     { minHeight: acMetrics.timerH },
                     acTimerConfig && styles.modeCoolActive,
                   ]}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
                   onPress={handleOpenTimerModal}
                 >
                   <View style={styles.timerRow}>
@@ -2353,6 +2560,7 @@ function App() {
         <View style={styles.tabBar}>
           <TouchableOpacity
             style={[styles.tabBtn, activeTab === 'tv' && styles.tabBtnActive]}
+            onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
             onPress={() => setActiveTab('tv')}
           >
             <Text style={[styles.tabText, activeTab === 'tv' && styles.tabTextActive]}>
@@ -2361,6 +2569,7 @@ function App() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.tabBtn, activeTab === 'ac' && styles.tabBtnActive]}
+            onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
             onPress={() => setActiveTab('ac')}
           >
             <Text style={[styles.tabText, activeTab === 'ac' && styles.tabTextActive]}>
@@ -2639,6 +2848,70 @@ function App() {
           </View>
         </View>
       </Modal>
+
+      <Modal visible={showHapticsModal} transparent animationType="fade">
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>إعدادات الاهتزاز الميكانيكي (Haptics)</Text>
+            <Text style={styles.timerModalHint}>
+              نبضات مخصصة لكل زر لاستخدام الريموت في الظلام دون النظر للشاشة. زر طاقة التلفاز يتطلب ضغطة مطولة 0.35 ثانية لمنع الإطفاء العرضي.
+            </Text>
+
+            <Text style={styles.inputLabel}>حالة الاهتزاز</Text>
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={[
+                  styles.chipBtn,
+                  hapticsConfig.enabled && styles.chipBtnActive,
+                ]}
+                onPress={() => handleUpdateHaptics({ enabled: true })}
+              >
+                <Text style={styles.chipText}>مفعّل</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[
+                  styles.chipBtn,
+                  !hapticsConfig.enabled && styles.chipBtnActive,
+                ]}
+                onPress={() => handleUpdateHaptics({ enabled: false })}
+              >
+                <Text style={styles.chipText}>معطّل</Text>
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.inputLabel}>مستوى شدة الاهتزاز</Text>
+            <View style={styles.rowGap}>
+              {[
+                { key: 'light', label: 'خفيف' },
+                { key: 'medium', label: 'متوسط' },
+                { key: 'strong', label: 'قوي' },
+              ].map((tier) => (
+                <TouchableOpacity
+                  key={tier.key}
+                  style={[
+                    styles.chipBtn,
+                    hapticsConfig.intensity === tier.key && styles.chipBtnActive,
+                    !hapticsConfig.enabled && { opacity: 0.45 },
+                  ]}
+                  disabled={!hapticsConfig.enabled}
+                  onPress={() => handleUpdateHaptics({ intensity: tier.key })}
+                >
+                  <Text style={styles.chipText}>{tier.label}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <View style={styles.rowGap}>
+              <TouchableOpacity
+                style={[styles.navBtn, styles.modalSaveBtn]}
+                onPress={() => setShowHapticsModal(false)}
+              >
+                <Text style={styles.btnTextBold}>إغلاق</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -2662,14 +2935,18 @@ const styles = StyleSheet.create({
     gap: 10,
   },
   headerSearchIconBtn: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  headerHapticsActiveBtn: {
+    borderColor: 'rgba(14,165,233,0.45)',
+    backgroundColor: 'rgba(14,165,233,0.1)',
   },
   headerSearchRow: {
     flex: 1,
@@ -2873,6 +3150,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#EF4444',
     justifyContent: 'center',
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  powerBtnHolding: {
+    backgroundColor: '#DC2626',
+    borderColor: '#FCA5A5',
   },
   actionBtn: {
     flex: 1,

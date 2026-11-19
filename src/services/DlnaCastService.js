@@ -247,7 +247,7 @@ class DlnaCastService {
     );
   }
 
-  async castRemoteUrl(device, { url, title, useProxy = true, headers = {} }) {
+  async castRemoteUrl(device, { url, title, useProxy = true, pinHighestQuality = true, headers = {} }) {
     if (!device || !device.ip) {
       throw new Error('يرجى اختيار الشاشة المستهدفة أولاً.');
     }
@@ -257,6 +257,8 @@ class DlnaCastService {
     }
     await this.ensureNotificationPermission();
 
+    // ترقية روابط https:// تلقائياً إلى البروكسي المحلي لأن شاشات سامسونج ترفض HTTPS المباشر
+    const effectiveUseProxy = Boolean(useProxy) || /^https:\/\//i.test(cleanUrl);
     const cleanHeaders = {};
     Object.entries(headers || {}).forEach(([k, v]) => {
       const ck = String(k || '').trim();
@@ -273,7 +275,7 @@ class DlnaCastService {
         deviceName: device.name,
         deviceIp: device.ip,
         title: (title || '').trim() || inferMediaTitle(cleanUrl),
-        sourceMode: useProxy ? 'LOCAL_PROXY' : 'DIRECT_URL',
+        sourceMode: effectiveUseProxy ? 'LOCAL_PROXY' : 'DIRECT_URL',
         mimeType: liveHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
         positionSec: 0,
         durationSec: liveHls ? 0 : 2700,
@@ -290,7 +292,8 @@ class DlnaCastService {
       device,
       cleanUrl,
       (title || '').trim() || inferMediaTitle(cleanUrl),
-      Boolean(useProxy),
+      Boolean(effectiveUseProxy),
+      Boolean(pinHighestQuality),
       cleanHeaders
     );
   }

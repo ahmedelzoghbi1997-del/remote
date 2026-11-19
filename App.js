@@ -3086,7 +3086,9 @@ function App() {
         playbackState={dlnaPlaybackState}
         incomingIntent={incomingCastIntent}
         onClearIncomingIntent={() => setIncomingCastIntent(null)}
-        onErrorBanner={(msg) => setFeedback({ text: msg, tone: 'error' })}
+        onErrorBanner={(msg) =>
+          setFeedback(msg ? { text: msg, tone: 'error' } : { text: '', tone: 'info' })
+        }
       />
     </SafeAreaView>
   );

@@ -39,7 +39,9 @@ function SeekSlider({
 
   const displayedPos = isDragging ? dragSec : Math.min(positionSec, durationSec || positionSec);
   const progress =
-    durationSec > 0 ? Math.max(0, Math.min(1, displayedPos / durationSec)) : 0;
+    canSeek && durationSec > 0
+      ? Math.max(0, Math.min(1, displayedPos / durationSec))
+      : 0;
 
   const computeSecondsFromEvent = (event) => {
     const x = Number(event && event.nativeEvent ? event.nativeEvent.locationX : 0);
@@ -93,7 +95,7 @@ function SeekSlider({
   return (
     <View style={styles.seekWrap}>
       <View
-        style={[styles.seekTrackHitArea, !canSeek && { opacity: 0.45 }]}
+        style={[styles.seekTrackHitArea, !canSeek && { opacity: 0.65 }]}
         onLayout={(e) => {
           const w = e && e.nativeEvent && e.nativeEvent.layout ? e.nativeEvent.layout.width : 0;
           if (w > 20) setBarWidth(w);
@@ -107,11 +109,11 @@ function SeekSlider({
         onResponderRelease={handleRelease}
         onResponderTerminate={() => setIsDragging(false)}
       >
-        <View style={styles.seekTrackBg}>
+        <View style={[styles.seekTrackBg, !canSeek && styles.seekTrackBgLive]}>
           <View
             style={[
               styles.seekTrackFill,
-              { width: `${Math.round(progress * 1000) / 10}%` },
+              { width: canSeek ? `${Math.round(progress * 1000) / 10}%` : '0%' },
             ]}
           />
           {canSeek ? (
@@ -131,9 +133,12 @@ function SeekSlider({
       <View style={styles.seekTimeRow}>
         <Text style={styles.seekTimeText}>{formatSecondsHms(displayedPos)}</Text>
         {!canSeek ? (
-          <Text style={styles.liveTag}>
-            {transportState === 'TRANSITIONING' ? 'جاري التحميل...' : 'بث مباشر · التقديم غير متاح'}
-          </Text>
+          <View style={styles.liveTagRow}>
+            <View style={styles.livePulseDot} />
+            <Text style={styles.liveTag}>
+              {transportState === 'TRANSITIONING' ? 'جاري التحميل...' : 'بث مباشر'}
+            </Text>
+          </View>
         ) : (
           <Text style={styles.seekTimeText}>{formatSecondsHms(durationSec)}</Text>
         )}
@@ -258,6 +263,7 @@ export default function DlnaCastModal({
   const [remoteUrl, setRemoteUrl] = useState('');
   const [remoteTitle, setRemoteTitle] = useState('');
   const [useProxy, setUseProxy] = useState(true);
+  const [pinHighestQuality, setPinHighestQuality] = useState(true);
   const [showHeadersPanel, setShowHeadersPanel] = useState(false);
   const [headerReferer, setHeaderReferer] = useState('');
   const [headerUserAgent, setHeaderUserAgent] = useState('');
@@ -368,13 +374,15 @@ export default function DlnaCastModal({
   };
 
   const handleStartCast = async () => {
+    setCastError('');
+    if (onErrorBanner) onErrorBanner('');
+
     const targetDevice = selectedDevice || buildFallbackDevice(defaultTvIp);
     if (!targetDevice) {
       setCastError('يرجى البحث واختيار شاشة DLNA أولاً.');
       return;
     }
 
-    setCastError('');
     setIsStartingCast(true);
     try {
       if (sourceTab === 'local') {
@@ -391,6 +399,7 @@ export default function DlnaCastModal({
           url: remoteUrl,
           title: remoteTitle,
           useProxy,
+          pinHighestQuality,
           headers,
         });
       }
@@ -702,9 +711,38 @@ export default function DlnaCastModal({
                     onPress={() => setUseProxy(false)}
                   >
                     <Text style={styles.proxyChipTitle}>مباشر للشاشة (Direct)</Text>
-                    <Text style={styles.proxyChipSub}>تتسلم الشاشة الرابط مباشرة</Text>
+                    <Text style={styles.proxyChipSub}>لروابط http:// المباشرة فقط</Text>
                   </TouchableOpacity>
                 </View>
+
+                {!useProxy && /^https:\/\//i.test(remoteUrl.trim()) ? (
+                  <Text style={styles.httpsAutoHint}>
+                    ملاحظة: روابط HTTPS تُمرَّر تلقائياً عبر البروكسي المحلي لأن شاشة سامسونج ترفض HTTPS المباشر.
+                  </Text>
+                ) : null}
+
+                {useProxy || /^https:\/\//i.test(remoteUrl.trim()) ? (
+                  <TouchableOpacity
+                    style={styles.hlsPinRow}
+                    activeOpacity={0.8}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                    onPress={() => setPinHighestQuality((prev) => !prev)}
+                  >
+                    <View
+                      style={[
+                        styles.hlsPinCheck,
+                        pinHighestQuality && styles.hlsPinCheckActive,
+                      ]}
+                    >
+                      <Text style={styles.hlsPinCheckMark}>
+                        {pinHighestQuality ? '✓' : ''}
+                      </Text>
+                    </View>
+                    <Text style={styles.hlsPinText}>
+                      تثبيت أعلى جودة HLS (يمنع تقطيع الصوت عند التبديل التلقائي)
+                    </Text>
+                  </TouchableOpacity>
+                ) : null}
 
                 <TouchableOpacity
                   style={styles.headersToggleBtn}
@@ -978,6 +1016,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#1E293B',
     position: 'relative',
     justifyContent: 'center',
+    overflow: 'hidden',
+  },
+  seekTrackBgLive: {
+    borderWidth: 1,
+    borderColor: 'rgba(245,158,11,0.35)',
+    backgroundColor: 'rgba(245,158,11,0.1)',
   },
   seekTrackFill: {
     height: 6,
@@ -1009,6 +1053,17 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontVariant: ['tabular-nums'],
     fontWeight: '600',
+  },
+  liveTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  livePulseDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 4,
+    backgroundColor: '#F59E0B',
   },
   liveTag: {
     color: '#F59E0B',
@@ -1247,6 +1302,54 @@ const styles = StyleSheet.create({
     color: '#94A3B8',
     fontSize: 10,
     textAlign: 'center',
+  },
+  httpsAutoHint: {
+    color: '#38BDF8',
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: 'right',
+    backgroundColor: 'rgba(14,165,233,0.1)',
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  hlsPinRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#0B0D11',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    gap: 8,
+  },
+  hlsPinCheck: {
+    width: 20,
+    height: 20,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#334155',
+    backgroundColor: '#131720',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  hlsPinCheckActive: {
+    borderColor: '#0EA5E9',
+    backgroundColor: '#0EA5E9',
+  },
+  hlsPinCheckMark: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  hlsPinText: {
+    flex: 1,
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'right',
   },
   headersToggleBtn: {
     paddingVertical: 6,

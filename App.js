@@ -1406,7 +1406,7 @@ function App() {
 
   const tvMetrics = computeTvLayoutMetrics(
     tvAreaSize.width || fallbackScreenW,
-    tvAreaSize.height || Math.max(400, fallbackScreenH - (tvTransport === 'wifi' ? 190 : 126))
+    tvAreaSize.height || Math.max(400, fallbackScreenH - 190)
   );
   const acMetrics = computeAcLayoutMetrics(
     acAreaSize.width || fallbackScreenW,
@@ -2023,42 +2023,46 @@ function App() {
             {tvHeaderElement}
           </ScrollView>
 
-          {tvTransport === 'wifi' ? (
-            <View
-              style={[
-                styles.streamingDock,
-                {
-                  paddingHorizontal: tvMetrics.hPad,
-                  gap: tvMetrics.rowGap,
-                },
-              ]}
-            >
-              <TouchableOpacity
-                style={[styles.youtubeBtn, { minHeight: tvMetrics.streamingBtnH }]}
-                activeOpacity={0.8}
-                onPress={() => handleLaunchYouTube()}
-                disabled={isLaunchingYouTube}
-              >
-                {isLaunchingYouTube ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
-                    YouTube
-                  </Text>
-                )}
-              </TouchableOpacity>
+          <View
+            style={[
+              styles.streamingDock,
+              {
+                paddingHorizontal: tvMetrics.hPad,
+                gap: tvMetrics.rowGap,
+              },
+            ]}
+          >
+            {tvTransport === 'wifi' ? (
+              <>
+                <TouchableOpacity
+                  style={[styles.youtubeBtn, { minHeight: tvMetrics.streamingBtnH }]}
+                  activeOpacity={0.8}
+                  onPress={() => handleLaunchYouTube()}
+                  disabled={isLaunchingYouTube}
+                >
+                  {isLaunchingYouTube ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
+                      YouTube
+                    </Text>
+                  )}
+                </TouchableOpacity>
 
-              <TouchableOpacity
-                style={[styles.netflixBtn, { minHeight: tvMetrics.streamingBtnH }]}
-                activeOpacity={0.8}
-                onPress={() => handleTvCommand('NETFLIX')}
-              >
-                <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
-                  Netflix
-                </Text>
-              </TouchableOpacity>
-            </View>
-          ) : null}
+                <TouchableOpacity
+                  style={[styles.netflixBtn, { minHeight: tvMetrics.streamingBtnH }]}
+                  activeOpacity={0.8}
+                  onPress={() => handleTvCommand('NETFLIX')}
+                >
+                  <Text style={[styles.btnTextBold, { fontSize: tvMetrics.btnBoldFontSize }]}>
+                    Netflix
+                  </Text>
+                </TouchableOpacity>
+              </>
+            ) : (
+              <View style={{ height: tvMetrics.streamingBtnH, flex: 1 }} />
+            )}
+          </View>
         </>
       ) : (
         <ScrollView

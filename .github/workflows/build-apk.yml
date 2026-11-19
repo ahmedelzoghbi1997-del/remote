@@ -103,44 +103,45 @@ jobs:
               manifest = manifest.replace("</application>", f"{service_xml}    </application>", 1)
 
           if "application/vnd.apple.mpegurl" not in manifest:
-              cast_filters = """
-        <intent-filter>
-            <action android:name="android.intent.action.VIEW" />
-            <category android:name="android.intent.category.DEFAULT" />
-            <category android:name="android.intent.category.BROWSABLE" />
-            <data android:scheme="content" />
-            <data android:scheme="file" />
-            <data android:scheme="http" />
-            <data android:scheme="https" />
-            <data android:mimeType="video/*" />
-            <data android:mimeType="application/vnd.apple.mpegurl" />
-            <data android:mimeType="application/x-mpegURL" />
-            <data android:mimeType="application/dash+xml" />
-        </intent-filter>
-        <intent-filter>
-            <action android:name="android.intent.action.VIEW" />
-            <category android:name="android.intent.category.DEFAULT" />
-            <category android:name="android.intent.category.BROWSABLE" />
-            <data android:scheme="http" />
-            <data android:scheme="https" />
-            <data android:host="*" />
-            <data android:pathPattern=".*\\.mp4" />
-            <data android:pathPattern=".*\\.MP4" />
-            <data android:pathPattern=".*\\.mkv" />
-            <data android:pathPattern=".*\\.MKV" />
-            <data android:pathPattern=".*\\.ts" />
-            <data android:pathPattern=".*\\.m3u8" />
-            <data android:pathPattern=".*\\.M3U8" />
-            <data android:pathPattern=".*\\.webm" />
-            <data android:pathPattern=".*\\.mov" />
-            <data android:pathPattern=".*\\.avi" />
-        </intent-filter>
-        <intent-filter>
-            <action android:name="android.intent.action.SEND" />
-            <category android:name="android.intent.category.DEFAULT" />
-            <data android:mimeType="video/*" />
-            <data android:mimeType="text/plain" />
-        </intent-filter>"""
+              cast_filters = (
+                  '\n        <intent-filter>\n'
+                  '            <action android:name="android.intent.action.VIEW" />\n'
+                  '            <category android:name="android.intent.category.DEFAULT" />\n'
+                  '            <category android:name="android.intent.category.BROWSABLE" />\n'
+                  '            <data android:scheme="content" />\n'
+                  '            <data android:scheme="file" />\n'
+                  '            <data android:scheme="http" />\n'
+                  '            <data android:scheme="https" />\n'
+                  '            <data android:mimeType="video/*" />\n'
+                  '            <data android:mimeType="application/vnd.apple.mpegurl" />\n'
+                  '            <data android:mimeType="application/x-mpegURL" />\n'
+                  '            <data android:mimeType="application/dash+xml" />\n'
+                  '        </intent-filter>\n'
+                  '        <intent-filter>\n'
+                  '            <action android:name="android.intent.action.VIEW" />\n'
+                  '            <category android:name="android.intent.category.DEFAULT" />\n'
+                  '            <category android:name="android.intent.category.BROWSABLE" />\n'
+                  '            <data android:scheme="http" />\n'
+                  '            <data android:scheme="https" />\n'
+                  '            <data android:host="*" />\n'
+                  '            <data android:pathPattern=".*\\.mp4" />\n'
+                  '            <data android:pathPattern=".*\\.MP4" />\n'
+                  '            <data android:pathPattern=".*\\.mkv" />\n'
+                  '            <data android:pathPattern=".*\\.MKV" />\n'
+                  '            <data android:pathPattern=".*\\.ts" />\n'
+                  '            <data android:pathPattern=".*\\.m3u8" />\n'
+                  '            <data android:pathPattern=".*\\.M3U8" />\n'
+                  '            <data android:pathPattern=".*\\.webm" />\n'
+                  '            <data android:pathPattern=".*\\.mov" />\n'
+                  '            <data android:pathPattern=".*\\.avi" />\n'
+                  '        </intent-filter>\n'
+                  '        <intent-filter>\n'
+                  '            <action android:name="android.intent.action.SEND" />\n'
+                  '            <category android:name="android.intent.category.DEFAULT" />\n'
+                  '            <data android:mimeType="video/*" />\n'
+                  '            <data android:mimeType="text/plain" />\n'
+                  '        </intent-filter>'
+              )
               manifest = manifest.replace("</activity>", f"{cast_filters}\n      </activity>", 1)
 
           with open(manifest_path, "w", encoding="utf-8") as f:

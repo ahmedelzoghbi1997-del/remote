@@ -24,6 +24,9 @@ export const DEFAULT_DLNA_PLAYBACK_STATE = {
   isSeekable: true,
   volume: 18,
   muted: false,
+  hasSubtitle: false,
+  subtitleTitle: '',
+  subtitleOffsetSec: 0,
   error: '',
 };
 
@@ -143,6 +146,49 @@ class DlnaCastService {
     return DlnaNative.pickLocalVideo();
   }
 
+  async pickLocalSubtitle() {
+    if (IS_WEB) {
+      return {
+        uri: 'content://media/external/file/9021',
+        name: 'Movie_Arabic_Translation.srt',
+        sizeBytes: 64 * 1024,
+        mimeType: 'application/x-subrip',
+        simulated: true,
+      };
+    }
+    if (!DlnaNative || typeof DlnaNative.pickLocalSubtitle !== 'function') {
+      throw new Error('منتقي ملفات الترجمة غير متاح في هذا البناء.');
+    }
+    return DlnaNative.pickLocalSubtitle();
+  }
+
+  async openMediaSniffer(initialUrl = '') {
+    if (IS_WEB) {
+      await new Promise((r) => setTimeout(r, 250));
+      return {
+        video: {
+          url: 'https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8',
+          title: 'Big Buck Bunny (Captured Stream)',
+          mimeType: 'application/vnd.apple.mpegurl',
+          headers: {
+            Referer: String(initialUrl || '').trim() || 'https://streaming.example/',
+          },
+        },
+        subtitle: {
+          url: 'https://raw.githubusercontent.com/mdn/learning-area/main/html/multimedia-and-embedding/video-and-audio-content/subtitles/vtt/sintel-en.vtt',
+          title: 'ترجمة المقطع الملتقطة (.vtt)',
+          mimeType: 'text/vtt',
+          headers: {},
+        },
+      };
+    }
+    if (!DlnaNative || typeof DlnaNative.openMediaSniffer !== 'function') {
+      throw new Error('المتصفح المدمج لالتقاط الروابط غير متاح في هذا البناء.');
+    }
+    const cleanInit = String(initialUrl || '').trim();
+    return DlnaNative.openMediaSniffer(cleanInit || null);
+  }
+
   async getInitialIntent() {
     if (IS_WEB || !DlnaNative || typeof DlnaNative.getInitialIntent !== 'function') {
       return null;
@@ -209,7 +255,26 @@ class DlnaCastService {
     }
   }
 
-  async castLocalFile(device, fileInfo) {
+  _normalizeSubtitleSpec(subtitle) {
+    if (!subtitle || !subtitle.uriOrUrl) return null;
+    const cleanUri = String(subtitle.uriOrUrl).trim();
+    if (!cleanUri) return null;
+    const cleanHeaders = {};
+    Object.entries(subtitle.headers || {}).forEach(([k, v]) => {
+      const ck = String(k || '').trim();
+      const cv = String(v || '').trim();
+      if (ck && cv) cleanHeaders[ck] = cv;
+    });
+    return {
+      uriOrUrl: cleanUri,
+      isLocal: Boolean(subtitle.isLocal),
+      title: String(subtitle.title || '').trim() || inferMediaTitle(cleanUri, 'الترجمة العربية'),
+      offsetSec: Math.round(Number(subtitle.offsetSec) || 0),
+      headers: cleanHeaders,
+    };
+  }
+
+  async castLocalFile(device, fileInfo, subtitle = null) {
     if (!device || !device.ip) {
       throw new Error('يرجى اختيار الشاشة المستهدفة أولاً.');
     }
@@ -217,6 +282,7 @@ class DlnaCastService {
       throw new Error('يرجى اختيار ملف فيديو محلي أولاً.');
     }
     await this.ensureNotificationPermission();
+    const subSpec = this._normalizeSubtitleSpec(subtitle);
 
     if (IS_WEB) {
       this.webState = {
@@ -233,6 +299,9 @@ class DlnaCastService {
         isSeekable: true,
         volume: this.webState.volume || 20,
         muted: false,
+        hasSubtitle: Boolean(subSpec),
+        subtitleTitle: subSpec ? subSpec.title : '',
+        subtitleOffsetSec: subSpec ? subSpec.offsetSec : 0,
       };
       this._emitWebState();
       this._startWebTicker();
@@ -243,11 +312,15 @@ class DlnaCastService {
       device,
       fileInfo.uri,
       fileInfo.name || 'Local Video',
-      fileInfo.mimeType || 'video/mp4'
+      fileInfo.mimeType || 'video/mp4',
+      subSpec
     );
   }
 
-  async castRemoteUrl(device, { url, title, useProxy = true, pinHighestQuality = true, headers = {} }) {
+  async castRemoteUrl(
+    device,
+    { url, title, useProxy = true, pinHighestQuality = true, headers = {}, subtitle = null }
+  ) {
     if (!device || !device.ip) {
       throw new Error('يرجى اختيار الشاشة المستهدفة أولاً.');
     }
@@ -257,8 +330,10 @@ class DlnaCastService {
     }
     await this.ensureNotificationPermission();
 
-    // ترقية روابط https:// تلقائياً إلى البروكسي المحلي لأن شاشات سامسونج ترفض HTTPS المباشر
-    const effectiveUseProxy = Boolean(useProxy) || /^https:\/\//i.test(cleanUrl);
+    const subSpec = this._normalizeSubtitleSpec(subtitle);
+    // ترقية روابط https:// أو المرفق معها ترجمة تلقائياً إلى البروكسي المحلي لإرجاع ترويسة CaptionInfo.sec
+    const effectiveUseProxy =
+      Boolean(useProxy) || /^https:\/\//i.test(cleanUrl) || Boolean(subSpec);
     const cleanHeaders = {};
     Object.entries(headers || {}).forEach(([k, v]) => {
       const ck = String(k || '').trim();
@@ -267,7 +342,8 @@ class DlnaCastService {
     });
 
     if (IS_WEB) {
-      const liveHls = isHlsOrLiveUrl(cleanUrl);
+      const isHls = isHlsOrLiveUrl(cleanUrl);
+      const looksVod = isHls && /vod|x36xhzz|movie|ep|s\d/i.test(cleanUrl);
       this.webState = {
         ...DEFAULT_DLNA_PLAYBACK_STATE,
         active: true,
@@ -276,12 +352,15 @@ class DlnaCastService {
         deviceIp: device.ip,
         title: (title || '').trim() || inferMediaTitle(cleanUrl),
         sourceMode: effectiveUseProxy ? 'LOCAL_PROXY' : 'DIRECT_URL',
-        mimeType: liveHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
+        mimeType: isHls ? 'application/vnd.apple.mpegurl' : 'video/mp4',
         positionSec: 0,
-        durationSec: liveHls ? 0 : 2700,
-        isSeekable: !liveHls,
+        durationSec: isHls ? (looksVod ? 634 : 0) : 2700,
+        isSeekable: !isHls || looksVod,
         volume: this.webState.volume || 20,
         muted: false,
+        hasSubtitle: Boolean(subSpec),
+        subtitleTitle: subSpec ? subSpec.title : '',
+        subtitleOffsetSec: subSpec ? subSpec.offsetSec : 0,
       };
       this._emitWebState();
       this._startWebTicker();
@@ -294,8 +373,27 @@ class DlnaCastService {
       (title || '').trim() || inferMediaTitle(cleanUrl),
       Boolean(effectiveUseProxy),
       Boolean(pinHighestQuality),
-      cleanHeaders
+      cleanHeaders,
+      subSpec
     );
+  }
+
+  async recastWithSubtitle(subtitle = null) {
+    const subSpec = this._normalizeSubtitleSpec(subtitle);
+    if (IS_WEB) {
+      this.webState = {
+        ...this.webState,
+        hasSubtitle: Boolean(subSpec),
+        subtitleTitle: subSpec ? subSpec.title : '',
+        subtitleOffsetSec: subSpec ? subSpec.offsetSec : 0,
+      };
+      this._emitWebState();
+      return { ...this.webState };
+    }
+    if (!DlnaNative || typeof DlnaNative.recastWithSubtitle !== 'function') {
+      throw new Error('إعادة الإرسال بالترجمة غير متاحة في هذا البناء.');
+    }
+    return DlnaNative.recastWithSubtitle(subSpec);
   }
 
   async play() {

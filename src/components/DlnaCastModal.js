@@ -47,9 +47,12 @@ function SeekSlider({
     const x = Number(event && event.nativeEvent ? event.nativeEvent.locationX : 0);
     const width = Math.max(40, barWidth);
     const ratio = Math.max(0, Math.min(1, x / width));
+    const dur = Math.max(0, Number(latestDurationRef.current) || 0);
+    const maxSafeSec = dur > 2 ? dur - 2 : dur;
+    const rawSec = Math.round(ratio * dur);
     return {
       ratio,
-      seconds: Math.round(ratio * Math.max(0, latestDurationRef.current)),
+      seconds: Math.max(0, Math.min(maxSafeSec, rawSec)),
     };
   };
 
@@ -269,6 +272,11 @@ export default function DlnaCastModal({
   const [headerUserAgent, setHeaderUserAgent] = useState('');
   const [headerCookie, setHeaderCookie] = useState('');
 
+  const [selectedSubtitle, setSelectedSubtitle] = useState(null);
+  const [subtitleOffsetSec, setSubtitleOffsetSec] = useState(0);
+  const [isSniffing, setIsSniffing] = useState(false);
+  const [isRecastingSub, setIsRecastingSub] = useState(false);
+
   const [isStartingCast, setIsStartingCast] = useState(false);
   const [castError, setCastError] = useState('');
 
@@ -359,6 +367,14 @@ export default function DlnaCastModal({
     }
   }, [incomingIntent]);
 
+  const buildSubtitlePayload = () => {
+    if (!selectedSubtitle || !selectedSubtitle.uriOrUrl) return null;
+    return {
+      ...selectedSubtitle,
+      offsetSec: Math.round(Number(subtitleOffsetSec) || 0),
+    };
+  };
+
   const handlePickVideo = async () => {
     setCastError('');
     try {
@@ -373,6 +389,102 @@ export default function DlnaCastModal({
     }
   };
 
+  const handlePickSubtitle = async () => {
+    setCastError('');
+    try {
+      const picked = await DlnaCastService.pickLocalSubtitle();
+      if (picked && picked.uri) {
+        setSelectedSubtitle({
+          uriOrUrl: picked.uri,
+          isLocal: true,
+          title: picked.name || 'ترجمة محلية (.srt)',
+          headers: {},
+        });
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      }
+    } catch (err) {
+      if (err && err.code === 'PICK_CANCELLED') return;
+      setCastError(err && err.message ? err.message : 'تعذر اختيار ملف الترجمة');
+    }
+  };
+
+  const handleOpenSniffer = async () => {
+    setCastError('');
+    setIsSniffing(true);
+    try {
+      const res = await DlnaCastService.openMediaSniffer(remoteUrl);
+      if (res && res.video && res.video.url) {
+        setSourceTab('url');
+        setRemoteUrl(res.video.url);
+        if (res.video.title) {
+          setRemoteTitle(res.video.title);
+        }
+        setUseProxy(true);
+        const h = res.video.headers || {};
+        const ref = h.Referer || h.referer || '';
+        const ua = h['User-Agent'] || h['user-agent'] || '';
+        const ck = h.Cookie || h.cookie || '';
+        setHeaderReferer(ref);
+        setHeaderUserAgent(ua);
+        setHeaderCookie(ck);
+        if (ref || ua || ck) {
+          setShowHeadersPanel(true);
+        }
+        if (res.subtitle && res.subtitle.url) {
+          setSelectedSubtitle({
+            uriOrUrl: res.subtitle.url,
+            isLocal: false,
+            title: res.subtitle.title || 'ترجمة المقطع الملتقطة',
+            headers: res.subtitle.headers || {},
+          });
+        }
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      }
+    } catch (err) {
+      if (err && err.code === 'SNIFFER_CANCELLED') return;
+      setCastError(err && err.message ? err.message : 'تعذر تشغيل المتصفح المدمج لالتقاط الروابط');
+    } finally {
+      setIsSniffing(false);
+    }
+  };
+
+  const handleStepSubtitleOffset = (delta) => {
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    setSubtitleOffsetSec((prev) => Math.max(-300, Math.min(300, prev + delta)));
+  };
+
+  const handleResetSubtitleOffset = () => {
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    setSubtitleOffsetSec(0);
+  };
+
+  const handleClearSubtitle = () => {
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    setSelectedSubtitle(null);
+    setSubtitleOffsetSec(0);
+  };
+
+  const handleRecastWithSubtitle = async (forceClear = false) => {
+    setCastError('');
+    if (onErrorBanner) onErrorBanner('');
+    setIsRecastingSub(true);
+    try {
+      const subPayload = forceClear ? null : buildSubtitlePayload();
+      await DlnaCastService.recastWithSubtitle(subPayload);
+      if (forceClear) {
+        setSelectedSubtitle(null);
+        setSubtitleOffsetSec(0);
+      }
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+    } catch (err) {
+      const msg = err && err.message ? err.message : 'تعذر إعادة الإرسال مع الترجمة';
+      setCastError(msg);
+      if (onErrorBanner) onErrorBanner(msg);
+    } finally {
+      setIsRecastingSub(false);
+    }
+  };
+
   const handleStartCast = async () => {
     setCastError('');
     if (onErrorBanner) onErrorBanner('');
@@ -383,13 +495,14 @@ export default function DlnaCastModal({
       return;
     }
 
+    const subtitlePayload = buildSubtitlePayload();
     setIsStartingCast(true);
     try {
       if (sourceTab === 'local') {
         if (!pickedLocalFile || !pickedLocalFile.uri) {
           throw new Error('اختر ملف فيديو من الهاتف أولاً.');
         }
-        await DlnaCastService.castLocalFile(targetDevice, pickedLocalFile);
+        await DlnaCastService.castLocalFile(targetDevice, pickedLocalFile, subtitlePayload);
       } else {
         const headers = {};
         if (headerReferer.trim()) headers.Referer = headerReferer.trim();
@@ -401,6 +514,7 @@ export default function DlnaCastModal({
           useProxy,
           pinHighestQuality,
           headers,
+          subtitle: subtitlePayload,
         });
       }
       HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
@@ -587,14 +701,14 @@ export default function DlnaCastModal({
                   activeOpacity={0.75}
                   disabled={!playbackState.isSeekable || playbackState.durationSec <= 0}
                   onPress={() =>
-                    handleControlAction(() =>
-                      DlnaCastService.seek(
-                        Math.min(
-                          playbackState.durationSec || 99999,
-                          (playbackState.positionSec || 0) + 15
-                        )
-                      )
-                    )
+                    handleControlAction(() => {
+                      const maxSafe = Math.max(0, (playbackState.durationSec || 0) - 2);
+                      const nextTarget = Math.max(
+                        0,
+                        Math.min(maxSafe, (playbackState.positionSec || 0) + 15)
+                      );
+                      return DlnaCastService.seek(nextTarget);
+                    })
                   }
                 >
                   <Text style={styles.transportText}>+15 ث</Text>
@@ -610,6 +724,72 @@ export default function DlnaCastModal({
                   <Text style={styles.transportPrimaryText}>إيقاف</Text>
                 </TouchableOpacity>
               </View>
+
+              {(playbackState.hasSubtitle || selectedSubtitle) ? (
+                <View style={styles.playerSubtitleBar}>
+                  <View style={styles.playerSubtitleInfo}>
+                    <Text style={styles.playerSubtitleLabel} numberOfLines={1}>
+                      {playbackState.hasSubtitle
+                        ? `الترجمة النشطة: ${playbackState.subtitleTitle || 'ملف SRT'} (${playbackState.subtitleOffsetSec >= 0 ? `+${playbackState.subtitleOffsetSec}` : playbackState.subtitleOffsetSec} ث)`
+                        : `الترجمة المحددة: ${selectedSubtitle ? selectedSubtitle.title : ''}`}
+                    </Text>
+                    <View style={styles.subSyncMiniRow}>
+                      <TouchableOpacity
+                        style={styles.subSyncMiniBtn}
+                        activeOpacity={0.75}
+                        onPress={() => handleStepSubtitleOffset(-1)}
+                      >
+                        <Text style={styles.subSyncMiniText}>-1 ث</Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.subSyncMiniBtn}
+                        activeOpacity={0.75}
+                        onPress={handleResetSubtitleOffset}
+                      >
+                        <Text style={styles.subSyncMiniText}>
+                          توقيت: {subtitleOffsetSec > 0 ? `+${subtitleOffsetSec}` : subtitleOffsetSec} ث
+                        </Text>
+                      </TouchableOpacity>
+                      <TouchableOpacity
+                        style={styles.subSyncMiniBtn}
+                        activeOpacity={0.75}
+                        onPress={() => handleStepSubtitleOffset(1)}
+                      >
+                        <Text style={styles.subSyncMiniText}>+1 ث</Text>
+                      </TouchableOpacity>
+                    </View>
+                  </View>
+
+                  <View style={styles.playerSubtitleActions}>
+                    {selectedSubtitle ? (
+                      <TouchableOpacity
+                        style={[styles.recastSubBtn, isRecastingSub && { opacity: 0.65 }]}
+                        activeOpacity={0.8}
+                        disabled={isRecastingSub}
+                        onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                        onPress={() => handleRecastWithSubtitle(false)}
+                      >
+                        {isRecastingSub ? (
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                        ) : (
+                          <Text style={styles.recastSubBtnText}>إعادة إرسال مع الترجمة</Text>
+                        )}
+                      </TouchableOpacity>
+                    ) : null}
+
+                    {playbackState.hasSubtitle ? (
+                      <TouchableOpacity
+                        style={styles.clearActiveSubBtn}
+                        activeOpacity={0.8}
+                        disabled={isRecastingSub}
+                        onPress={() => handleRecastWithSubtitle(true)}
+                      >
+                        <Text style={styles.clearActiveSubText}>إزالة</Text>
+                      </TouchableOpacity>
+                    ) : null}
+                  </View>
+                </View>
+              ) : null}
 
               <VolumeBar
                 volume={playbackState.volume || 0}
@@ -675,6 +855,27 @@ export default function DlnaCastModal({
               </View>
             ) : (
               <View style={styles.sourceSection}>
+                <TouchableOpacity
+                  style={[styles.snifferLaunchBtn, isSniffing && { opacity: 0.7 }]}
+                  activeOpacity={0.82}
+                  disabled={isSniffing}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                  onPress={handleOpenSniffer}
+                >
+                  {isSniffing ? (
+                    <ActivityIndicator size="small" color="#38BDF8" />
+                  ) : (
+                    <>
+                      <Text style={styles.snifferLaunchTitle}>
+                        المتصفح المدمج لالتقاط الفيديو والترجمة (Web Sniffer)
+                      </Text>
+                      <Text style={styles.snifferLaunchSub}>
+                        تصفح الموقع وشغّل الفيديو لالتقاط رابط MP4/M3U8 والترجمة تلقائياً مع الكوكيز
+                      </Text>
+                    </>
+                  )}
+                </TouchableOpacity>
+
                 <Text style={styles.inputLabel}>رابط الفيديو أو البث (MP4 / MKV / TS / M3U8)</Text>
                 <TextInput
                   style={styles.urlInput}
@@ -715,9 +916,9 @@ export default function DlnaCastModal({
                   </TouchableOpacity>
                 </View>
 
-                {!useProxy && /^https:\/\//i.test(remoteUrl.trim()) ? (
+                {!useProxy && (/^https:\/\//i.test(remoteUrl.trim()) || selectedSubtitle) ? (
                   <Text style={styles.httpsAutoHint}>
-                    ملاحظة: روابط HTTPS تُمرَّر تلقائياً عبر البروكسي المحلي لأن شاشة سامسونج ترفض HTTPS المباشر.
+                    ملاحظة: يتم التمرير تلقائياً عبر البروكسي المحلي عند استخدام HTTPS أو إرفاق ترجمة عربية (CaptionInfo.sec).
                   </Text>
                 ) : null}
 
@@ -788,6 +989,74 @@ export default function DlnaCastModal({
               </View>
             )}
 
+            <View style={styles.subtitleCard}>
+              <View style={styles.subtitleTopRow}>
+                <Text style={styles.subtitleCardTitle}>الترجمة العربية (.SRT / .VTT)</Text>
+                <View style={styles.subtitleBtnRow}>
+                  {selectedSubtitle ? (
+                    <TouchableOpacity
+                      style={styles.clearSubChip}
+                      activeOpacity={0.75}
+                      onPress={handleClearSubtitle}
+                    >
+                      <Text style={styles.clearSubChipText}>مسح</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                  <TouchableOpacity
+                    style={styles.pickSubChip}
+                    activeOpacity={0.8}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                    onPress={handlePickSubtitle}
+                  >
+                    <Text style={styles.pickSubChipText}>
+                      {selectedSubtitle ? 'تغيير ملف الترجمة' : 'اختيار ملف ترجمة'}
+                    </Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {selectedSubtitle ? (
+                <>
+                  <Text style={styles.subtitleFileName} numberOfLines={2}>
+                    {selectedSubtitle.isLocal ? 'ملف محلي: ' : 'رابط ملتقط: '}
+                    {selectedSubtitle.title}
+                  </Text>
+                  <Text style={styles.subtitleFormatNote}>
+                    تحويل تلقائي من Windows-1256 / WebVTT إلى UTF-8 BOM متوافق مع Samsung AU7000
+                  </Text>
+                  <View style={styles.subtitleOffsetRow}>
+                    <TouchableOpacity
+                      style={styles.offsetStepBtn}
+                      activeOpacity={0.75}
+                      onPress={() => handleStepSubtitleOffset(-1)}
+                    >
+                      <Text style={styles.offsetStepText}>-1 ث</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.offsetReadoutBtn}
+                      activeOpacity={0.75}
+                      onPress={handleResetSubtitleOffset}
+                    >
+                      <Text style={styles.offsetReadoutText}>
+                        مزامنة التوقيت: {subtitleOffsetSec > 0 ? `+${subtitleOffsetSec}` : subtitleOffsetSec} ث
+                      </Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.offsetStepBtn}
+                      activeOpacity={0.75}
+                      onPress={() => handleStepSubtitleOffset(1)}
+                    >
+                      <Text style={styles.offsetStepText}>+1 ث</Text>
+                    </TouchableOpacity>
+                  </View>
+                </>
+              ) : (
+                <Text style={styles.subtitleEmptyHint}>
+                  اختياري: أضف ملف ترجمة من الهاتف أو التقطها تلقائياً من المتصفح المدمج لعرضها مع الفيديو على التلفاز.
+                </Text>
+              )}
+            </View>
+
             <TouchableOpacity
               style={[
                 styles.castSubmitBtn,
@@ -801,7 +1070,9 @@ export default function DlnaCastModal({
               {isStartingCast ? (
                 <ActivityIndicator size="small" color="#FFFFFF" />
               ) : (
-                <Text style={styles.castSubmitText}>بدء البث على التلفاز الآن</Text>
+                <Text style={styles.castSubmitText}>
+                  {selectedSubtitle ? 'بدء البث على التلفاز مع الترجمة' : 'بدء البث على التلفاز الآن'}
+                </Text>
               )}
             </TouchableOpacity>
           </View>
@@ -1379,6 +1650,207 @@ const styles = StyleSheet.create({
   castSubmitText: {
     color: '#FFFFFF',
     fontSize: 14,
+    fontWeight: '700',
+  },
+  snifferLaunchBtn: {
+    backgroundColor: 'rgba(14,165,233,0.12)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#0EA5E9',
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 3,
+    alignItems: 'center',
+  },
+  snifferLaunchTitle: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  snifferLaunchSub: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: 'center',
+  },
+  subtitleCard: {
+    backgroundColor: '#0B0D11',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 11,
+    gap: 8,
+  },
+  subtitleTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  subtitleCardTitle: {
+    color: '#F1F5F9',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'right',
+    flex: 1,
+  },
+  subtitleBtnRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  pickSubChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+  },
+  pickSubChipText: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  clearSubChip: {
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: 'rgba(239,68,68,0.14)',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  clearSubChipText: {
+    color: '#FCA5A5',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  subtitleFileName: {
+    color: '#4ADE80',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  subtitleFormatNote: {
+    color: '#94A3B8',
+    fontSize: 10,
+    textAlign: 'right',
+  },
+  subtitleEmptyHint: {
+    color: '#94A3B8',
+    fontSize: 11,
+    lineHeight: 16,
+    textAlign: 'right',
+  },
+  subtitleOffsetRow: {
+    flexDirection: 'row',
+    direction: 'ltr',
+    alignItems: 'center',
+    gap: 8,
+  },
+  offsetStepBtn: {
+    minWidth: 52,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offsetStepText: {
+    color: '#F1F5F9',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  offsetReadoutBtn: {
+    flex: 1,
+    height: 34,
+    borderRadius: 8,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  offsetReadoutText: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  playerSubtitleBar: {
+    backgroundColor: '#0B0D11',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(56,189,248,0.35)',
+    padding: 10,
+    gap: 8,
+    marginTop: 4,
+  },
+  playerSubtitleInfo: {
+    gap: 6,
+  },
+  playerSubtitleLabel: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  subSyncMiniRow: {
+    flexDirection: 'row',
+    direction: 'ltr',
+    alignItems: 'center',
+    gap: 6,
+  },
+  subSyncMiniBtn: {
+    flex: 1,
+    height: 30,
+    borderRadius: 7,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  subSyncMiniText: {
+    color: '#E2E8F0',
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  playerSubtitleActions: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+  },
+  recastSubBtn: {
+    flex: 1,
+    minHeight: 36,
+    borderRadius: 9,
+    backgroundColor: '#0EA5E9',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 10,
+  },
+  recastSubBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  clearActiveSubBtn: {
+    minHeight: 36,
+    paddingHorizontal: 12,
+    borderRadius: 9,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  clearActiveSubText: {
+    color: '#FCA5A5',
+    fontSize: 12,
     fontWeight: '700',
   },
 });

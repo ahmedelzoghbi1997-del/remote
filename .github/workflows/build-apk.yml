@@ -2068,6 +2068,7 @@ jobs:
           import android.webkit.CookieManager
           import android.webkit.JavascriptInterface
           import android.webkit.WebChromeClient
+          import android.webkit.WebResourceError
           import android.webkit.WebResourceRequest
           import android.webkit.WebResourceResponse
           import android.webkit.WebSettings
@@ -2076,10 +2077,12 @@ jobs:
           import android.widget.Button
           import android.widget.EditText
           import android.widget.FrameLayout
+          import android.widget.HorizontalScrollView
           import android.widget.LinearLayout
           import android.widget.ProgressBar
           import android.widget.ScrollView
           import android.widget.TextView
+          import android.widget.Toast
           import androidx.activity.OnBackPressedCallback
           import androidx.appcompat.app.AppCompatActivity
           import okhttp3.OkHttpClient
@@ -2133,6 +2136,15 @@ jobs:
                       """(?:^|/)(?:seg|chunk|frag|fragment)[-_]?\d+|\d+[-_]\d+\.ts(?:$|\?)|\.m4s(?:$|\?)""",
                       RegexOption.IGNORE_CASE
                   )
+
+                  private val SEARCH_ENGINE_HOST_REGEX = Regex(
+                      """^(?:[^.]+\.)*(?:google\.[a-z.]{2,}|bing\.com|duckduckgo\.com|yandex\.[a-z.]{2,})$""",
+                      RegexOption.IGNORE_CASE
+                  )
+
+                  private val WV_TOKEN_REGEX = Regex(""";\s*wv\b""", RegexOption.IGNORE_CASE)
+                  private val VERSION_TOKEN_REGEX = Regex("""\bVersion/\d+(?:\.\d+)*\s*""", RegexOption.IGNORE_CASE)
+                  private const val REDIRECT_GRACE_MS = 8_000L
               }
 
               data class SniffedMediaItem(
@@ -2147,12 +2159,16 @@ jobs:
               private lateinit var webView: WebView
               private lateinit var urlInput: EditText
               private lateinit var progressBar: ProgressBar
+              private lateinit var errorBannerText: TextView
               private lateinit var desktopBtn: TextView
+              private lateinit var redirectShieldBtn: TextView
               private lateinit var fabBadgeBtn: Button
               private lateinit var overlayPanel: FrameLayout
               private lateinit var mediaListContainer: LinearLayout
               private lateinit var selectedSubLabel: TextView
               private lateinit var emptyStateText: TextView
+
+              private var defaultCleanMobileUa: String = ""
 
               @Volatile
               private var currentPageUrl: String = ""
@@ -2165,6 +2181,12 @@ jobs:
 
               @Volatile
               private var isDesktopMode: Boolean = false
+
+              @Volatile
+              private var redirectProtectionEnabled: Boolean = true
+
+              @Volatile
+              private var redirectGraceUntilMs: Long = 0L
 
               @Volatile
               private var hasCapturedPlaylist: Boolean = false
@@ -2280,11 +2302,18 @@ jobs:
                   topBar.addView(urlInput)
                   topBar.addView(goBtn)
 
-                  // شريط أدوات التصفح
+                  // شريط أدوات التصفح (قابل للتمرير أفقياً على الشاشات الضيقة)
+                  val navScroll = HorizontalScrollView(this).apply {
+                      isHorizontalScrollBarEnabled = false
+                      setBackgroundColor(Color.parseColor("#0F131B"))
+                      layoutParams = LinearLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.WRAP_CONTENT
+                      )
+                  }
                   val navBar = LinearLayout(this).apply {
                       orientation = LinearLayout.HORIZONTAL
                       gravity = Gravity.CENTER_VERTICAL
-                      setBackgroundColor(Color.parseColor("#0F131B"))
                       setPadding(dp(8), dp(5), dp(8), dp(5))
                   }
 
@@ -2311,10 +2340,17 @@ jobs:
                       if (webView.canGoBack()) webView.goBack()
                   }
                   val reloadBtn = makeNavChip("تحديث ↻") {
+                      redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
                       webView.reload()
                   }
                   desktopBtn = makeNavChip("سطح المكتب") {
                       toggleDesktopMode()
+                  }
+                  redirectShieldBtn = makeNavChip("حماية: تشغيل") {
+                      toggleRedirectProtection()
+                  }.apply {
+                      background = roundedBg("#0F2418", "#22C55E", 8)
+                      setTextColor(Color.parseColor("#4ADE80"))
                   }
                   val clearListBtn = makeNavChip("مسح الصيد") {
                       capturedMap.clear()
@@ -2327,12 +2363,23 @@ jobs:
                   navBar.addView(backBtn)
                   navBar.addView(reloadBtn)
                   navBar.addView(desktopBtn)
+                  navBar.addView(redirectShieldBtn)
                   navBar.addView(clearListBtn)
+                  navScroll.addView(navBar)
 
                   progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
                       max = 100
                       visibility = View.GONE
                       layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(3))
+                  }
+
+                  errorBannerText = TextView(this).apply {
+                      visibility = View.GONE
+                      setBackgroundColor(Color.parseColor("#3B0D12"))
+                      setTextColor(Color.parseColor("#FCA5A5"))
+                      textSize = 11f
+                      setPadding(dp(10), dp(6), dp(10), dp(6))
+                      setOnClickListener { visibility = View.GONE }
                   }
 
                   webView = WebView(this).apply {
@@ -2346,8 +2393,9 @@ jobs:
                   configureWebView()
 
                   mainCol.addView(topBar)
-                  mainCol.addView(navBar)
+                  mainCol.addView(navScroll)
                   mainCol.addView(progressBar)
+                  mainCol.addView(errorBannerText)
                   mainCol.addView(webView)
                   root.addView(mainCol)
 
@@ -2478,6 +2526,7 @@ jobs:
                       ?.takeIf { it.startsWith("http", ignoreCase = true) }
                   val startUrl = initialUrl ?: savedUrl ?: DEFAULT_HOME_URL
                   currentPageUrl = startUrl
+                  redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
                   urlInput.setText(startUrl)
                   webView.loadUrl(startUrl)
               }
@@ -2497,6 +2546,11 @@ jobs:
                   settings.javaScriptCanOpenWindowsAutomatically = false
                   settings.setSupportMultipleWindows(true)
 
+                  // تنظيف User-Agent ليطابق Chrome Mobile القياسي (إزالة '; wv' و 'Version/X.X') لتجاوز حجب Cloudflare
+                  defaultCleanMobileUa = cleanWebViewUserAgent(settings.userAgentString.orEmpty())
+                  if (defaultCleanMobileUa.isNotBlank()) {
+                      settings.userAgentString = defaultCleanMobileUa
+                  }
                   currentUserAgent = settings.userAgentString.orEmpty()
 
                   val cm = CookieManager.getInstance()
@@ -2534,6 +2588,7 @@ jobs:
 
                   webView.webViewClient = object : WebViewClient() {
                       override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                          errorBannerText.visibility = View.GONE
                           if (!url.isNullOrBlank()) {
                               currentPageUrl = url
                               urlInput.setText(url)
@@ -2551,22 +2606,48 @@ jobs:
                           }
                       }
 
+                      override fun onReceivedError(
+                          view: WebView?,
+                          request: WebResourceRequest?,
+                          error: WebResourceError?
+                      ) {
+                          if (request == null || !request.isForMainFrame) return
+                          val errCode = error?.errorCode ?: 0
+                          val errDesc = error?.description?.toString()?.trim().orEmpty()
+                          // تجاهل الإلغاء الطبيعي عند تنقل المستخدم السريع أو حظر الإعلان
+                          if (errDesc.contains("ERR_ABORTED", ignoreCase = true)) return
+                          val failedHost = try { request.url?.host.orEmpty() } catch (_: Throwable) { "" }
+                          val msg = if (errDesc.isNotBlank()) {
+                              "تعذر فتح ${failedHost.ifBlank { "الصفحة" }}: $errDesc"
+                          } else {
+                              "فشل الاتصال بالصفحة (رمز الخطأ: $errCode)"
+                          }
+                          runOnUiThread {
+                              errorBannerText.text = "$msg  ✕"
+                              errorBannerText.visibility = View.VISIBLE
+                              Toast.makeText(this@MediaSnifferActivity, msg, Toast.LENGTH_SHORT).show()
+                          }
+                      }
+
                       override fun onPageFinished(view: WebView?, url: String?) {
                           if (!url.isNullOrBlank()) {
                               currentPageUrl = url
                               urlInput.setText(url)
                               saveLastVisitedUrl(url)
                           }
-                          // حقن فحص DOM لاستخراج وسوم <video>/<source>/<track> بأمان
+                          // حقن فحص DOM لاستخراج وسوم <video>/<source>/<track> بأمان مع استبعاد روابط blob:
                           val domHookJs = """
                               (function(){
                                 try {
                                   if (!window.AndroidSnifferBridge) return;
+                                  function isHttpUrl(u) {
+                                    return typeof u === 'string' && u.indexOf('blob:') !== 0 && /^https?:\/\//i.test(u);
+                                  }
                                   function scanMedia() {
                                     var vids = document.querySelectorAll('video, source');
                                     for (var i = 0; i < vids.length; i++) {
                                       var src = vids[i].currentSrc || vids[i].src || '';
-                                      if (src && src.indexOf('http') === 0) {
+                                      if (isHttpUrl(src)) {
                                         window.AndroidSnifferBridge.onDomMediaFound(src, 'VIDEO', '');
                                       }
                                     }
@@ -2574,7 +2655,7 @@ jobs:
                                     for (var j = 0; j < tracks.length; j++) {
                                       var tSrc = tracks[j].src || '';
                                       var tKind = (tracks[j].kind || '').toLowerCase();
-                                      if (tSrc && tSrc.indexOf('http') === 0 && (tKind === 'subtitles' || tKind === 'captions' || /\.(srt|vtt)(\?|$)/i.test(tSrc))) {
+                                      if (isHttpUrl(tSrc) && (tKind === 'subtitles' || tKind === 'captions' || /\.(srt|vtt)(\?|$)/i.test(tSrc))) {
                                         window.AndroidSnifferBridge.onDomMediaFound(tSrc, 'SUBTITLE', tracks[j].label || tracks[j].srclang || 'Subtitle');
                                       }
                                     }
@@ -2594,6 +2675,7 @@ jobs:
                           val uri = request?.url ?: return false
                           val urlStr = uri.toString()
                           val scheme = uri.scheme?.lowercase(Locale.US) ?: ""
+                          // حظر الروابط غير HTTP/HTTPS (مثل intent://, market://, tel:, whatsapp:)
                           if (scheme != "http" && scheme != "https") {
                               return true
                           }
@@ -2601,10 +2683,26 @@ jobs:
                           if (isBlockedAdHost(host)) {
                               return true
                           }
-                          // حجب التحويلات القسرية للنطاقات الخارجية على الإطار الرئيسي فقط (لتجنب تعطيل iframes المشغلة للفيديو)
-                          if (request.isForMainFrame && !request.hasGesture() && request.isRedirect) {
-                              val currentHost = try { Uri.parse(currentPageUrl).host?.lowercase(Locale.US) ?: "" } catch (_: Throwable) { "" }
-                              if (currentHost.isNotBlank() && host.isNotBlank() && !sameRootDomain(currentHost, host) && !looksLikeDirectMediaUrl(urlStr)) {
+
+                          val currentHost = try { Uri.parse(currentPageUrl).host?.lowercase(Locale.US) ?: "" } catch (_: Throwable) { "" }
+                          val fromSearchEngine = isSearchEngineHost(currentHost)
+
+                          // فتح نافذة سماح 8 ثوانٍ عند النقر أو الانتقال من محرك بحث (للسماح بتحويلات 301/302 و Cloudflare)
+                          if (request.isForMainFrame && (fromSearchEngine || isSearchEngineHost(host))) {
+                              redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
+                              return false
+                          }
+
+                          // السماح دائماً بالنقرات الحقيقية للمستخدم
+                          if (request.isForMainFrame && request.hasGesture()) {
+                              return false
+                          }
+
+                          if (request.isForMainFrame && redirectProtectionEnabled && request.isRedirect) {
+                              val withinGrace = System.currentTimeMillis() <= redirectGraceUntilMs
+                              if (!withinGrace && currentHost.isNotBlank() && host.isNotBlank() &&
+                                  !sameRootDomain(currentHost, host) && !looksLikeDirectMediaUrl(urlStr)
+                              ) {
                                   return true
                               }
                           }
@@ -2658,12 +2756,35 @@ jobs:
                   }
               }
 
+              private fun cleanWebViewUserAgent(rawUa: String): String {
+                  if (rawUa.isBlank()) return ""
+                  var cleaned = WV_TOKEN_REGEX.replace(rawUa, "")
+                  cleaned = VERSION_TOKEN_REGEX.replace(cleaned, "")
+                  cleaned = cleaned.replace("(;", "(").replace("; )", ")")
+                  return cleaned.replace(Regex("\\s{2,}"), " ").trim()
+              }
+
               private fun saveLastVisitedUrl(url: String) {
                   if (!url.startsWith("http", ignoreCase = true)) return
                   getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                       .edit()
                       .putString(KEY_LAST_URL, url)
                       .apply()
+              }
+
+              private fun toggleRedirectProtection() {
+                  redirectProtectionEnabled = !redirectProtectionEnabled
+                  if (redirectProtectionEnabled) {
+                      redirectShieldBtn.text = "حماية: تشغيل"
+                      redirectShieldBtn.background = roundedBg("#0F2418", "#22C55E", 8)
+                      redirectShieldBtn.setTextColor(Color.parseColor("#4ADE80"))
+                      Toast.makeText(this, "تم تفعيل مانع التحويلات المنبثقة", Toast.LENGTH_SHORT).show()
+                  } else {
+                      redirectShieldBtn.text = "حماية: إيقاف"
+                      redirectShieldBtn.background = roundedBg("#2A1D0D", "#F59E0B", 8)
+                      redirectShieldBtn.setTextColor(Color.parseColor("#FBBF24"))
+                      Toast.makeText(this, "تم إيقاف مانع التحويلات مؤقتاً", Toast.LENGTH_SHORT).show()
+                  }
               }
 
               private fun toggleDesktopMode() {
@@ -2674,11 +2795,12 @@ jobs:
                       desktopBtn.background = roundedBg("#0EA5E9", "#38BDF8", 8)
                       desktopBtn.setTextColor(Color.WHITE)
                   } else {
-                      settings.userAgentString = null
+                      settings.userAgentString = defaultCleanMobileUa.ifBlank { null }
                       desktopBtn.background = roundedBg("#181E2A", "#252E3E", 8)
                       desktopBtn.setTextColor(Color.parseColor("#CBD5E1"))
                   }
                   currentUserAgent = settings.userAgentString.orEmpty()
+                  redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
                   webView.reload()
               }
 
@@ -2693,7 +2815,13 @@ jobs:
                   val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as? InputMethodManager
                   imm?.hideSoftInputFromWindow(urlInput.windowToken, 0)
                   urlInput.clearFocus()
+                  redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
                   webView.loadUrl(target)
+              }
+
+              private fun isSearchEngineHost(host: String): Boolean {
+                  if (host.isBlank()) return false
+                  return SEARCH_ENGINE_HOST_REGEX.matches(host)
               }
 
               private fun isBlockedAdHost(host: String): Boolean {
@@ -2893,6 +3021,11 @@ jobs:
               }
 
               private fun addCapturedItem(item: SniffedMediaItem) {
+                  val lowerUrl = item.url.trim().lowercase(Locale.US)
+                  // استبعاد روابط blob: أو أي روابط غير قابلة للبث عبر HTTP/HTTPS
+                  if (lowerUrl.startsWith("blob:") || (!lowerUrl.startsWith("http://") && !lowerUrl.startsWith("https://"))) {
+                      return
+                  }
                   if (item.kind == "VIDEO" && item.mimeType.contains("mpegurl", ignoreCase = true)) {
                       hasCapturedPlaylist = true
                       // إزالة مقاطع .ts الفردية الملتقطة مسبقاً عند التقاط قائمة HLS

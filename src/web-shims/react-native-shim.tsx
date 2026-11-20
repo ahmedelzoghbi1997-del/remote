@@ -9,46 +9,6 @@ export const Platform = {
 
 export const NativeModules: Record<string, unknown> = {};
 
-export class NativeEventEmitter {
-  private listeners = new Map<string, Set<(payload: any) => void>>();
-  constructor(_nativeModule?: unknown) {}
-  addListener(eventName: string, listener: (payload: any) => void) {
-    if (!this.listeners.has(eventName)) {
-      this.listeners.set(eventName, new Set());
-    }
-    this.listeners.get(eventName)!.add(listener);
-    return {
-      remove: () => {
-        this.listeners.get(eventName)?.delete(listener);
-      },
-    };
-  }
-  removeAllListeners(eventName?: string) {
-    if (eventName) {
-      this.listeners.delete(eventName);
-    } else {
-      this.listeners.clear();
-    }
-  }
-}
-
-export const PermissionsAndroid = {
-  PERMISSIONS: {
-    POST_NOTIFICATIONS: 'android.permission.POST_NOTIFICATIONS',
-  },
-  RESULTS: {
-    GRANTED: 'granted',
-    DENIED: 'denied',
-    NEVER_ASK_AGAIN: 'never_ask_again',
-  },
-  async check(_permission: string) {
-    return true;
-  },
-  async request(_permission: string) {
-    return 'granted';
-  },
-};
-
 export const I18nManager = {
   isRTL: true,
   allowRTL: () => {},
@@ -225,9 +185,7 @@ export function View({
   pointerEvents,
   onLayout,
   onStartShouldSetResponder,
-  onMoveShouldSetResponder,
   onResponderGrant,
-  onResponderMove,
   onResponderRelease,
   onResponderTerminate,
   children,
@@ -236,9 +194,7 @@ export function View({
   pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
   onLayout?: (e: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   onStartShouldSetResponder?: (e: any) => boolean;
-  onMoveShouldSetResponder?: (e: any) => boolean;
   onResponderGrant?: (e: any) => void;
-  onResponderMove?: (e: any) => void;
   onResponderRelease?: (e: any) => void;
   onResponderTerminate?: (e: any) => void;
   onResponderTerminationRequest?: (e: any) => boolean;
@@ -249,11 +205,7 @@ export function View({
   latestOnLayoutRef.current = onLayout;
   const activePointerRef = React.useRef<number | null>(null);
   const hasResponder = Boolean(
-    onStartShouldSetResponder ||
-      onMoveShouldSetResponder ||
-      onResponderGrant ||
-      onResponderMove ||
-      onResponderRelease
+    onStartShouldSetResponder || onResponderGrant || onResponderRelease
   );
 
   React.useEffect(() => {
@@ -311,14 +263,6 @@ export function View({
                 // ignore
               }
               if (onResponderGrant) onResponderGrant(synth);
-            }
-          : undefined
-      }
-      onPointerMove={
-        hasResponder
-          ? (e) => {
-              if (activePointerRef.current !== e.pointerId) return;
-              if (onResponderMove) onResponderMove(buildNativeEvent(e));
             }
           : undefined
       }

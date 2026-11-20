@@ -277,10 +277,16 @@ export default function DlnaCastModal({
   const [selectedSubtitle, setSelectedSubtitle] = useState(null);
   const [subtitleOffsetSec, setSubtitleOffsetSec] = useState(0);
   const [isSniffing, setIsSniffing] = useState(false);
+  const [sharedWebpageUrl, setSharedWebpageUrl] = useState('');
   const [isRecastingSub, setIsRecastingSub] = useState(false);
 
   const [isStartingCast, setIsStartingCast] = useState(false);
   const [castError, setCastError] = useState('');
+
+  const isDirectMediaUrl = (rawUrl) => {
+    const clean = String(rawUrl || '').trim().split('?')[0].split('#')[0].toLowerCase();
+    return /\.(m3u8|m3u|mp4|mkv|ts|webm|mov|avi|m4v)$/.test(clean);
+  };
 
   const buildFallbackDevice = (ip) => {
     const cleanIp = String(ip || '').trim();
@@ -341,6 +347,7 @@ export default function DlnaCastModal({
     if (!incomingIntent) return;
     setCastError('');
     if (incomingIntent.isLocalUri) {
+      setSharedWebpageUrl('');
       setSourceTab('local');
       setPickedLocalFile({
         uri: incomingIntent.url,
@@ -349,9 +356,18 @@ export default function DlnaCastModal({
         mimeType: incomingIntent.mimeType || 'video/mp4',
       });
     } else {
+      const incomingUrl = String(incomingIntent.url || '').trim();
       setSourceTab('url');
-      setRemoteUrl(incomingIntent.url || '');
+      setRemoteUrl(incomingUrl);
       setRemoteTitle(incomingIntent.title || '');
+      const incomingAction = String(incomingIntent.action || '');
+      const isSharedWebpage =
+        /^https?:\/\//i.test(incomingUrl) &&
+        !isDirectMediaUrl(incomingUrl) &&
+        (incomingAction === 'android.intent.action.SEND' ||
+          String(incomingIntent.mimeType || '').toLowerCase() === 'text/plain');
+      setSharedWebpageUrl(isSharedWebpage ? incomingUrl : '');
+
       const h = incomingIntent.headers || {};
       const ref = h.Referer || h.referer || '';
       const org = h.Origin || h.origin || '';
@@ -420,12 +436,14 @@ export default function DlnaCastModal({
     }
   };
 
-  const handleOpenSniffer = async () => {
+  const handleOpenSniffer = async (overrideUrl) => {
+    const startUrl = typeof overrideUrl === 'string' && overrideUrl.trim() ? overrideUrl.trim() : remoteUrl;
     setCastError('');
     setIsSniffing(true);
     try {
-      const res = await DlnaCastService.openMediaSniffer(remoteUrl);
+      const res = await DlnaCastService.openMediaSniffer(startUrl);
       if (res && res.video && res.video.url) {
+        setSharedWebpageUrl('');
         setSourceTab('url');
         setRemoteUrl(res.video.url);
         if (res.video.title) {
@@ -878,12 +896,38 @@ export default function DlnaCastModal({
               </View>
             ) : (
               <View style={styles.sourceSection}>
+                {sharedWebpageUrl ? (
+                  <View style={styles.sharedWebpageBanner}>
+                    <Text style={styles.sharedWebpageTitle}>
+                      تمت مشاركة رابط صفحة موقع (ليس رابط فيديو مباشر)
+                    </Text>
+                    <Text style={styles.sharedWebpageUrl} numberOfLines={2}>
+                      {sharedWebpageUrl}
+                    </Text>
+                    <TouchableOpacity
+                      style={[styles.sharedWebpageBtn, isSniffing && { opacity: 0.7 }]}
+                      activeOpacity={0.82}
+                      disabled={isSniffing}
+                      onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM)}
+                      onPress={() => handleOpenSniffer(sharedWebpageUrl)}
+                    >
+                      {isSniffing ? (
+                        <ActivityIndicator size="small" color="#FFFFFF" />
+                      ) : (
+                        <Text style={styles.sharedWebpageBtnText}>
+                          فتح الرابط في صائد الفيديو المدمج لالتقاط البث
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+
                 <TouchableOpacity
                   style={[styles.snifferLaunchBtn, isSniffing && { opacity: 0.7 }]}
                   activeOpacity={0.82}
                   disabled={isSniffing}
                   onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
-                  onPress={handleOpenSniffer}
+                  onPress={() => handleOpenSniffer()}
                 >
                   {isSniffing ? (
                     <ActivityIndicator size="small" color="#38BDF8" />
@@ -903,7 +947,12 @@ export default function DlnaCastModal({
                 <TextInput
                   style={styles.urlInput}
                   value={remoteUrl}
-                  onChangeText={setRemoteUrl}
+                  onChangeText={(txt) => {
+                    setRemoteUrl(txt);
+                    if (isDirectMediaUrl(txt) || !txt.trim()) {
+                      setSharedWebpageUrl('');
+                    }
+                  }}
                   placeholder="https://example.com/stream.m3u8"
                   placeholderTextColor="#64748B"
                 />
@@ -1682,6 +1731,41 @@ const styles = StyleSheet.create({
     color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '700',
+  },
+  sharedWebpageBanner: {
+    backgroundColor: 'rgba(34,197,94,0.12)',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#22C55E',
+    padding: 12,
+    gap: 6,
+  },
+  sharedWebpageTitle: {
+    color: '#4ADE80',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  sharedWebpageUrl: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontFamily: 'monospace',
+    textAlign: 'left',
+  },
+  sharedWebpageBtn: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: '#16A34A',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    marginTop: 2,
+  },
+  sharedWebpageBtnText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
   },
   snifferLaunchBtn: {
     backgroundColor: 'rgba(14,165,233,0.12)',

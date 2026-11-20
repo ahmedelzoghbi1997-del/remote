@@ -126,6 +126,9 @@ jobs:
                   '            <data android:mimeType="video/*" />\n'
                   '            <data android:mimeType="application/vnd.apple.mpegurl" />\n'
                   '            <data android:mimeType="application/x-mpegURL" />\n'
+                  '            <data android:mimeType="application/x-mpegurl" />\n'
+                  '            <data android:mimeType="audio/mpegurl" />\n'
+                  '            <data android:mimeType="audio/x-mpegurl" />\n'
                   '            <data android:mimeType="application/dash+xml" />\n'
                   '        </intent-filter>\n'
                   '        <intent-filter>\n'
@@ -136,12 +139,25 @@ jobs:
                   '            <data android:scheme="https" />\n'
                   '            <data android:host="*" />\n'
                   '            <data android:pathPattern=".*\\.mp4" />\n'
+                  '            <data android:pathPattern=".*\\.mp4.*" />\n'
                   '            <data android:pathPattern=".*\\.MP4" />\n'
+                  '            <data android:pathPattern=".*\\.MP4.*" />\n'
                   '            <data android:pathPattern=".*\\.mkv" />\n'
+                  '            <data android:pathPattern=".*\\.mkv.*" />\n'
                   '            <data android:pathPattern=".*\\.MKV" />\n'
+                  '            <data android:pathPattern=".*\\.MKV.*" />\n'
                   '            <data android:pathPattern=".*\\.ts" />\n'
+                  '            <data android:pathPattern=".*\\.ts.*" />\n'
+                  '            <data android:pathPattern=".*\\.TS" />\n'
+                  '            <data android:pathPattern=".*\\.TS.*" />\n'
                   '            <data android:pathPattern=".*\\.m3u8" />\n'
+                  '            <data android:pathPattern=".*\\.m3u8.*" />\n'
                   '            <data android:pathPattern=".*\\.M3U8" />\n'
+                  '            <data android:pathPattern=".*\\.M3U8.*" />\n'
+                  '            <data android:pathPattern=".*\\.m3u" />\n'
+                  '            <data android:pathPattern=".*\\.m3u.*" />\n'
+                  '            <data android:pathPattern=".*\\.m4v" />\n'
+                  '            <data android:pathPattern=".*\\.m4v.*" />\n'
                   '            <data android:pathPattern=".*\\.webm" />\n'
                   '            <data android:pathPattern=".*\\.mov" />\n'
                   '            <data android:pathPattern=".*\\.avi" />\n'
@@ -155,8 +171,34 @@ jobs:
               )
               manifest = manifest.replace("</activity>", f"{cast_filters}\n      </activity>", 1)
 
+          import xml.etree.ElementTree as ET
+          ET.fromstring(manifest)
+
           with open(manifest_path, "w", encoding="utf-8") as f:
               f.write(manifest)
+
+          app_gradle_path = "universalremote/android/app/build.gradle"
+          if os.path.exists(app_gradle_path):
+              with open(app_gradle_path, "r", encoding="utf-8") as f:
+                  app_gradle = f.read()
+              if "cronet-embedded" not in app_gradle:
+                  app_gradle = re.sub(
+                      r"(dependencies\s*\{)",
+                      r'\1\n    implementation "org.chromium.net:cronet-embedded:119.6045.31"',
+                      app_gradle,
+                      count=1,
+                  )
+                  with open(app_gradle_path, "w", encoding="utf-8") as f:
+                      f.write(app_gradle)
+
+          proguard_path = "universalremote/android/app/proguard-rules.pro"
+          if os.path.exists(proguard_path):
+              with open(proguard_path, "r", encoding="utf-8") as f:
+                  pg = f.read()
+              if "org.chromium.net" not in pg:
+                  pg += "\n-keep class org.chromium.net.** { *; }\n-dontwarn org.chromium.net.**\n"
+                  with open(proguard_path, "w", encoding="utf-8") as f:
+                      f.write(pg)
 
           main_act_path = "universalremote/android/app/src/main/java/com/universalremote/MainActivity.kt"
           if os.path.exists(main_act_path):
@@ -773,12 +815,19 @@ jobs:
           import okhttp3.Cookie
           import okhttp3.CookieJar
           import okhttp3.HttpUrl
+          import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
           import okhttp3.OkHttpClient
           import okhttp3.Request
           import okhttp3.Response
+          import org.chromium.net.CronetEngine
+          import org.chromium.net.CronetException
+          import org.chromium.net.UrlRequest
+          import org.chromium.net.UrlResponseInfo
           import java.io.BufferedInputStream
           import java.io.BufferedOutputStream
           import java.io.BufferedReader
+          import java.io.Closeable
+          import java.io.IOException
           import java.io.InputStream
           import java.io.InputStreamReader
           import java.io.OutputStream
@@ -786,6 +835,7 @@ jobs:
           import java.net.NetworkInterface
           import java.net.ServerSocket
           import java.net.Socket
+          import java.net.SocketTimeoutException
           import java.net.URI
           import java.nio.ByteBuffer
           import java.nio.charset.Charset
@@ -794,10 +844,13 @@ jobs:
           import java.util.Collections
           import java.util.Locale
           import java.util.UUID
+          import java.util.concurrent.ArrayBlockingQueue
           import java.util.concurrent.ConcurrentHashMap
+          import java.util.concurrent.CountDownLatch
           import java.util.concurrent.ExecutorService
           import java.util.concurrent.Executors
           import java.util.concurrent.TimeUnit
+          import java.util.concurrent.atomic.AtomicBoolean
           import java.util.concurrent.atomic.AtomicInteger
           import kotlin.math.roundToInt
 
@@ -841,10 +894,14 @@ jobs:
                       "trailer",
                       "transfer-encoding",
                       "upgrade",
-                      "accept-encoding"
+                      "accept-encoding",
+                      "x-requested-with"
                   )
 
                   private const val M3U8_CACHE_TTL_MS = 9_000L
+                  private const val CRONET_MAX_REDIRECTS = 8
+                  private const val CRONET_READ_BUFFER_BYTES = 65536
+                  private const val CRONET_QUEUE_CAPACITY = 8
 
                   private val POLLUTED_AD_KEYWORDS = listOf(
                       "1xlite",
@@ -1030,7 +1087,33 @@ jobs:
                   private set
 
               @Volatile
+              var lastUpstreamEngine: String = ""
+                  private set
+
+              @Volatile
+              var lastUpstreamStage: String = ""
+                  private set
+
+              @Volatile
+              var lastUpstreamPathTail: String = ""
+                  private set
+
+              @Volatile
               private var activeM3u8FinalUrl: String = ""
+
+              private val cronetCallbackExecutor: ExecutorService = Executors.newCachedThreadPool()
+
+              private val cronetEngine: CronetEngine? by lazy {
+                  try {
+                      CronetEngine.Builder(context.applicationContext)
+                          .enableHttp2(true)
+                          .enableQuic(true)
+                          .enableBrotli(true)
+                          .build()
+                  } catch (_: Throwable) {
+                      null
+                  }
+              }
 
               private val proxyTargetMap = ConcurrentHashMap<String, String>()
               private val m3u8Cache = ConcurrentHashMap<String, CachedM3u8Entry>()
@@ -1120,6 +1203,9 @@ jobs:
                   lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
                   lastUpstreamServerHint = ""
+                  lastUpstreamEngine = ""
+                  lastUpstreamStage = ""
+                  lastUpstreamPathTail = ""
                   proxyTargetMap.clear()
                   m3u8Cache.clear()
                   m3u8FetchLocks.clear()
@@ -1154,6 +1240,9 @@ jobs:
                   lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
                   lastUpstreamServerHint = ""
+                  lastUpstreamEngine = ""
+                  lastUpstreamStage = ""
+                  lastUpstreamPathTail = ""
                   activeM3u8FinalUrl = ""
                   activeSourceType = "LOCAL"
                   activeLocalUri = uri
@@ -1190,6 +1279,9 @@ jobs:
                   lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
                   lastUpstreamServerHint = ""
+                  lastUpstreamEngine = ""
+                  lastUpstreamStage = ""
+                  lastUpstreamPathTail = ""
                   activeM3u8FinalUrl = ""
                   activeSourceType = "PROXY"
                   activeLocalUri = null
@@ -1209,13 +1301,19 @@ jobs:
                   val target = activeRemoteUrl
                   if (target.isBlank() || activeToken.isBlank()) return HlsVodMetadata()
                   return try {
-                      val masterOrMediaOutcome = fetchAndCacheM3u8(target, useProbeTimeout = true, allowCache = true)
+                      val masterOrMediaOutcome = fetchAndCacheM3u8(
+                          target,
+                          useProbeTimeout = true,
+                          allowCache = true,
+                          stageLabel = "MASTER_M3U8"
+                      )
                       val firstEntry = masterOrMediaOutcome.entry ?: return HlsVodMetadata()
                       val vodMeta = if (firstEntry.isMasterPlaylist && !firstEntry.chosenVariantTargetUrl.isNullOrBlank()) {
                           val variantOutcome = fetchAndCacheM3u8(
                               firstEntry.chosenVariantTargetUrl,
                               useProbeTimeout = true,
-                              allowCache = true
+                              allowCache = true,
+                              stageLabel = "VARIANT_M3U8"
                           )
                           variantOutcome.entry?.vodMeta ?: HlsVodMetadata()
                       } else {
@@ -1228,10 +1326,37 @@ jobs:
                   }
               }
 
+              private data class UpstreamResponse(
+                  val code: Int,
+                  val message: String,
+                  val finalUrl: String,
+                  val engineName: String,
+                  val headers: Map<String, List<String>>,
+                  val decompressedByEngine: Boolean,
+                  val bodyStream: InputStream?,
+                  private val closeAction: () -> Unit
+              ) : Closeable {
+                  fun header(name: String): String? = headers[name.lowercase(Locale.US)]?.lastOrNull()
+                  val isSuccessful: Boolean
+                      get() = code in 200..299
+                  fun readBodyText(): String = bodyStream?.bufferedReader(StandardCharsets.UTF_8)?.use { it.readText() } ?: ""
+                  override fun close() {
+                      try {
+                          bodyStream?.close()
+                      } catch (_: Throwable) {
+                      }
+                      try {
+                          closeAction()
+                      } catch (_: Throwable) {
+                      }
+                  }
+              }
+
               private fun fetchAndCacheM3u8(
                   targetUrl: String,
                   useProbeTimeout: Boolean,
-                  allowCache: Boolean = true
+                  allowCache: Boolean = true,
+                  stageLabel: String = "M3U8"
               ): M3u8FetchOutcome {
                   val cleanUrl = targetUrl.trim()
                   val tokenSnap = activeToken
@@ -1247,28 +1372,29 @@ jobs:
                           }
                       }
 
-                      val client = if (useProbeTimeout) probeHttpClient else sharedHttpClient
+                      val fallbackClient = if (useProbeTimeout) probeHttpClient else sharedHttpClient
                       val resp = executeRequestWith403SmartRetry(
-                          client = client,
+                          fallbackOkClient = fallbackClient,
                           cleanUrl = cleanUrl,
                           baseHeaders = activeHeaders,
                           isHeadMethod = false,
                           clientRange = null,
                           isSegment = false,
-                          forceIdentityEncoding = false
+                          stage = stageLabel,
+                          timeoutMs = if (useProbeTimeout) 5_000L else 15_000L
                       )
                       resp.use { r ->
-                          val finalUrl = r.request.url.toString()
-                          if (!r.isSuccessful || r.body == null) {
-                              recordUpstreamFailure(r, extractHost(finalUrl))
+                          val finalUrl = r.finalUrl
+                          if (!r.isSuccessful || r.bodyStream == null) {
+                              recordUpstreamFailure(r, stageLabel, extractHost(finalUrl))
                               return M3u8FetchOutcome(
                                   entry = null,
                                   statusCode = r.code,
                                   statusMessage = r.message.ifBlank { "HTTP ${r.code}" }
                               )
                           }
-                          val playlistText = r.body!!.string()
-                          val finalPathLower = r.request.url.encodedPath.lowercase(Locale.US)
+                          val playlistText = r.readBodyText()
+                          val finalPathLower = try { URI.create(finalUrl).path?.lowercase(Locale.US).orEmpty() } catch (_: Throwable) { "" }
                           val looksValidPlaylist = playlistText.trimStart().startsWith("#EXTM3U") ||
                               finalPathLower.endsWith(".m3u8")
                           if (!looksValidPlaylist) {
@@ -1327,16 +1453,26 @@ jobs:
                   }
               }
 
+              private fun extractPathTail(urlStr: String): String {
+                  return try {
+                      val path = URI.create(urlStr).path?.trimEnd('/').orEmpty()
+                      val seg = path.substringAfterLast('/', "")
+                      if (seg.isNotBlank()) seg.takeLast(44) else ""
+                  } catch (_: Throwable) {
+                      ""
+                  }
+              }
+
               private fun isPollutedAdReferer(urlStr: String): Boolean {
                   val host = extractHost(urlStr)
                   if (host.isBlank()) return false
                   return POLLUTED_AD_KEYWORDS.any { host.contains(it) }
               }
 
-              private fun extractServerHint(resp: Response): String {
-                  val server = resp.header("Server")?.trim().orEmpty()
+              private fun extractServerHint(resp: UpstreamResponse): String {
+                  val server = resp.header("server")?.trim().orEmpty()
                   val cfMitigated = resp.header("cf-mitigated")?.trim().orEmpty()
-                  val cfRay = resp.header("CF-RAY")?.trim().orEmpty()
+                  val cfRay = resp.header("cf-ray")?.trim().orEmpty()
                   val parts = ArrayList<String>(3)
                   if (server.isNotBlank()) parts.add(server)
                   if (cfMitigated.isNotBlank()) {
@@ -1347,18 +1483,25 @@ jobs:
                   return parts.joinToString(" • ")
               }
 
-              private fun recordUpstreamFailure(resp: Response, fallbackHost: String = "") {
-                  val finalUrl = resp.request.url.toString()
+              private fun recordUpstreamFailure(resp: UpstreamResponse, stage: String, fallbackHost: String = "") {
+                  val finalUrl = resp.finalUrl
                   lastUpstreamStatusCode = resp.code
                   lastUpstreamUrl = finalUrl
                   lastUpstreamFailedHost = extractHost(finalUrl).ifBlank { fallbackHost }
                   lastUpstreamServerHint = extractServerHint(resp)
+                  lastUpstreamEngine = resp.engineName
+                  lastUpstreamStage = stage
+                  lastUpstreamPathTail = extractPathTail(finalUrl)
               }
 
               private fun clearUpstreamFailure() {
                   lastUpstreamStatusCode = 0
+                  lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
                   lastUpstreamServerHint = ""
+                  lastUpstreamEngine = ""
+                  lastUpstreamStage = ""
+                  lastUpstreamPathTail = ""
               }
 
               private fun sameRootHost(url1: String, url2: String): Boolean {
@@ -1375,11 +1518,13 @@ jobs:
                   val out = HashMap<String, String>(rawHeaders.size)
                   var pollutedRefererHost = ""
                   for ((k, v) in rawHeaders) {
-                      if (k.equals("Referer", ignoreCase = true) && isPollutedAdReferer(v)) {
+                      val lower = k.lowercase(Locale.US)
+                      if (lower == "x-requested-with") continue
+                      if (lower == "referer" && isPollutedAdReferer(v)) {
                           pollutedRefererHost = extractHost(v)
                           continue
                       }
-                      if (k.equals("Origin", ignoreCase = true) && isPollutedAdReferer(v)) {
+                      if (lower == "origin" && isPollutedAdReferer(v)) {
                           continue
                       }
                       out[k] = v
@@ -1390,40 +1535,393 @@ jobs:
                   return out
               }
 
-              private fun buildRequestBuilderWithHeaders(
+              private fun buildUpstreamHeadersMap(
                   cleanUrl: String,
                   headers: Map<String, String>,
-                  omitCookiesAndOrigin: Boolean = false,
-                  omitRefererOriginAndCookie: Boolean = false,
-                  forceIdentityEncoding: Boolean = true
-              ): Request.Builder {
-                  val reqBuilder = Request.Builder().url(cleanUrl)
+                  omitCookies: Boolean = false,
+                  omitOrigin: Boolean = false,
+                  omitReferer: Boolean = false
+              ): LinkedHashMap<String, String> {
+                  val result = LinkedHashMap<String, String>()
                   var hasUserAgent = false
                   var hasAccept = false
                   var hasAcceptLanguage = false
+                  var hasCookie = false
+
                   for ((k, v) in headers) {
-                      val lower = k.lowercase(Locale.US)
+                      val trimmedKey = k.trim()
+                      val trimmedVal = v.trim()
+                      if (trimmedKey.isBlank() || trimmedVal.isBlank()) continue
+                      val lower = trimmedKey.lowercase(Locale.US)
                       if (lower in HOP_BY_HOP_HEADERS || lower == "range" || lower == "content-length") continue
-                      if (omitRefererOriginAndCookie && (lower == "referer" || lower == "referrer" || lower == "origin" || lower == "cookie")) continue
-                      if (omitCookiesAndOrigin && (lower == "cookie" || lower == "origin")) continue
+                      if (omitReferer && (lower == "referer" || lower == "referrer")) continue
+                      if (omitOrigin && lower == "origin") continue
+                      if (omitCookies && lower == "cookie") continue
                       if (lower == "user-agent") hasUserAgent = true
                       if (lower == "accept") hasAccept = true
                       if (lower == "accept-language") hasAcceptLanguage = true
-                      reqBuilder.header(k, v)
+                      if (lower == "cookie") hasCookie = true
+                      result[trimmedKey] = trimmedVal
                   }
+
                   if (!hasUserAgent) {
-                      reqBuilder.header("User-Agent", DEFAULT_USER_AGENT)
+                      result["User-Agent"] = DEFAULT_USER_AGENT
                   }
                   if (!hasAccept) {
-                      reqBuilder.header("Accept", "*/*")
+                      result["Accept"] = "*/*"
                   }
                   if (!hasAcceptLanguage) {
-                      reqBuilder.header("Accept-Language", "ar,en-US;q=0.9,en;q=0.8")
+                      result["Accept-Language"] = "ar,en-US;q=0.9,en;q=0.8"
+                  }
+                  if (!omitCookies && !hasCookie) {
+                      val httpUrl = cleanUrl.toHttpUrlOrNull()
+                      if (httpUrl != null) {
+                          val jarCookies = sessionCookieJar.loadForRequest(httpUrl)
+                          if (jarCookies.isNotEmpty()) {
+                              result["Cookie"] = jarCookies.joinToString("; ") { "${it.name}=${it.value}" }
+                          }
+                      }
+                  }
+                  return result
+              }
+
+              private fun buildRequestBuilderWithHeaders(
+                  cleanUrl: String,
+                  headers: Map<String, String>,
+                  omitCookies: Boolean = false,
+                  omitOrigin: Boolean = false,
+                  omitReferer: Boolean = false,
+                  forceIdentityEncoding: Boolean = false
+              ): Request.Builder {
+                  val resolvedMap = buildUpstreamHeadersMap(
+                      cleanUrl = cleanUrl,
+                      headers = headers,
+                      omitCookies = omitCookies,
+                      omitOrigin = omitOrigin,
+                      omitReferer = omitReferer
+                  )
+                  val reqBuilder = Request.Builder().url(cleanUrl)
+                  for ((k, v) in resolvedMap) {
+                      reqBuilder.header(k, v)
                   }
                   if (forceIdentityEncoding) {
                       reqBuilder.header("Accept-Encoding", "identity")
                   }
                   return reqBuilder
+              }
+
+              private class CronetQueuedInputStream(
+                  private val queue: ArrayBlockingQueue<Any>,
+                  private val closedFlag: AtomicBoolean,
+                  private val onCloseCancel: () -> Unit
+              ) : InputStream() {
+                  private var currentChunk: ByteArray? = null
+                  private var currentPos = 0
+                  private var reachedEof = false
+
+                  override fun read(): Int {
+                      val single = ByteArray(1)
+                      val n = read(single, 0, 1)
+                      return if (n <= 0) -1 else (single[0].toInt() and 0xFF)
+                  }
+
+                  override fun read(b: ByteArray, off: Int, len: Int): Int {
+                      if (len == 0) return 0
+                      if (reachedEof || closedFlag.get()) return -1
+
+                      while (currentChunk == null || currentPos >= currentChunk!!.size) {
+                          if (closedFlag.get()) return -1
+                          val item = try {
+                              queue.take()
+                          } catch (_: InterruptedException) {
+                              Thread.currentThread().interrupt()
+                              return -1
+                          }
+                          when (item) {
+                              is ByteArray -> {
+                                  if (item.isNotEmpty()) {
+                                      currentChunk = item
+                                      currentPos = 0
+                                  }
+                              }
+                              is IOException -> throw item
+                              is Throwable -> throw IOException(item.message ?: "Cronet stream error", item)
+                              else -> {
+                                  reachedEof = true
+                                  return -1
+                              }
+                          }
+                      }
+
+                      val chunk = currentChunk!!
+                      val available = chunk.size - currentPos
+                      val toCopy = minOf(len, available)
+                      System.arraycopy(chunk, currentPos, b, off, toCopy)
+                      currentPos += toCopy
+                      return toCopy
+                  }
+
+                  override fun close() {
+                      if (closedFlag.compareAndSet(false, true)) {
+                          queue.clear()
+                          queue.offer(Unit)
+                          onCloseCancel()
+                      }
+                  }
+              }
+
+              private fun saveSetCookiesFromHeaders(urlStr: String, setCookieValues: List<String>?) {
+                  if (setCookieValues.isNullOrEmpty()) return
+                  val httpUrl = urlStr.toHttpUrlOrNull() ?: return
+                  val parsed = ArrayList<Cookie>(setCookieValues.size)
+                  for (raw in setCookieValues) {
+                      val cookie = Cookie.parse(httpUrl, raw)
+                      if (cookie != null) parsed.add(cookie)
+                  }
+                  if (parsed.isNotEmpty()) {
+                      sessionCookieJar.saveFromResponse(httpUrl, parsed)
+                  }
+              }
+
+              private fun executeWithCronet(
+                  engine: CronetEngine,
+                  cleanUrl: String,
+                  headers: Map<String, String>,
+                  isHeadMethod: Boolean,
+                  clientRange: String?,
+                  omitCookies: Boolean,
+                  omitOrigin: Boolean,
+                  omitReferer: Boolean,
+                  timeoutMs: Long
+              ): UpstreamResponse {
+                  val headerMap = buildUpstreamHeadersMap(
+                      cleanUrl = cleanUrl,
+                      headers = headers,
+                      omitCookies = omitCookies,
+                      omitOrigin = omitOrigin,
+                      omitReferer = omitReferer
+                  )
+                  val headersLatch = CountDownLatch(1)
+                  val queue = ArrayBlockingQueue<Any>(CRONET_QUEUE_CAPACITY)
+                  val closedFlag = AtomicBoolean(false)
+                  val eofSentinel = Unit
+                  val directBuf = if (isHeadMethod) null else ByteBuffer.allocateDirect(CRONET_READ_BUFFER_BYTES)
+
+                  @Volatile var startedInfo: UrlResponseInfo? = null
+                  @Volatile var startError: Throwable? = null
+                  @Volatile var currentFinalUrl = cleanUrl
+                  var redirectCount = 0
+
+                  fun enqueueBlocking(item: Any): Boolean {
+                      while (!closedFlag.get()) {
+                          try {
+                              if (queue.offer(item, 200, TimeUnit.MILLISECONDS)) {
+                                  return true
+                              }
+                          } catch (_: InterruptedException) {
+                              Thread.currentThread().interrupt()
+                              return false
+                          }
+                      }
+                      return false
+                  }
+
+                  val reqBuilder = engine.newUrlRequestBuilder(
+                      cleanUrl,
+                      object : UrlRequest.Callback() {
+                          override fun onRedirectReceived(request: UrlRequest, info: UrlResponseInfo, newLocationUrl: String) {
+                              saveSetCookiesFromHeaders(currentFinalUrl, info.allHeaders["set-cookie"])
+                              redirectCount++
+                              if (redirectCount > CRONET_MAX_REDIRECTS || closedFlag.get()) {
+                                  startError = IOException("Too many redirects ($redirectCount)")
+                                  request.cancel()
+                                  headersLatch.countDown()
+                                  return
+                              }
+                              currentFinalUrl = newLocationUrl
+                              request.followRedirect()
+                          }
+
+                          override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
+                              currentFinalUrl = info.url ?: currentFinalUrl
+                              saveSetCookiesFromHeaders(currentFinalUrl, info.allHeaders["set-cookie"])
+                              startedInfo = info
+                              headersLatch.countDown()
+                              if (isHeadMethod || closedFlag.get() || directBuf == null) {
+                                  request.cancel()
+                                  return
+                              }
+                              directBuf.clear()
+                              request.read(directBuf)
+                          }
+
+                          override fun onReadCompleted(request: UrlRequest, info: UrlResponseInfo, byteBuffer: ByteBuffer) {
+                              if (closedFlag.get()) {
+                                  request.cancel()
+                                  return
+                              }
+                              byteBuffer.flip()
+                              val remaining = byteBuffer.remaining()
+                              if (remaining > 0) {
+                                  val copy = ByteArray(remaining)
+                                  byteBuffer.get(copy)
+                                  if (!enqueueBlocking(copy)) {
+                                      request.cancel()
+                                      return
+                                  }
+                              }
+                              if (closedFlag.get()) {
+                                  request.cancel()
+                                  return
+                              }
+                              byteBuffer.clear()
+                              request.read(byteBuffer)
+                          }
+
+                          override fun onSucceeded(request: UrlRequest, info: UrlResponseInfo) {
+                              enqueueBlocking(eofSentinel)
+                          }
+
+                          override fun onFailed(request: UrlRequest, info: UrlResponseInfo?, error: CronetException) {
+                              if (startedInfo == null) {
+                                  startError = error
+                                  headersLatch.countDown()
+                              } else {
+                                  enqueueBlocking(error)
+                              }
+                          }
+
+                          override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
+                              if (startedInfo == null && startError == null) {
+                                  startError = IOException("Request canceled")
+                                  headersLatch.countDown()
+                              }
+                              queue.offer(eofSentinel)
+                          }
+                      },
+                      cronetCallbackExecutor
+                  )
+
+                  reqBuilder.setHttpMethod(if (isHeadMethod) "HEAD" else "GET")
+                  // عدم إضافة Accept-Encoding يدوياً لطلبات Cronet حتى يدير Brotli/Gzip ويفك الضغط تلقائياً
+                  for ((k, v) in headerMap) {
+                      if (!k.equals("Accept-Encoding", ignoreCase = true)) {
+                          reqBuilder.addHeader(k, v)
+                      }
+                  }
+                  if (!clientRange.isNullOrBlank()) {
+                      reqBuilder.addHeader("Range", clientRange)
+                  }
+
+                  val urlRequest = reqBuilder.build()
+                  urlRequest.start()
+
+                  val waitOk = try {
+                      headersLatch.await(timeoutMs, TimeUnit.MILLISECONDS)
+                  } catch (ie: InterruptedException) {
+                      Thread.currentThread().interrupt()
+                      urlRequest.cancel()
+                      throw IOException("Interrupted waiting for Cronet headers", ie)
+                  }
+                  if (!waitOk) {
+                      closedFlag.set(true)
+                      urlRequest.cancel()
+                      throw SocketTimeoutException("Cronet timeout waiting for response headers")
+                  }
+                  startError?.let {
+                      closedFlag.set(true)
+                      urlRequest.cancel()
+                      throw it
+                  }
+                  val info = startedInfo ?: throw IOException("Cronet response info missing")
+
+                  val lowerHeaders = HashMap<String, MutableList<String>>()
+                  var rawContentEncoding = ""
+                  for ((k, list) in info.allHeaders) {
+                      val lk = k.lowercase(Locale.US)
+                      if (lk == "content-encoding") {
+                          rawContentEncoding = list.lastOrNull()?.trim().orEmpty()
+                      }
+                      lowerHeaders.getOrPut(lk) { ArrayList(list.size) }.addAll(list)
+                  }
+                  val decodedByCronet = !isHeadMethod &&
+                      rawContentEncoding.isNotBlank() &&
+                      !rawContentEncoding.equals("identity", ignoreCase = true)
+                  if (decodedByCronet) {
+                      // إزالة Content-Encoding و Content-Length المضغوط القديم بعد فك الضغط التلقائي في Cronet
+                      lowerHeaders.remove("content-encoding")
+                      lowerHeaders.remove("content-length")
+                  }
+
+                  val stream = if (isHeadMethod) {
+                      closedFlag.set(true)
+                      urlRequest.cancel()
+                      null
+                  } else {
+                      CronetQueuedInputStream(queue, closedFlag) {
+                          urlRequest.cancel()
+                      }
+                  }
+
+                  return UpstreamResponse(
+                      code = info.httpStatusCode,
+                      message = info.httpStatusText?.ifBlank { "OK" } ?: "OK",
+                      finalUrl = info.url ?: currentFinalUrl,
+                      engineName = "Cronet",
+                      headers = lowerHeaders,
+                      decompressedByEngine = decodedByCronet,
+                      bodyStream = stream,
+                      closeAction = {
+                          closedFlag.set(true)
+                          urlRequest.cancel()
+                      }
+                  )
+              }
+
+              private fun executeWithOkHttp(
+                  okClient: OkHttpClient,
+                  cleanUrl: String,
+                  headers: Map<String, String>,
+                  isHeadMethod: Boolean,
+                  clientRange: String?,
+                  omitCookies: Boolean,
+                  omitOrigin: Boolean,
+                  omitReferer: Boolean,
+                  forceIdentityEncoding: Boolean
+              ): UpstreamResponse {
+                  val targetClient = if (omitCookies) {
+                      okClient.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                  } else {
+                      okClient
+                  }
+                  val rb = buildRequestBuilderWithHeaders(
+                      cleanUrl = cleanUrl,
+                      headers = headers,
+                      omitCookies = omitCookies,
+                      omitOrigin = omitOrigin,
+                      omitReferer = omitReferer,
+                      forceIdentityEncoding = forceIdentityEncoding
+                  )
+                  if (!clientRange.isNullOrBlank()) {
+                      rb.header("Range", clientRange)
+                  }
+                  if (isHeadMethod) rb.head() else rb.get()
+                  val resp = targetClient.newCall(rb.build()).execute()
+                  val headersMap = HashMap<String, MutableList<String>>()
+                  for (i in 0 until resp.headers.size) {
+                      val lk = resp.headers.name(i).lowercase(Locale.US)
+                      headersMap.getOrPut(lk) { ArrayList(1) }.add(resp.headers.value(i))
+                  }
+                  return UpstreamResponse(
+                      code = resp.code,
+                      message = resp.message.ifBlank { "OK" },
+                      finalUrl = resp.request.url.toString(),
+                      engineName = "OkHttp",
+                      headers = headersMap,
+                      decompressedByEngine = false,
+                      bodyStream = if (isHeadMethod) null else resp.body?.byteStream(),
+                      closeAction = { resp.close() }
+                  )
               }
 
               fun prepareSubtitlePayload(subtitle: SubtitleSourceSpec?, token: String): String? {
@@ -1857,132 +2355,152 @@ jobs:
                   }
               }
 
-              private fun buildUpstreamRequestBuilder(
-                  cleanUrl: String,
-                  overrideHeaders: Map<String, String> = activeHeaders,
-                  omitCookiesAndOrigin: Boolean = false,
-                  omitRefererOriginAndCookie: Boolean = false,
-                  forceIdentityEncoding: Boolean = true
-              ): Request.Builder {
-                  return buildRequestBuilderWithHeaders(
-                      cleanUrl,
-                      overrideHeaders,
-                      omitCookiesAndOrigin,
-                      omitRefererOriginAndCookie,
-                      forceIdentityEncoding
-                  )
-              }
-
               private fun executeRequestWith403SmartRetry(
-                  client: OkHttpClient,
+                  fallbackOkClient: OkHttpClient,
                   cleanUrl: String,
                   baseHeaders: Map<String, String>,
                   isHeadMethod: Boolean,
                   clientRange: String?,
                   isSegment: Boolean,
-                  forceIdentityEncoding: Boolean = true
-              ): Response {
+                  stage: String,
+                  forceOkHttpIdentity: Boolean = false,
+                  timeoutMs: Long = 15_000L
+              ): UpstreamResponse {
+                  // فصل isCrossHostSegment: منع Cookie فقط عند اختلاف الدومين مع الإبقاء على Origin و Referer للـ CDN
                   val isCrossHostSegment = isSegment &&
                       !sameRootHost(cleanUrl, activeRemoteUrl) &&
                       !sameRootHost(cleanUrl, activeM3u8FinalUrl)
 
                   fun execOnce(
-                      httpClient: OkHttpClient,
                       hdrs: Map<String, String>,
-                      stripCookiesOrigin: Boolean,
-                      stripAllRefOriginCookie: Boolean
-                  ): Response {
-                      val rb = buildUpstreamRequestBuilder(
-                          cleanUrl,
-                          hdrs,
-                          omitCookiesAndOrigin = stripCookiesOrigin,
-                          omitRefererOriginAndCookie = stripAllRefOriginCookie,
-                          forceIdentityEncoding = forceIdentityEncoding
-                      )
-                      if (!clientRange.isNullOrBlank()) {
-                          rb.header("Range", clientRange)
+                      stripCookies: Boolean,
+                      stripOrigin: Boolean,
+                      stripReferer: Boolean
+                  ): UpstreamResponse {
+                      val engine = cronetEngine
+                      if (engine != null) {
+                          try {
+                              return executeWithCronet(
+                                  engine = engine,
+                                  cleanUrl = cleanUrl,
+                                  headers = hdrs,
+                                  isHeadMethod = isHeadMethod,
+                                  clientRange = clientRange,
+                                  omitCookies = stripCookies,
+                                  omitOrigin = stripOrigin,
+                                  omitReferer = stripReferer,
+                                  timeoutMs = timeoutMs
+                              )
+                          } catch (_: Throwable) {
+                              // ارتداد آمن إلى OkHttp فقط إذا تعذر التنفيذ عبر Cronet
+                          }
                       }
-                      if (isHeadMethod) rb.head() else rb.get()
-                      return httpClient.newCall(rb.build()).execute()
+                      return executeWithOkHttp(
+                          okClient = fallbackOkClient,
+                          cleanUrl = cleanUrl,
+                          headers = hdrs,
+                          isHeadMethod = isHeadMethod,
+                          clientRange = clientRange,
+                          omitCookies = stripCookies,
+                          omitOrigin = stripOrigin,
+                          omitReferer = stripReferer,
+                          forceIdentityEncoding = forceOkHttpIdentity
+                      )
                   }
 
-                  // المحاولة 1: الترويسات الملتقطة كما هي (بعد استبعاد أي Referer/Origin ملوث برابط إعلان)
+                  // المحاولة 1: بالترويسات الملتقطة كاملة كما هي (مع منع Cookie فقط لو المقطع على دومين مختلف)
                   val sanitizedHeaders = sanitizeBaseHeaders(baseHeaders)
-                  val firstResp = execOnce(client, sanitizedHeaders, isCrossHostSegment, stripAllRefOriginCookie = false)
+                  val firstResp = execOnce(
+                      hdrs = sanitizedHeaders,
+                      stripCookies = isCrossHostSegment,
+                      stripOrigin = false,
+                      stripReferer = false
+                  )
                   if (firstResp.code != 403 && firstResp.code != 401) {
                       if (firstResp.code >= 400) {
-                          recordUpstreamFailure(firstResp)
+                          recordUpstreamFailure(firstResp, stage)
                       } else {
                           clearUpstreamFailure()
                       }
                       return firstResp
                   }
 
-                  val firstFinalUrl = firstResp.request.url.toString()
+                  // حفظ تشخيص المحاولة الأولى الأصلية قبل تجريد الترويسات في المحاولات التالية
+                  recordUpstreamFailure(firstResp, stage)
+                  val firstFinalUrl = firstResp.finalUrl
                   val host = extractHost(firstFinalUrl).ifBlank { extractHost(cleanUrl) }
-                  try {
-                      firstResp.close()
-                  } catch (_: Throwable) {
-                  }
+                  firstResp.close()
 
-                  // المحاولة 2: تجربة Referer لنفس النطاق (https://<host>/) بدون Origin
-                  val scheme = try { URI.create(firstFinalUrl).scheme ?: "https" } catch (_: Throwable) { "https" }
-                  val retry2Headers = HashMap<String, String>(sanitizedHeaders)
-                  retry2Headers.entries.removeAll {
-                      it.key.equals("Origin", ignoreCase = true) ||
-                          it.key.equals("Referer", ignoreCase = true) ||
-                          it.key.equals("Referrer", ignoreCase = true)
-                  }
-                  if (host.isNotBlank()) {
-                      retry2Headers["Referer"] = "$scheme://$host/"
-                  }
+                  // المحاولة 2: الإبقاء على Referer الأصلي وإسقاط Cookie و Origin فقط
                   val secondResp = execOnce(
-                      client,
-                      retry2Headers,
-                      stripCookiesOrigin = isCrossHostSegment,
-                      stripAllRefOriginCookie = false
+                      hdrs = sanitizedHeaders,
+                      stripCookies = true,
+                      stripOrigin = true,
+                      stripReferer = false
                   )
                   if (secondResp.code != 403 && secondResp.code != 401) {
                       if (secondResp.code >= 400) {
-                          recordUpstreamFailure(secondResp, host)
+                          recordUpstreamFailure(secondResp, stage, host)
                       } else {
                           clearUpstreamFailure()
                       }
                       return secondResp
                   }
+                  secondResp.close()
 
-                  val secondHost = extractHost(secondResp.request.url.toString()).ifBlank { host }
-                  try {
-                      secondResp.close()
-                  } catch (_: Throwable) {
+                  // المحاولة 3: تجربة Referer لنفس دومين الفيديو (https://<host>/) بدون Origin وبدون Cookie
+                  val scheme = try { URI.create(firstFinalUrl).scheme ?: "https" } catch (_: Throwable) { "https" }
+                  val retry3Headers = HashMap<String, String>(sanitizedHeaders)
+                  retry3Headers.entries.removeAll {
+                      it.key.equals("Origin", ignoreCase = true) ||
+                          it.key.equals("Referer", ignoreCase = true) ||
+                          it.key.equals("Referrer", ignoreCase = true) ||
+                          it.key.equals("Cookie", ignoreCase = true)
                   }
-
-                  // المحاولة 3: طلب نظيف تماماً بدون Referer وبدون Origin وبدون Cookie
-                  val noCookieClient = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                  if (host.isNotBlank()) {
+                      retry3Headers["Referer"] = "$scheme://$host/"
+                  }
                   val thirdResp = execOnce(
-                      noCookieClient,
-                      sanitizedHeaders,
-                      stripCookiesOrigin = true,
-                      stripAllRefOriginCookie = true
+                      hdrs = retry3Headers,
+                      stripCookies = true,
+                      stripOrigin = true,
+                      stripReferer = false
                   )
-                  if (thirdResp.code >= 400) {
-                      recordUpstreamFailure(thirdResp, secondHost)
-                  } else {
+                  if (thirdResp.code != 403 && thirdResp.code != 401) {
+                      if (thirdResp.code >= 400) {
+                          recordUpstreamFailure(thirdResp, stage, host)
+                      } else {
+                          clearUpstreamFailure()
+                      }
+                      return thirdResp
+                  }
+                  thirdResp.close()
+
+                  // المحاولة 4: طلب نظيف تماماً بدون Referer وبدون Origin وبدون Cookie
+                  val fourthResp = execOnce(
+                      hdrs = sanitizedHeaders,
+                      stripCookies = true,
+                      stripOrigin = true,
+                      stripReferer = true
+                  )
+                  if (fourthResp.code < 400) {
                       clearUpstreamFailure()
                   }
-                  return thirdResp
+                  // عند استمرار 403/401 في المحاولة 4، نُبقي على تشخيص المحاولة الأولى الأصلية المسجّل مسبقاً
+                  return fourthResp
               }
 
-              private fun probeHeadViaGetRange(cleanUrl: String, isSegment: Boolean): Triple<Int, Map<String, String>, String?>? {
+              private fun probeHeadViaGetRange(cleanUrl: String, isSegment: Boolean, stage: String): Triple<Int, Map<String, String>, String?>? {
                   return try {
                       executeRequestWith403SmartRetry(
-                          client = sharedHttpClient,
+                          fallbackOkClient = sharedHttpClient,
                           cleanUrl = cleanUrl,
                           baseHeaders = activeHeaders,
                           isHeadMethod = false,
                           clientRange = "bytes=0-0",
                           isSegment = isSegment,
-                          forceIdentityEncoding = true
+                          stage = stage,
+                          forceOkHttpIdentity = true
                       ).use { resp ->
                           val headersMap = HashMap<String, String>()
                           resp.header("Content-Type")?.let { headersMap["Content-Type"] = it }
@@ -1997,7 +2515,7 @@ jobs:
                                   headersMap["Accept-Ranges"] = "bytes"
                               }
                           }
-                          if (totalLen == null) {
+                          if (totalLen == null && !resp.decompressedByEngine) {
                               val cl = resp.header("Content-Length")
                               if (!cl.isNullOrBlank() && resp.code == 200) {
                                   totalLen = cl
@@ -2006,7 +2524,7 @@ jobs:
                           if (totalLen != null) {
                               headersMap["Content-Length"] = totalLen
                           }
-                          Triple(resp.code, headersMap, resp.request.url.toString())
+                          Triple(resp.code, headersMap, resp.finalUrl)
                       }
                   } catch (_: Throwable) {
                       null
@@ -2026,10 +2544,21 @@ jobs:
                   val looksLikeM3u8Path = localPath.lowercase(Locale.US).endsWith(".m3u8") ||
                       cleanUrl.substringBefore('?').lowercase(Locale.US).endsWith(".m3u8")
                   val isSegment = localPath.startsWith("/p/", ignoreCase = true) && !looksLikeM3u8Path
+                  val stageLabel = when {
+                      looksLikeM3u8Path && isMainMediaPath -> "MASTER_M3U8"
+                      looksLikeM3u8Path -> "VARIANT_M3U8"
+                      isSegment -> "SEGMENT"
+                      else -> "MEDIA_FILE"
+                  }
 
                   // عدم إرسال HEAD خارجياً أبداً لملفات .m3u8: طلب GET واحد + تخزين مؤقت 9 ثوانٍ
                   if (looksLikeM3u8Path) {
-                      val outcome = fetchAndCacheM3u8(cleanUrl, useProbeTimeout = false, allowCache = true)
+                      val outcome = fetchAndCacheM3u8(
+                          cleanUrl,
+                          useProbeTimeout = false,
+                          allowCache = true,
+                          stageLabel = stageLabel
+                      )
                       val entry = outcome.entry
                       if (entry != null) {
                           val bytes = entry.rewrittenBytes
@@ -2061,25 +2590,32 @@ jobs:
 
                   if (isHead) {
                       executeRequestWith403SmartRetry(
-                          client = sharedHttpClient,
+                          fallbackOkClient = sharedHttpClient,
                           cleanUrl = cleanUrl,
                           baseHeaders = activeHeaders,
                           isHeadMethod = true,
                           clientRange = clientRange,
-                          isSegment = isSegment
+                          isSegment = isSegment,
+                          stage = stageLabel,
+                          forceOkHttpIdentity = true
                       ).use { resp ->
-                          val finalUrl = resp.request.url.toString()
+                          val finalUrl = resp.finalUrl
                           var statusCode = resp.code
                           var statusReason = resp.message.ifBlank { "OK" }
                           var contentType = resp.header("Content-Type") ?: guessMimeFromUrl(finalUrl, activeMimeType)
-                          var respLen = resp.header("Content-Length")
+                          var respLen = if (resp.decompressedByEngine) null else resp.header("Content-Length")
                           var respRange = resp.header("Content-Range")
                           var acceptRanges = resp.header("Accept-Ranges")
                           val isHlsHead = contentType.lowercase(Locale.US).contains("mpegurl") ||
                               contentType.lowercase(Locale.US).contains("m3u")
 
                           if (isHlsHead && resp.isSuccessful) {
-                              val outcome = fetchAndCacheM3u8(finalUrl, useProbeTimeout = false, allowCache = true)
+                              val outcome = fetchAndCacheM3u8(
+                                  finalUrl,
+                                  useProbeTimeout = false,
+                                  allowCache = true,
+                                  stageLabel = stageLabel
+                              )
                               val entry = outcome.entry
                               if (entry != null) {
                                   val hlsOp = if (activeIsHlsVod) "10" else "00"
@@ -2103,7 +2639,7 @@ jobs:
                           }
 
                           if ((!resp.isSuccessful || respLen.isNullOrBlank()) && !isHlsHead) {
-                              val probed = probeHeadViaGetRange(cleanUrl, isSegment)
+                              val probed = probeHeadViaGetRange(cleanUrl, isSegment, stageLabel)
                               if (probed != null && (probed.first in 200..299)) {
                                   val pm = probed.second
                                   contentType = pm["Content-Type"] ?: contentType
@@ -2124,12 +2660,9 @@ jobs:
                               }
                           }
 
-                          if (statusCode >= 400) {
-                              lastUpstreamStatusCode = statusCode
-                              lastUpstreamUrl = finalUrl
-                              lastUpstreamFailedHost = extractHost(finalUrl)
-                              lastUpstreamServerHint = extractServerHint(resp)
-                          } else {
+                          if (statusCode >= 400 && lastUpstreamStatusCode == 0) {
+                              recordUpstreamFailure(resp, stageLabel)
+                          } else if (statusCode < 400) {
                               clearUpstreamFailure()
                           }
 
@@ -2166,31 +2699,32 @@ jobs:
                   }
 
                   executeRequestWith403SmartRetry(
-                      client = sharedHttpClient,
+                      fallbackOkClient = sharedHttpClient,
                       cleanUrl = cleanUrl,
                       baseHeaders = activeHeaders,
                       isHeadMethod = false,
                       clientRange = clientRange,
                       isSegment = isSegment,
-                      forceIdentityEncoding = true
+                      stage = stageLabel,
+                      forceOkHttpIdentity = !isSegment
                   ).use { resp ->
-                      val finalUrl = resp.request.url.toString()
-                      if (resp.code >= 400) {
-                          recordUpstreamFailure(resp)
-                      } else {
+                      val finalUrl = resp.finalUrl
+                      if (resp.code >= 400 && lastUpstreamStatusCode == 0) {
+                          recordUpstreamFailure(resp, stageLabel)
+                      } else if (resp.code < 400) {
                           clearUpstreamFailure()
                       }
                       val contentType = resp.header("Content-Type") ?: guessMimeFromUrl(finalUrl, activeMimeType)
                       val lowerType = contentType.lowercase(Locale.US)
-                      val finalPathNoQuery = resp.request.url.encodedPath.lowercase(Locale.US)
+                      val finalPathNoQuery = try { URI.create(finalUrl).path?.lowercase(Locale.US).orEmpty() } catch (_: Throwable) { "" }
                       val isHlsPlaylist = resp.isSuccessful && (
                           lowerType.contains("mpegurl") ||
                               lowerType.contains("m3u") ||
                               finalPathNoQuery.endsWith(".m3u8")
                           )
 
-                      if (isHlsPlaylist && resp.body != null) {
-                          val playlistText = resp.body!!.string()
+                      if (isHlsPlaylist && resp.bodyStream != null) {
+                          val playlistText = resp.readBodyText()
                           if (playlistText.trimStart().startsWith("#EXTM3U") || finalPathNoQuery.endsWith(".m3u8")) {
                               activeM3u8FinalUrl = finalUrl
                               val rewriteRes = rewriteM3u8Playlist(playlistText, finalUrl)
@@ -2235,9 +2769,9 @@ jobs:
                           }
                       }
 
-                      val respLen = resp.header("Content-Length")
-                      val respRange = resp.header("Content-Range")
-                      val acceptRanges = resp.header("Accept-Ranges") ?: if (resp.isSuccessful) "bytes" else null
+                      val respLen = if (resp.decompressedByEngine) null else resp.header("Content-Length")
+                      val respRange = if (resp.decompressedByEngine) null else resp.header("Content-Range")
+                      val acceptRanges = resp.header("Accept-Ranges") ?: if (resp.isSuccessful && !resp.decompressedByEngine) "bytes" else null
                       val dlnaOp = if (lowerType.contains("mpegurl")) {
                           if (activeIsHlsVod) "10" else "00"
                       } else {
@@ -2267,10 +2801,8 @@ jobs:
                       output.write(headers.toByteArray(StandardCharsets.US_ASCII))
                       output.flush()
 
-                      if (resp.body != null) {
-                          resp.body!!.byteStream().use { stream ->
-                              streamAll(stream, output, Long.MAX_VALUE)
-                          }
+                      resp.bodyStream?.use { stream ->
+                          streamAll(stream, output, Long.MAX_VALUE)
                       }
                   }
               }
@@ -3673,6 +4205,28 @@ jobs:
                   }
               }
 
+              private fun computeSecFetchSite(targetUrl: String, contextUrl: String): String {
+                  if (contextUrl.isBlank() || !contextUrl.startsWith("http", ignoreCase = true)) {
+                      return "none"
+                  }
+                  return try {
+                      val targetUri = Uri.parse(targetUrl)
+                      val ctxUri = Uri.parse(contextUrl)
+                      val tHost = targetUri.host?.lowercase(Locale.US).orEmpty()
+                      val cHost = ctxUri.host?.lowercase(Locale.US).orEmpty()
+                      val tScheme = targetUri.scheme?.lowercase(Locale.US).orEmpty()
+                      val cScheme = ctxUri.scheme?.lowercase(Locale.US).orEmpty()
+                      when {
+                          tHost.isBlank() || cHost.isBlank() -> "cross-site"
+                          tScheme == cScheme && tHost == cHost && targetUri.port == ctxUri.port -> "same-origin"
+                          sameRootDomain(tHost, cHost) -> "same-site"
+                          else -> "cross-site"
+                      }
+                  } catch (_: Throwable) {
+                      "cross-site"
+                  }
+              }
+
               private fun buildCapturedHeaders(
                   targetUrl: String,
                   reqHeaders: Map<String, String>,
@@ -3680,27 +4234,54 @@ jobs:
                   uaSnap: String
               ): Map<String, String> {
                   val out = HashMap<String, String>()
+                  val blockedKeys = setOf(
+                      "x-requested-with",
+                      "host",
+                      "range",
+                      "content-length",
+                      "accept-encoding",
+                      "connection",
+                      "keep-alive",
+                      "transfer-encoding",
+                      "te",
+                      "trailer",
+                      "upgrade",
+                      "proxy-authenticate",
+                      "proxy-authorization"
+                  )
                   for ((k, v) in reqHeaders) {
-                      val lower = k.lowercase(Locale.US)
-                      if (v.isBlank()) continue
-                      when (lower) {
-                          "referer", "referrer" -> out["Referer"] = v
-                          "user-agent" -> out["User-Agent"] = v
-                          "origin" -> out["Origin"] = v
-                          "authorization" -> out["Authorization"] = v
-                          "accept-language" -> out["Accept-Language"] = v
+                      val cleanKey = k.trim()
+                      val cleanVal = v.trim()
+                      if (cleanKey.isBlank() || cleanVal.isBlank()) continue
+                      val lower = cleanKey.lowercase(Locale.US)
+                      if (lower in blockedKeys) continue
+                      val canonicalKey = when (lower) {
+                          "referer", "referrer" -> "Referer"
+                          "user-agent" -> "User-Agent"
+                          "origin" -> "Origin"
+                          "authorization" -> "Authorization"
+                          "accept" -> "Accept"
+                          "accept-language" -> "Accept-Language"
+                          "cookie" -> "Cookie"
+                          else -> cleanKey
                       }
+                      out[canonicalKey] = cleanVal
                   }
-                  if (!out.containsKey("Referer") && pageUrlSnap.startsWith("http", ignoreCase = true)) {
+                  if (out.keys.none { it.equals("Referer", ignoreCase = true) } && pageUrlSnap.startsWith("http", ignoreCase = true)) {
                       out["Referer"] = pageUrlSnap
                   }
-                  if (!out.containsKey("User-Agent") && uaSnap.isNotBlank()) {
+                  if (out.keys.none { it.equals("User-Agent", ignoreCase = true) } && uaSnap.isNotBlank()) {
                       out["User-Agent"] = uaSnap
                   }
+
+                  val targetHost = try { Uri.parse(targetUrl).host?.lowercase(Locale.US).orEmpty() } catch (_: Throwable) { "" }
+                  val pageHost = try { Uri.parse(pageUrlSnap).host?.lowercase(Locale.US).orEmpty() } catch (_: Throwable) { "" }
+                  val sameRootForCookie = targetHost.isNotBlank() && pageHost.isNotBlank() && sameRootDomain(targetHost, pageHost)
+
                   try {
                       val cm = CookieManager.getInstance()
                       val directCookie = cm.getCookie(targetUrl)
-                      val pageCookie = if (directCookie.isNullOrBlank() && pageUrlSnap.startsWith("http", ignoreCase = true)) {
+                      val pageCookie = if (directCookie.isNullOrBlank() && sameRootForCookie && pageUrlSnap.startsWith("http", ignoreCase = true)) {
                           cm.getCookie(pageUrlSnap)
                       } else null
                       val finalCookie = directCookie?.takeIf { it.isNotBlank() } ?: pageCookie
@@ -3708,6 +4289,24 @@ jobs:
                           out["Cookie"] = finalCookie
                       }
                   } catch (_: Throwable) {
+                  }
+
+                  val ctxForFetchSite = out.entries.firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value
+                      ?: out.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value
+                      ?: pageUrlSnap
+                  val cleanPath = targetUrl.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+                  val isDirectProgressVideo = isKnownVideoFilePath(cleanPath)
+
+                  if (out.keys.none { it.equals("Sec-Fetch-Site", ignoreCase = true) }) {
+                      out["Sec-Fetch-Site"] = computeSecFetchSite(targetUrl, ctxForFetchSite)
+                  }
+                  if (out.keys.none { it.equals("Sec-Fetch-Mode", ignoreCase = true) }) {
+                      val hasOrigin = out.keys.any { it.equals("Origin", ignoreCase = true) }
+                      out["Sec-Fetch-Mode"] = if (isDirectProgressVideo && !hasOrigin) "no-cors" else "cors"
+                  }
+                  if (out.keys.none { it.equals("Sec-Fetch-Dest", ignoreCase = true) }) {
+                      val hasOrigin = out.keys.any { it.equals("Origin", ignoreCase = true) }
+                      out["Sec-Fetch-Dest"] = if (isDirectProgressVideo && !hasOrigin) "video" else "empty"
                   }
                   return out
               }
@@ -5001,10 +5600,18 @@ jobs:
                       val upstreamCode = httpServer.lastUpstreamStatusCode
                       val failedHost = httpServer.lastUpstreamFailedHost
                       val serverHint = httpServer.lastUpstreamServerHint
+                      val upstreamEngine = httpServer.lastUpstreamEngine
+                      val upstreamStage = httpServer.lastUpstreamStage
+                      val upstreamTail = httpServer.lastUpstreamPathTail
                       val enrichedMsg = if (baseMsg.contains("716") && upstreamCode >= 400) {
                           val hostPart = if (failedHost.isNotBlank()) " من $failedHost" else ""
+                          val stagePart = if (upstreamStage.isNotBlank()) {
+                              val tailStr = if (upstreamTail.isNotBlank()) " ($upstreamTail)" else ""
+                              " في $upstreamStage$tailStr"
+                          } else ""
+                          val enginePart = if (upstreamEngine.isNotBlank()) " [$upstreamEngine]" else ""
                           val hintPart = if (serverHint.isNotBlank()) " [$serverHint]" else ""
-                          "$baseMsg (فشل المصدر$hostPart برمز HTTP $upstreamCode$hintPart)"
+                          "$baseMsg (فشل المصدر$hostPart$stagePart$enginePart برمز HTTP $upstreamCode$hintPart)"
                       } else {
                           baseMsg
                       }
@@ -5523,6 +6130,7 @@ jobs:
                       result.putBoolean("isLocalUri", isLocalContent)
                       result.putString("title", title)
                       result.putString("mimeType", intent.type ?: "")
+                      result.putString("action", action)
                       result.putMap("headers", headersMap)
                       return result
                   }
@@ -5530,7 +6138,7 @@ jobs:
                   private fun extractHeadersFromExtras(extras: Bundle?, outMap: WritableMap) {
                       if (extras == null) return
 
-                      fun putHeaderNormalized(rawKey: String?, rawValue: Any?) {
+                      fun putHeaderNormalized(rawKey: String?, rawValue: Any?, overwrite: Boolean = true) {
                           val k = rawKey?.trim().orEmpty()
                           val v = rawValue?.toString()?.trim().orEmpty()
                           if (k.isBlank() || v.isBlank()) return
@@ -5542,6 +6150,7 @@ jobs:
                               "authorization" -> "Authorization"
                               else -> k
                           }
+                          if (!overwrite && outMap.hasKey(canonicalKey)) return
                           outMap.putString(canonicalKey, v)
                       }
 
@@ -5581,9 +6190,17 @@ jobs:
                                   }
                               }
                           } else if (lowerKey in setOf("referer", "referrer", "user-agent", "cookie", "origin", "authorization")) {
-                              // 3) المفاتيح الفردية بدون حساسية لحالة الأحرف
+                              // 2) المفاتيح الفردية بدون حساسية لحالة الأحرف
                               putHeaderNormalized(extraKey, extraVal)
                           }
+                      }
+
+                      // 3) دعم Intent.EXTRA_REFERRER و Intent.EXTRA_REFERRER_NAME لروابط http/https فقط
+                      @Suppress("DEPRECATION")
+                      val rawExtraRef = extras.get(Intent.EXTRA_REFERRER) ?: extras.get(Intent.EXTRA_REFERRER_NAME)
+                      val refStr = rawExtraRef?.toString()?.trim().orEmpty()
+                      if (refStr.startsWith("http://", ignoreCase = true) || refStr.startsWith("https://", ignoreCase = true)) {
+                          putHeaderNormalized("Referer", refStr, overwrite = false)
                       }
                   }
               }

@@ -846,6 +846,30 @@ jobs:
 
                   private const val M3U8_CACHE_TTL_MS = 9_000L
 
+                  private val POLLUTED_AD_KEYWORDS = listOf(
+                      "1xlite",
+                      "1xbet",
+                      "melbet",
+                      "betwinner",
+                      "mostbet",
+                      "popads",
+                      "popcash",
+                      "propellerads",
+                      "exoclick",
+                      "juicyads",
+                      "trafficjunky",
+                      "adsterra",
+                      "doubleclick",
+                      "googlesyndication",
+                      "hilltopads",
+                      "onclickads",
+                      "tsyndicate",
+                      "acscdn",
+                      "mgid.com",
+                      "taboola.com",
+                      "outbrain.com"
+                  )
+
                   private class SessionCookieJar : CookieJar {
                       private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
 
@@ -1002,6 +1026,10 @@ jobs:
                   private set
 
               @Volatile
+              var lastUpstreamServerHint: String = ""
+                  private set
+
+              @Volatile
               private var activeM3u8FinalUrl: String = ""
 
               private val proxyTargetMap = ConcurrentHashMap<String, String>()
@@ -1091,6 +1119,7 @@ jobs:
                   lastUpstreamStatusCode = 0
                   lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
+                  lastUpstreamServerHint = ""
                   proxyTargetMap.clear()
                   m3u8Cache.clear()
                   m3u8FetchLocks.clear()
@@ -1124,6 +1153,7 @@ jobs:
                   lastUpstreamStatusCode = 0
                   lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
+                  lastUpstreamServerHint = ""
                   activeM3u8FinalUrl = ""
                   activeSourceType = "LOCAL"
                   activeLocalUri = uri
@@ -1159,6 +1189,7 @@ jobs:
                   lastUpstreamStatusCode = 0
                   lastUpstreamUrl = ""
                   lastUpstreamFailedHost = ""
+                  lastUpstreamServerHint = ""
                   activeM3u8FinalUrl = ""
                   activeSourceType = "PROXY"
                   activeLocalUri = null
@@ -1223,15 +1254,13 @@ jobs:
                           baseHeaders = activeHeaders,
                           isHeadMethod = false,
                           clientRange = null,
-                          isSegment = false
+                          isSegment = false,
+                          forceIdentityEncoding = false
                       )
                       resp.use { r ->
                           val finalUrl = r.request.url.toString()
                           if (!r.isSuccessful || r.body == null) {
-                              val host = extractHost(finalUrl)
-                              lastUpstreamStatusCode = r.code
-                              lastUpstreamUrl = finalUrl
-                              lastUpstreamFailedHost = host
+                              recordUpstreamFailure(r, extractHost(finalUrl))
                               return M3u8FetchOutcome(
                                   entry = null,
                                   statusCode = r.code,
@@ -1265,8 +1294,7 @@ jobs:
                           if (tokenSnap.isNotEmpty() && tokenSnap == activeToken) {
                               m3u8Cache[cacheKey] = entry
                           }
-                          lastUpstreamStatusCode = 0
-                          lastUpstreamFailedHost = ""
+                          clearUpstreamFailure()
                           return M3u8FetchOutcome(entry = entry, statusCode = 200, statusMessage = "OK")
                       }
                   }
@@ -1299,6 +1327,40 @@ jobs:
                   }
               }
 
+              private fun isPollutedAdReferer(urlStr: String): Boolean {
+                  val host = extractHost(urlStr)
+                  if (host.isBlank()) return false
+                  return POLLUTED_AD_KEYWORDS.any { host.contains(it) }
+              }
+
+              private fun extractServerHint(resp: Response): String {
+                  val server = resp.header("Server")?.trim().orEmpty()
+                  val cfMitigated = resp.header("cf-mitigated")?.trim().orEmpty()
+                  val cfRay = resp.header("CF-RAY")?.trim().orEmpty()
+                  val parts = ArrayList<String>(3)
+                  if (server.isNotBlank()) parts.add(server)
+                  if (cfMitigated.isNotBlank()) {
+                      parts.add(cfMitigated)
+                  } else if (cfRay.isNotBlank() && !server.contains("cloudflare", ignoreCase = true)) {
+                      parts.add("cf-ray")
+                  }
+                  return parts.joinToString(" • ")
+              }
+
+              private fun recordUpstreamFailure(resp: Response, fallbackHost: String = "") {
+                  val finalUrl = resp.request.url.toString()
+                  lastUpstreamStatusCode = resp.code
+                  lastUpstreamUrl = finalUrl
+                  lastUpstreamFailedHost = extractHost(finalUrl).ifBlank { fallbackHost }
+                  lastUpstreamServerHint = extractServerHint(resp)
+              }
+
+              private fun clearUpstreamFailure() {
+                  lastUpstreamStatusCode = 0
+                  lastUpstreamFailedHost = ""
+                  lastUpstreamServerHint = ""
+              }
+
               private fun sameRootHost(url1: String, url2: String): Boolean {
                   val h1 = extractHost(url1)
                   val h2 = extractHost(url2)
@@ -1309,10 +1371,31 @@ jobs:
                   return r1.isNotBlank() && r1 == r2
               }
 
+              private fun sanitizeBaseHeaders(rawHeaders: Map<String, String>): Map<String, String> {
+                  val out = HashMap<String, String>(rawHeaders.size)
+                  var pollutedRefererHost = ""
+                  for ((k, v) in rawHeaders) {
+                      if (k.equals("Referer", ignoreCase = true) && isPollutedAdReferer(v)) {
+                          pollutedRefererHost = extractHost(v)
+                          continue
+                      }
+                      if (k.equals("Origin", ignoreCase = true) && isPollutedAdReferer(v)) {
+                          continue
+                      }
+                      out[k] = v
+                  }
+                  if (pollutedRefererHost.isNotBlank()) {
+                      out.entries.removeAll { it.key.equals("Origin", ignoreCase = true) && it.value.contains(pollutedRefererHost, ignoreCase = true) }
+                  }
+                  return out
+              }
+
               private fun buildRequestBuilderWithHeaders(
                   cleanUrl: String,
                   headers: Map<String, String>,
-                  omitCookiesAndOrigin: Boolean = false
+                  omitCookiesAndOrigin: Boolean = false,
+                  omitRefererOriginAndCookie: Boolean = false,
+                  forceIdentityEncoding: Boolean = true
               ): Request.Builder {
                   val reqBuilder = Request.Builder().url(cleanUrl)
                   var hasUserAgent = false
@@ -1321,6 +1404,7 @@ jobs:
                   for ((k, v) in headers) {
                       val lower = k.lowercase(Locale.US)
                       if (lower in HOP_BY_HOP_HEADERS || lower == "range" || lower == "content-length") continue
+                      if (omitRefererOriginAndCookie && (lower == "referer" || lower == "referrer" || lower == "origin" || lower == "cookie")) continue
                       if (omitCookiesAndOrigin && (lower == "cookie" || lower == "origin")) continue
                       if (lower == "user-agent") hasUserAgent = true
                       if (lower == "accept") hasAccept = true
@@ -1336,7 +1420,9 @@ jobs:
                   if (!hasAcceptLanguage) {
                       reqBuilder.header("Accept-Language", "ar,en-US;q=0.9,en;q=0.8")
                   }
-                  reqBuilder.header("Accept-Encoding", "identity")
+                  if (forceIdentityEncoding) {
+                      reqBuilder.header("Accept-Encoding", "identity")
+                  }
                   return reqBuilder
               }
 
@@ -1363,7 +1449,7 @@ jobs:
                                   ?: return null
                           } else {
                               val cleanSubUrl = subtitle.uriOrUrl.trim()
-                              val req = buildRequestBuilderWithHeaders(cleanSubUrl, subtitle.headers).get().build()
+                              val req = buildRequestBuilderWithHeaders(cleanSubUrl, subtitle.headers, forceIdentityEncoding = false).get().build()
                               probeHttpClient.newCall(req).execute().use { resp ->
                                   if (!resp.isSuccessful || resp.body == null) return null
                                   resp.body!!.bytes()
@@ -1774,9 +1860,17 @@ jobs:
               private fun buildUpstreamRequestBuilder(
                   cleanUrl: String,
                   overrideHeaders: Map<String, String> = activeHeaders,
-                  omitCookiesAndOrigin: Boolean = false
+                  omitCookiesAndOrigin: Boolean = false,
+                  omitRefererOriginAndCookie: Boolean = false,
+                  forceIdentityEncoding: Boolean = true
               ): Request.Builder {
-                  return buildRequestBuilderWithHeaders(cleanUrl, overrideHeaders, omitCookiesAndOrigin)
+                  return buildRequestBuilderWithHeaders(
+                      cleanUrl,
+                      overrideHeaders,
+                      omitCookiesAndOrigin,
+                      omitRefererOriginAndCookie,
+                      forceIdentityEncoding
+                  )
               }
 
               private fun executeRequestWith403SmartRetry(
@@ -1785,85 +1879,98 @@ jobs:
                   baseHeaders: Map<String, String>,
                   isHeadMethod: Boolean,
                   clientRange: String?,
-                  isSegment: Boolean
+                  isSegment: Boolean,
+                  forceIdentityEncoding: Boolean = true
               ): Response {
                   val isCrossHostSegment = isSegment &&
                       !sameRootHost(cleanUrl, activeRemoteUrl) &&
                       !sameRootHost(cleanUrl, activeM3u8FinalUrl)
 
-                  fun execOnce(hdrs: Map<String, String>, stripCookiesOrigin: Boolean): Response {
-                      val rb = buildUpstreamRequestBuilder(cleanUrl, hdrs, omitCookiesAndOrigin = stripCookiesOrigin)
+                  fun execOnce(
+                      httpClient: OkHttpClient,
+                      hdrs: Map<String, String>,
+                      stripCookiesOrigin: Boolean,
+                      stripAllRefOriginCookie: Boolean
+                  ): Response {
+                      val rb = buildUpstreamRequestBuilder(
+                          cleanUrl,
+                          hdrs,
+                          omitCookiesAndOrigin = stripCookiesOrigin,
+                          omitRefererOriginAndCookie = stripAllRefOriginCookie,
+                          forceIdentityEncoding = forceIdentityEncoding
+                      )
                       if (!clientRange.isNullOrBlank()) {
                           rb.header("Range", clientRange)
                       }
                       if (isHeadMethod) rb.head() else rb.get()
-                      return client.newCall(rb.build()).execute()
+                      return httpClient.newCall(rb.build()).execute()
                   }
 
-                  val firstResp = execOnce(baseHeaders, isCrossHostSegment)
+                  // المحاولة 1: الترويسات الملتقطة كما هي (بعد استبعاد أي Referer/Origin ملوث برابط إعلان)
+                  val sanitizedHeaders = sanitizeBaseHeaders(baseHeaders)
+                  val firstResp = execOnce(client, sanitizedHeaders, isCrossHostSegment, stripAllRefOriginCookie = false)
                   if (firstResp.code != 403 && firstResp.code != 401) {
-                      if (firstResp.code < 400) {
-                          lastUpstreamStatusCode = 0
-                          lastUpstreamFailedHost = ""
+                      if (firstResp.code >= 400) {
+                          recordUpstreamFailure(firstResp)
+                      } else {
+                          clearUpstreamFailure()
                       }
                       return firstResp
                   }
 
                   val firstFinalUrl = firstResp.request.url.toString()
+                  val host = extractHost(firstFinalUrl).ifBlank { extractHost(cleanUrl) }
                   try {
                       firstResp.close()
                   } catch (_: Throwable) {
                   }
 
-                  val host = extractHost(firstFinalUrl).ifBlank { extractHost(cleanUrl) }
+                  // المحاولة 2: تجربة Referer لنفس النطاق (https://<host>/) بدون Origin
                   val scheme = try { URI.create(firstFinalUrl).scheme ?: "https" } catch (_: Throwable) { "https" }
-                  val originBase = if (host.isNotBlank()) "$scheme://$host" else ""
-
-                  val existingReferer = baseHeaders.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value.orEmpty()
-                  val existingOrigin = baseHeaders.entries.firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value.orEmpty()
-
-                  val retryHeaders = HashMap<String, String>()
-                  for ((k, v) in baseHeaders) {
-                      retryHeaders[k] = v
-                  }
-                  var retryStripCookiesOrigin = false
-
-                  if (isCrossHostSegment) {
-                      // مسار مقاطع على CDN خارجي: إذا فشل مع حجب الكوكيز نجرّب بترويسات كاملة أو بدون Referer متعارض
-                      retryStripCookiesOrigin = !isCrossHostSegment
-                      retryHeaders.entries.removeAll {
+                  val retry2Headers = HashMap<String, String>(sanitizedHeaders)
+                  retry2Headers.entries.removeAll {
+                      it.key.equals("Origin", ignoreCase = true) ||
                           it.key.equals("Referer", ignoreCase = true) ||
-                              it.key.equals("Origin", ignoreCase = true) ||
-                              it.key.equals("Cookie", ignoreCase = true)
+                          it.key.equals("Referrer", ignoreCase = true)
+                  }
+                  if (host.isNotBlank()) {
+                      retry2Headers["Referer"] = "$scheme://$host/"
+                  }
+                  val secondResp = execOnce(
+                      client,
+                      retry2Headers,
+                      stripCookiesOrigin = isCrossHostSegment,
+                      stripAllRefOriginCookie = false
+                  )
+                  if (secondResp.code != 403 && secondResp.code != 401) {
+                      if (secondResp.code >= 400) {
+                          recordUpstreamFailure(secondResp, host)
+                      } else {
+                          clearUpstreamFailure()
                       }
-                      if (originBase.isNotBlank()) {
-                          retryHeaders["Referer"] = "$originBase/"
-                      }
-                  } else if (originBase.isNotBlank() && (existingReferer.isBlank() || !sameRootHost(existingReferer, firstFinalUrl))) {
-                      // Referer مفقود أو تابع لصفحة خارجية (مثل الصفحة الأم بدلاً من مشغل الفيديو)
-                      retryHeaders.entries.removeAll {
-                          it.key.equals("Referer", ignoreCase = true) || it.key.equals("Origin", ignoreCase = true)
-                      }
-                      retryHeaders["Referer"] = "$originBase/"
-                      retryHeaders["Origin"] = originBase
-                  } else if (existingOrigin.isNotBlank()) {
-                      // إذا كان Origin مرفوضاً على طلبات GET، نجرب بدونه مع بقاء Referer و Cookie
-                      retryHeaders.entries.removeAll { it.key.equals("Origin", ignoreCase = true) }
-                  } else {
-                      retryStripCookiesOrigin = true
+                      return secondResp
                   }
 
-                  val secondResp = execOnce(retryHeaders, retryStripCookiesOrigin)
-                  val secondFinalUrl = secondResp.request.url.toString()
-                  if (secondResp.code >= 400) {
-                      lastUpstreamStatusCode = secondResp.code
-                      lastUpstreamUrl = secondFinalUrl
-                      lastUpstreamFailedHost = extractHost(secondFinalUrl).ifBlank { host }
-                  } else {
-                      lastUpstreamStatusCode = 0
-                      lastUpstreamFailedHost = ""
+                  val secondHost = extractHost(secondResp.request.url.toString()).ifBlank { host }
+                  try {
+                      secondResp.close()
+                  } catch (_: Throwable) {
                   }
-                  return secondResp
+
+                  // المحاولة 3: طلب نظيف تماماً بدون Referer وبدون Origin وبدون Cookie
+                  val noCookieClient = client.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                  val thirdResp = execOnce(
+                      noCookieClient,
+                      sanitizedHeaders,
+                      stripCookiesOrigin = true,
+                      stripAllRefOriginCookie = true
+                  )
+                  if (thirdResp.code >= 400) {
+                      recordUpstreamFailure(thirdResp, secondHost)
+                  } else {
+                      clearUpstreamFailure()
+                  }
+                  return thirdResp
               }
 
               private fun probeHeadViaGetRange(cleanUrl: String, isSegment: Boolean): Triple<Int, Map<String, String>, String?>? {
@@ -1874,7 +1981,8 @@ jobs:
                           baseHeaders = activeHeaders,
                           isHeadMethod = false,
                           clientRange = "bytes=0-0",
-                          isSegment = isSegment
+                          isSegment = isSegment,
+                          forceIdentityEncoding = true
                       ).use { resp ->
                           val headersMap = HashMap<String, String>()
                           resp.header("Content-Type")?.let { headersMap["Content-Type"] = it }
@@ -2020,9 +2128,9 @@ jobs:
                               lastUpstreamStatusCode = statusCode
                               lastUpstreamUrl = finalUrl
                               lastUpstreamFailedHost = extractHost(finalUrl)
+                              lastUpstreamServerHint = extractServerHint(resp)
                           } else {
-                              lastUpstreamStatusCode = 0
-                              lastUpstreamFailedHost = ""
+                              clearUpstreamFailure()
                           }
 
                           val dlnaOp = when {
@@ -2063,16 +2171,14 @@ jobs:
                       baseHeaders = activeHeaders,
                       isHeadMethod = false,
                       clientRange = clientRange,
-                      isSegment = isSegment
+                      isSegment = isSegment,
+                      forceIdentityEncoding = true
                   ).use { resp ->
                       val finalUrl = resp.request.url.toString()
                       if (resp.code >= 400) {
-                          lastUpstreamStatusCode = resp.code
-                          lastUpstreamUrl = finalUrl
-                          lastUpstreamFailedHost = extractHost(finalUrl)
+                          recordUpstreamFailure(resp)
                       } else {
-                          lastUpstreamStatusCode = 0
-                          lastUpstreamFailedHost = ""
+                          clearUpstreamFailure()
                       }
                       val contentType = resp.header("Content-Type") ?: guessMimeFromUrl(finalUrl, activeMimeType)
                       val lowerType = contentType.lowercase(Locale.US)
@@ -2427,8 +2533,10 @@ jobs:
           import android.view.ViewGroup
           import android.view.inputmethod.EditorInfo
           import android.view.inputmethod.InputMethodManager
+          import android.webkit.ConsoleMessage
           import android.webkit.CookieManager
           import android.webkit.JavascriptInterface
+          import android.webkit.PermissionRequest
           import android.webkit.SslErrorHandler
           import android.webkit.WebChromeClient
           import android.webkit.WebResourceError
@@ -2468,7 +2576,36 @@ jobs:
                   private const val KEY_LAST_URL = "last_visited_url"
                   private const val DEFAULT_HOME_URL = "https://www.google.com"
 
+                  private val EXTERNAL_APP_SCHEMES = setOf(
+                      "intent",
+                      "market",
+                      "tel",
+                      "mailto",
+                      "whatsapp",
+                      "tg",
+                      "fb"
+                  )
+
+                  private val INTERNAL_WEB_SCHEMES = setOf(
+                      "http",
+                      "https",
+                      "about",
+                      "data",
+                      "blob",
+                      "javascript"
+                  )
+
+                  private val IGNORED_ERROR_ASSET_EXTS = setOf(
+                      "png", "jpg", "jpeg", "gif", "webp", "svg", "ico",
+                      "css", "woff", "woff2", "ttf", "otf", "eot"
+                  )
+
                   private val AD_HOST_KEYWORDS = listOf(
+                      "1xlite",
+                      "1xbet",
+                      "melbet",
+                      "betwinner",
+                      "mostbet",
                       "doubleclick.net",
                       "googlesyndication.com",
                       "googleadservices.com",
@@ -2534,10 +2671,13 @@ jobs:
               private lateinit var redirectShieldBtn: TextView
               private lateinit var fabBadgeBtn: Button
               private lateinit var overlayPanel: FrameLayout
+              private lateinit var fullscreenContainer: FrameLayout
               private lateinit var mediaListContainer: LinearLayout
               private lateinit var selectedSubLabel: TextView
               private lateinit var emptyStateText: TextView
 
+              private var customVideoView: View? = null
+              private var customViewCallback: WebChromeClient.CustomViewCallback? = null
               private var defaultCleanMobileUa: String = ""
 
               @Volatile
@@ -2875,11 +3015,27 @@ jobs:
                   overlayPanel.addView(sheetCard)
                   root.addView(overlayPanel)
 
+                  fullscreenContainer = FrameLayout(this).apply {
+                      visibility = View.GONE
+                      setBackgroundColor(Color.BLACK)
+                      layoutParams = FrameLayout.LayoutParams(
+                          ViewGroup.LayoutParams.MATCH_PARENT,
+                          ViewGroup.LayoutParams.MATCH_PARENT
+                      )
+                  }
+                  root.addView(fullscreenContainer)
+
                   setContentView(root)
 
                   onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
                       override fun handleOnBackPressed() {
-                          if (overlayPanel.visibility == View.VISIBLE) {
+                          if (customVideoView != null) {
+                              try {
+                                  customViewCallback?.onCustomViewHidden()
+                              } catch (_: Throwable) {
+                              }
+                              hideCustomVideoView()
+                          } else if (overlayPanel.visibility == View.VISIBLE) {
                               overlayPanel.visibility = View.GONE
                           } else if (webView.canGoBack()) {
                               webView.goBack()
@@ -2902,19 +3058,30 @@ jobs:
                   webView.loadUrl(startUrl)
               }
 
+              private fun hideCustomVideoView() {
+                  try {
+                      fullscreenContainer.removeAllViews()
+                  } catch (_: Throwable) {
+                  }
+                  fullscreenContainer.visibility = View.GONE
+                  customVideoView = null
+                  customViewCallback = null
+              }
+
               @SuppressLint("SetJavaScriptEnabled", "AddJavascriptInterface")
               private fun configureWebView() {
                   val settings = webView.settings
                   settings.javaScriptEnabled = true
                   settings.domStorageEnabled = true
                   settings.databaseEnabled = true
+                  settings.allowFileAccess = true
                   settings.useWideViewPort = true
                   settings.loadWithOverviewMode = true
                   settings.builtInZoomControls = true
                   settings.displayZoomControls = false
                   settings.mediaPlaybackRequiresUserGesture = false
                   settings.allowContentAccess = true
-                  settings.mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
+                  settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                   settings.javaScriptCanOpenWindowsAutomatically = true
                   settings.setSupportMultipleWindows(true)
 
@@ -2995,6 +3162,49 @@ jobs:
                   }
 
                   webView.webChromeClient = object : WebChromeClient() {
+                      override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+                          if (view == null) {
+                              callback?.onCustomViewHidden()
+                              return
+                          }
+                          if (customVideoView != null) {
+                              callback?.onCustomViewHidden()
+                              return
+                          }
+                          customVideoView = view
+                          customViewCallback = callback
+                          fullscreenContainer.removeAllViews()
+                          fullscreenContainer.addView(
+                              view,
+                              FrameLayout.LayoutParams(
+                                  ViewGroup.LayoutParams.MATCH_PARENT,
+                                  ViewGroup.LayoutParams.MATCH_PARENT
+                              )
+                          )
+                          fullscreenContainer.visibility = View.VISIBLE
+                      }
+
+                      override fun onHideCustomView() {
+                          hideCustomVideoView()
+                      }
+
+                      override fun onPermissionRequest(request: PermissionRequest?) {
+                          if (request == null) return
+                          val protectedMedia = request.resources
+                              ?.filter { it == PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID }
+                              ?.toTypedArray()
+                              ?: emptyArray()
+                          if (protectedMedia.isNotEmpty()) {
+                              request.grant(protectedMedia)
+                          } else {
+                              request.deny()
+                          }
+                      }
+
+                      override fun onConsoleMessage(consoleMessage: ConsoleMessage?): Boolean {
+                          return super.onConsoleMessage(consoleMessage)
+                      }
+
                       override fun onCreateWindow(
                           view: WebView?,
                           isDialog: Boolean,
@@ -3008,21 +3218,36 @@ jobs:
                           val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
                           val tempWebView = WebView(this@MediaSnifferActivity).apply {
                               settings.javaScriptEnabled = true
+                              settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
                               if (currentUserAgent.isNotBlank()) {
                                   settings.userAgentString = currentUserAgent
                               }
                           }
                           var delivered = false
                           fun forwardAndDispose(tView: WebView?, rawTarget: String?) {
+                              val targetUrl = rawTarget?.trim().orEmpty()
+                              if (targetUrl.isBlank() || targetUrl.equals("about:blank", ignoreCase = true)) {
+                                  return
+                              }
                               if (delivered) return
                               delivered = true
-                              val targetUrl = rawTarget?.trim().orEmpty()
                               val parsed = try { Uri.parse(targetUrl) } catch (_: Throwable) { null }
                               val scheme = parsed?.scheme?.lowercase(Locale.US) ?: ""
                               val host = parsed?.host?.lowercase(Locale.US) ?: ""
-                              if ((scheme == "http" || scheme == "https") && !isBlockedAdHost(host)) {
+                              val currentHost = try { Uri.parse(currentPageUrl).host?.lowercase(Locale.US) ?: "" } catch (_: Throwable) { "" }
+                              val blockedAd = redirectProtectionEnabled && isBlockedAdHost(host)
+                              val sameDomainOrDirectMedia = (currentHost.isNotBlank() && sameRootDomain(currentHost, host)) ||
+                                  looksLikeDirectMediaUrl(targetUrl)
+
+                              if ((scheme == "http" || scheme == "https") && !blockedAd && sameDomainOrDirectMedia) {
                                   redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
                                   view.loadUrl(targetUrl)
+                              } else if (scheme == "http" || scheme == "https") {
+                                  Toast.makeText(
+                                      this@MediaSnifferActivity,
+                                      "تم منع نافذة خارجية منبثقة (${host.ifBlank { "إعلان" }})",
+                                      Toast.LENGTH_SHORT
+                                  ).show()
                               }
                               tView?.post {
                                   try {
@@ -3092,26 +3317,68 @@ jobs:
                           }
                       }
 
+                      private fun isTrivialNonMediaAsset(request: WebResourceRequest): Boolean {
+                          val urlStr = request.url?.toString().orEmpty()
+                          val cleanPath = urlStr.substringBefore('?').substringBefore('#').lowercase(Locale.US)
+                          val ext = cleanPath.substringAfterLast('.', "")
+                          if (ext in IGNORED_ERROR_ASSET_EXTS) return true
+                          val accept = request.requestHeaders?.entries
+                              ?.firstOrNull { it.key.equals("Accept", ignoreCase = true) }
+                              ?.value?.lowercase(Locale.US).orEmpty()
+                          return accept.startsWith("image/") || accept.startsWith("text/css") || accept.startsWith("font/")
+                      }
+
                       override fun onReceivedError(
                           view: WebView?,
                           request: WebResourceRequest?,
                           error: WebResourceError?
                       ) {
-                          if (request == null || !request.isForMainFrame) return
+                          if (request == null) return
                           val errCode = error?.errorCode ?: 0
                           val errDesc = error?.description?.toString()?.trim().orEmpty()
-                          // تجاهل الإلغاء الطبيعي عند تنقل المستخدم السريع أو حظر الإعلان
-                          if (errDesc.contains("ERR_ABORTED", ignoreCase = true)) return
-                          val failedHost = try { request.url?.host.orEmpty() } catch (_: Throwable) { "" }
-                          val msg = if (errDesc.isNotBlank()) {
-                              "تعذر فتح ${failedHost.ifBlank { "الصفحة" }}: $errDesc"
+                          if (errDesc.contains("ERR_ABORTED", ignoreCase = true) || errDesc.contains("ERR_CACHE_MISS", ignoreCase = true)) {
+                              return
+                          }
+                          val failedHost = try { request.url?.host?.lowercase(Locale.US).orEmpty() } catch (_: Throwable) { "" }
+                          if (!request.isForMainFrame) {
+                              if (isTrivialNonMediaAsset(request) || isBlockedAdHost(failedHost)) return
+                          }
+                          val msg = if (request.isForMainFrame) {
+                              if (errDesc.isNotBlank()) "تعذر فتح ${failedHost.ifBlank { "الصفحة" }}: $errDesc"
+                              else "فشل الاتصال بالصفحة (رمز الخطأ: $errCode)"
                           } else {
-                              "فشل الاتصال بالصفحة (رمز الخطأ: $errCode)"
+                              "فشل تحميل إطار/مصدر (${failedHost.ifBlank { "iframe" }}): ${errDesc.ifBlank { "رمز $errCode" }}"
                           }
                           runOnUiThread {
                               errorBannerText.text = "$msg  ✕"
                               errorBannerText.visibility = View.VISIBLE
-                              Toast.makeText(this@MediaSnifferActivity, msg, Toast.LENGTH_SHORT).show()
+                              if (request.isForMainFrame) {
+                                  Toast.makeText(this@MediaSnifferActivity, msg, Toast.LENGTH_SHORT).show()
+                              }
+                          }
+                      }
+
+                      override fun onReceivedHttpError(
+                          view: WebView?,
+                          request: WebResourceRequest?,
+                          errorResponse: WebResourceResponse?
+                      ) {
+                          if (request == null || errorResponse == null) return
+                          val statusCode = errorResponse.statusCode
+                          if (statusCode < 400) return
+                          val failedHost = try { request.url?.host?.lowercase(Locale.US).orEmpty() } catch (_: Throwable) { "" }
+                          if (!request.isForMainFrame) {
+                              if (isTrivialNonMediaAsset(request) || isBlockedAdHost(failedHost)) return
+                          }
+                          val mime = errorResponse.mimeType?.lowercase(Locale.US).orEmpty()
+                          if (!request.isForMainFrame && (mime.startsWith("image/") || mime.contains("css") || mime.contains("font"))) {
+                              return
+                          }
+                          val label = if (request.isForMainFrame) "الصفحة" else "إطار/مصدر"
+                          val msg = "فشل $label (${failedHost.ifBlank { "المشغل" }}): HTTP $statusCode"
+                          runOnUiThread {
+                              errorBannerText.text = "$msg  ✕"
+                              errorBannerText.visibility = View.VISIBLE
                           }
                       }
 
@@ -3171,12 +3438,19 @@ jobs:
                           val uri = request?.url ?: return false
                           val urlStr = uri.toString()
                           val scheme = uri.scheme?.lowercase(Locale.US) ?: ""
-                          // حظر الروابط غير HTTP/HTTPS (مثل intent://, market://, tel:, whatsapp:)
+                          // حظر مخططات التطبيقات الخارجية فقط والسماح بمخططات المتصفح الداخلية (about/data/blob/javascript)
+                          if (scheme in EXTERNAL_APP_SCHEMES) {
+                              return true
+                          }
+                          if (scheme in INTERNAL_WEB_SCHEMES && scheme != "http" && scheme != "https") {
+                              return false
+                          }
                           if (scheme != "http" && scheme != "https") {
                               return true
                           }
+
                           val host = uri.host?.lowercase(Locale.US) ?: ""
-                          if (isBlockedAdHost(host)) {
+                          if (redirectProtectionEnabled && isBlockedAdHost(host)) {
                               return true
                           }
 
@@ -3217,7 +3491,7 @@ jobs:
                           if (scheme != "http" && scheme != "https") return null
 
                           val host = uri.host?.lowercase(Locale.US) ?: ""
-                          if (isBlockedAdHost(host)) {
+                          if (redirectProtectionEnabled && isBlockedAdHost(host)) {
                               return WebResourceResponse("text/plain", "utf-8", ByteArrayInputStream(ByteArray(0)))
                           }
 
@@ -4726,9 +5000,11 @@ jobs:
                       val baseMsg = e.message ?: "تعذر بدء البث إلى الشاشة"
                       val upstreamCode = httpServer.lastUpstreamStatusCode
                       val failedHost = httpServer.lastUpstreamFailedHost
+                      val serverHint = httpServer.lastUpstreamServerHint
                       val enrichedMsg = if (baseMsg.contains("716") && upstreamCode >= 400) {
                           val hostPart = if (failedHost.isNotBlank()) " من $failedHost" else ""
-                          "$baseMsg (فشل المصدر$hostPart برمز HTTP $upstreamCode)"
+                          val hintPart = if (serverHint.isNotBlank()) " [$serverHint]" else ""
+                          "$baseMsg (فشل المصدر$hostPart برمز HTTP $upstreamCode$hintPart)"
                       } else {
                           baseMsg
                       }

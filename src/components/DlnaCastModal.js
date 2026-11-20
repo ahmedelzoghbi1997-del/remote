@@ -269,8 +269,10 @@ export default function DlnaCastModal({
   const [pinHighestQuality, setPinHighestQuality] = useState(true);
   const [showHeadersPanel, setShowHeadersPanel] = useState(false);
   const [headerReferer, setHeaderReferer] = useState('');
+  const [headerOrigin, setHeaderOrigin] = useState('');
   const [headerUserAgent, setHeaderUserAgent] = useState('');
   const [headerCookie, setHeaderCookie] = useState('');
+  const [extraHeaders, setExtraHeaders] = useState({});
 
   const [selectedSubtitle, setSelectedSubtitle] = useState(null);
   const [subtitleOffsetSec, setSubtitleOffsetSec] = useState(0);
@@ -352,12 +354,22 @@ export default function DlnaCastModal({
       setRemoteTitle(incomingIntent.title || '');
       const h = incomingIntent.headers || {};
       const ref = h.Referer || h.referer || '';
+      const org = h.Origin || h.origin || '';
       const ua = h['User-Agent'] || h['user-agent'] || '';
       const ck = h.Cookie || h.cookie || '';
+      const rem = {};
+      Object.keys(h).forEach((k) => {
+        const lk = k.toLowerCase();
+        if (lk !== 'referer' && lk !== 'origin' && lk !== 'user-agent' && lk !== 'cookie' && h[k]) {
+          rem[k] = h[k];
+        }
+      });
       setHeaderReferer(ref);
+      setHeaderOrigin(org);
       setHeaderUserAgent(ua);
       setHeaderCookie(ck);
-      if (ref || ua || ck) {
+      setExtraHeaders(rem);
+      if (ref || org || ua || ck || Object.keys(rem).length > 0) {
         setShowHeadersPanel(true);
         setUseProxy(true);
       }
@@ -422,12 +434,22 @@ export default function DlnaCastModal({
         setUseProxy(true);
         const h = res.video.headers || {};
         const ref = h.Referer || h.referer || '';
+        const org = h.Origin || h.origin || '';
         const ua = h['User-Agent'] || h['user-agent'] || '';
         const ck = h.Cookie || h.cookie || '';
+        const rem = {};
+        Object.keys(h).forEach((k) => {
+          const lk = k.toLowerCase();
+          if (lk !== 'referer' && lk !== 'origin' && lk !== 'user-agent' && lk !== 'cookie' && h[k]) {
+            rem[k] = h[k];
+          }
+        });
         setHeaderReferer(ref);
+        setHeaderOrigin(org);
         setHeaderUserAgent(ua);
         setHeaderCookie(ck);
-        if (ref || ua || ck) {
+        setExtraHeaders(rem);
+        if (ref || org || ua || ck || Object.keys(rem).length > 0) {
           setShowHeadersPanel(true);
         }
         if (res.subtitle && res.subtitle.url) {
@@ -504,8 +526,9 @@ export default function DlnaCastModal({
         }
         await DlnaCastService.castLocalFile(targetDevice, pickedLocalFile, subtitlePayload);
       } else {
-        const headers = {};
+        const headers = { ...extraHeaders };
         if (headerReferer.trim()) headers.Referer = headerReferer.trim();
+        if (headerOrigin.trim()) headers.Origin = headerOrigin.trim();
         if (headerUserAgent.trim()) headers['User-Agent'] = headerUserAgent.trim();
         if (headerCookie.trim()) headers.Cookie = headerCookie.trim();
         await DlnaCastService.castRemoteUrl(targetDevice, {
@@ -954,7 +977,7 @@ export default function DlnaCastModal({
                   <Text style={styles.headersToggleText}>
                     {showHeadersPanel
                       ? '▲ إخفاء ترويسات HTTP المخصصة'
-                      : '▼ ترويسات HTTP مخصصة (Referer / User-Agent / Cookie)'}
+                      : '▼ ترويسات HTTP مخصصة (Referer / Origin / UA / Cookie)'}
                   </Text>
                 </TouchableOpacity>
 
@@ -966,6 +989,14 @@ export default function DlnaCastModal({
                       value={headerReferer}
                       onChangeText={setHeaderReferer}
                       placeholder="https://site.example/"
+                      placeholderTextColor="#64748B"
+                    />
+                    <Text style={styles.inputLabel}>Origin</Text>
+                    <TextInput
+                      style={styles.urlInput}
+                      value={headerOrigin}
+                      onChangeText={setHeaderOrigin}
+                      placeholder="https://site.example"
                       placeholderTextColor="#64748B"
                     />
                     <Text style={styles.inputLabel}>User-Agent</Text>

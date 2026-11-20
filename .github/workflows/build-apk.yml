@@ -770,8 +770,12 @@ jobs:
           import android.os.Build
           import android.provider.OpenableColumns
           import okhttp3.ConnectionPool
+          import okhttp3.Cookie
+          import okhttp3.CookieJar
+          import okhttp3.HttpUrl
           import okhttp3.OkHttpClient
           import okhttp3.Request
+          import okhttp3.Response
           import java.io.BufferedInputStream
           import java.io.BufferedOutputStream
           import java.io.BufferedReader
@@ -787,6 +791,7 @@ jobs:
           import java.nio.charset.Charset
           import java.nio.charset.CodingErrorAction
           import java.nio.charset.StandardCharsets
+          import java.util.Collections
           import java.util.Locale
           import java.util.UUID
           import java.util.concurrent.ConcurrentHashMap
@@ -839,9 +844,60 @@ jobs:
                       "accept-encoding"
                   )
 
+                  private const val M3U8_CACHE_TTL_MS = 9_000L
+
+                  private class SessionCookieJar : CookieJar {
+                      private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+                      override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                          if (cookies.isEmpty()) return
+                          val hostKey = url.host.lowercase(Locale.US)
+                          val list = store.getOrPut(hostKey) {
+                              Collections.synchronizedList(ArrayList())
+                          }
+                          synchronized(list) {
+                              val now = System.currentTimeMillis()
+                              for (incoming in cookies) {
+                                  list.removeAll {
+                                      it.name == incoming.name && it.domain == incoming.domain && it.path == incoming.path
+                                  }
+                                  if (incoming.expiresAt > now) {
+                                      list.add(incoming)
+                                  }
+                              }
+                          }
+                      }
+
+                      override fun loadForRequest(url: HttpUrl): List<Cookie> {
+                          val now = System.currentTimeMillis()
+                          val matched = ArrayList<Cookie>()
+                          for (list in store.values) {
+                              synchronized(list) {
+                                  val it = list.iterator()
+                                  while (it.hasNext()) {
+                                      val cookie = it.next()
+                                      if (cookie.expiresAt <= now) {
+                                          it.remove()
+                                      } else if (cookie.matches(url)) {
+                                          matched.add(cookie)
+                                      }
+                                  }
+                              }
+                          }
+                          return matched
+                      }
+
+                      fun clear() {
+                          store.clear()
+                      }
+                  }
+
+                  private val sessionCookieJar = SessionCookieJar()
+
                   val sharedHttpClient: OkHttpClient by lazy {
                       OkHttpClient.Builder()
                           .connectionPool(ConnectionPool(16, 5, TimeUnit.MINUTES))
+                          .cookieJar(sessionCookieJar)
                           .retryOnConnectionFailure(true)
                           .connectTimeout(15, TimeUnit.SECONDS)
                           .readTimeout(0, TimeUnit.SECONDS)
@@ -858,6 +914,26 @@ jobs:
                           .build()
                   }
               }
+
+              private data class CachedM3u8Entry(
+                  val rewrittenBytes: ByteArray,
+                  val vodMeta: HlsVodMetadata,
+                  val isMasterPlaylist: Boolean,
+                  val chosenVariantTargetUrl: String?,
+                  val expiresAtMs: Long
+              )
+
+              private data class M3u8FetchOutcome(
+                  val entry: CachedM3u8Entry? = null,
+                  val statusCode: Int = 200,
+                  val statusMessage: String = "OK"
+              )
+
+              private data class M3u8RewriteResult(
+                  val rewrittenText: String,
+                  val isMasterPlaylist: Boolean,
+                  val chosenVariantTargetUrl: String?
+              )
 
               @Volatile
               private var serverSocket: ServerSocket? = null
@@ -921,7 +997,16 @@ jobs:
               var lastUpstreamUrl: String = ""
                   private set
 
+              @Volatile
+              var lastUpstreamFailedHost: String = ""
+                  private set
+
+              @Volatile
+              private var activeM3u8FinalUrl: String = ""
+
               private val proxyTargetMap = ConcurrentHashMap<String, String>()
+              private val m3u8Cache = ConcurrentHashMap<String, CachedM3u8Entry>()
+              private val m3u8FetchLocks = ConcurrentHashMap<String, Any>()
               private val subIdCounter = AtomicInteger(1)
 
               fun getPort(): Int = serverSocket?.localPort ?: 0
@@ -1002,7 +1087,14 @@ jobs:
                   activeToken = ""
                   activeSubtitleBytes = null
                   activeSubtitleLocalUrl = null
+                  activeM3u8FinalUrl = ""
+                  lastUpstreamStatusCode = 0
+                  lastUpstreamUrl = ""
+                  lastUpstreamFailedHost = ""
                   proxyTargetMap.clear()
+                  m3u8Cache.clear()
+                  m3u8FetchLocks.clear()
+                  sessionCookieJar.clear()
                   try {
                       serverSocket?.close()
                   } catch (_: Throwable) {
@@ -1026,8 +1118,13 @@ jobs:
                   val port = ensureStarted()
                   val token = UUID.randomUUID().toString().replace("-", "")
                   proxyTargetMap.clear()
+                  m3u8Cache.clear()
+                  m3u8FetchLocks.clear()
+                  sessionCookieJar.clear()
                   lastUpstreamStatusCode = 0
                   lastUpstreamUrl = ""
+                  lastUpstreamFailedHost = ""
+                  activeM3u8FinalUrl = ""
                   activeSourceType = "LOCAL"
                   activeLocalUri = uri
                   activeMimeType = mimeType
@@ -1055,9 +1152,14 @@ jobs:
                   val port = ensureStarted()
                   val token = UUID.randomUUID().toString().replace("-", "")
                   proxyTargetMap.clear()
+                  m3u8Cache.clear()
+                  m3u8FetchLocks.clear()
+                  sessionCookieJar.clear()
                   subIdCounter.set(1)
                   lastUpstreamStatusCode = 0
                   lastUpstreamUrl = ""
+                  lastUpstreamFailedHost = ""
+                  activeM3u8FinalUrl = ""
                   activeSourceType = "PROXY"
                   activeLocalUri = null
                   activeMimeType = mimeType
@@ -1072,47 +1174,101 @@ jobs:
                   return Pair("$activeLocalBaseUrl/s/$token/media.$safeExt", subUrl)
               }
 
-              fun inspectHlsVodMetadata(
-                  remoteUrl: String,
-                  headers: Map<String, String>,
-                  pinHighestQuality: Boolean = true
-              ): HlsVodMetadata {
+              fun inspectAndPrimeHlsVodCache(): HlsVodMetadata {
+                  val target = activeRemoteUrl
+                  if (target.isBlank() || activeToken.isBlank()) return HlsVodMetadata()
                   return try {
-                      val cleanUrl = remoteUrl.trim()
-                      val reqBuilder = buildRequestBuilderWithHeaders(cleanUrl, headers)
-                      probeHttpClient.newCall(reqBuilder.get().build()).execute().use { resp ->
-                          if (!resp.isSuccessful || resp.body == null) return HlsVodMetadata()
-                          val finalUrl = resp.request.url.toString()
-                          val body = resp.body!!.string()
-                          if (!body.trimStart().startsWith("#EXTM3U")) return HlsVodMetadata()
-
-                          val lines = body.split("\n").map { it.trimEnd('\r') }
-                          val isMaster = lines.any { it.trim().startsWith("#EXT-X-STREAM-INF", ignoreCase = true) }
-                          if (isMaster) {
-                              val variants = parseMasterVariants(lines)
-                              if (variants.isEmpty()) return HlsVodMetadata()
-                              val chosen = if (pinHighestQuality) {
-                                  variants.maxByOrNull { it.bandwidth }!!
-                              } else {
-                                  variants.first()
-                              }
-                              val variantUrl = try {
-                                  URI.create(finalUrl).resolve(chosen.uriLine).toString()
-                              } catch (_: Throwable) {
-                                  chosen.uriLine
-                              }
-                              val varReq = buildRequestBuilderWithHeaders(variantUrl, headers).get().build()
-                              probeHttpClient.newCall(varReq).execute().use { varResp ->
-                                  if (!varResp.isSuccessful || varResp.body == null) return HlsVodMetadata()
-                                  val varBody = varResp.body!!.string()
-                                  val varLines = varBody.split("\n").map { it.trimEnd('\r') }
-                                  return parseVodEndListAndDuration(varLines)
-                              }
-                          }
-                          parseVodEndListAndDuration(lines)
+                      val masterOrMediaOutcome = fetchAndCacheM3u8(target, useProbeTimeout = true, allowCache = true)
+                      val firstEntry = masterOrMediaOutcome.entry ?: return HlsVodMetadata()
+                      val vodMeta = if (firstEntry.isMasterPlaylist && !firstEntry.chosenVariantTargetUrl.isNullOrBlank()) {
+                          val variantOutcome = fetchAndCacheM3u8(
+                              firstEntry.chosenVariantTargetUrl,
+                              useProbeTimeout = true,
+                              allowCache = true
+                          )
+                          variantOutcome.entry?.vodMeta ?: HlsVodMetadata()
+                      } else {
+                          firstEntry.vodMeta
                       }
+                      activeIsHlsVod = vodMeta.isVod
+                      vodMeta
                   } catch (_: Throwable) {
                       HlsVodMetadata(isVod = false, durationSec = 0)
+                  }
+              }
+
+              private fun fetchAndCacheM3u8(
+                  targetUrl: String,
+                  useProbeTimeout: Boolean,
+                  allowCache: Boolean = true
+              ): M3u8FetchOutcome {
+                  val cleanUrl = targetUrl.trim()
+                  val tokenSnap = activeToken
+                  val cacheKey = "$tokenSnap|$cleanUrl"
+                  val lock = m3u8FetchLocks.getOrPut(cacheKey) { Any() }
+
+                  synchronized(lock) {
+                      val now = System.currentTimeMillis()
+                      if (allowCache) {
+                          val cached = m3u8Cache[cacheKey]
+                          if (cached != null && cached.expiresAtMs > now) {
+                              return M3u8FetchOutcome(entry = cached, statusCode = 200, statusMessage = "OK")
+                          }
+                      }
+
+                      val client = if (useProbeTimeout) probeHttpClient else sharedHttpClient
+                      val resp = executeRequestWith403SmartRetry(
+                          client = client,
+                          cleanUrl = cleanUrl,
+                          baseHeaders = activeHeaders,
+                          isHeadMethod = false,
+                          clientRange = null,
+                          isSegment = false
+                      )
+                      resp.use { r ->
+                          val finalUrl = r.request.url.toString()
+                          if (!r.isSuccessful || r.body == null) {
+                              val host = extractHost(finalUrl)
+                              lastUpstreamStatusCode = r.code
+                              lastUpstreamUrl = finalUrl
+                              lastUpstreamFailedHost = host
+                              return M3u8FetchOutcome(
+                                  entry = null,
+                                  statusCode = r.code,
+                                  statusMessage = r.message.ifBlank { "HTTP ${r.code}" }
+                              )
+                          }
+                          val playlistText = r.body!!.string()
+                          val finalPathLower = r.request.url.encodedPath.lowercase(Locale.US)
+                          val looksValidPlaylist = playlistText.trimStart().startsWith("#EXTM3U") ||
+                              finalPathLower.endsWith(".m3u8")
+                          if (!looksValidPlaylist) {
+                              return M3u8FetchOutcome(entry = null, statusCode = 0, statusMessage = "NOT_M3U8")
+                          }
+
+                          activeM3u8FinalUrl = finalUrl
+                          val lines = playlistText.split("\n").map { it.trimEnd('\r') }
+                          val rewriteRes = rewriteM3u8Playlist(playlistText, finalUrl)
+                          val vodMeta = if (!rewriteRes.isMasterPlaylist) {
+                              parseVodEndListAndDuration(lines)
+                          } else {
+                              HlsVodMetadata()
+                          }
+                          val bytes = rewriteRes.rewrittenText.toByteArray(StandardCharsets.UTF_8)
+                          val entry = CachedM3u8Entry(
+                              rewrittenBytes = bytes,
+                              vodMeta = vodMeta,
+                              isMasterPlaylist = rewriteRes.isMasterPlaylist,
+                              chosenVariantTargetUrl = rewriteRes.chosenVariantTargetUrl,
+                              expiresAtMs = System.currentTimeMillis() + M3U8_CACHE_TTL_MS
+                          )
+                          if (tokenSnap.isNotEmpty() && tokenSnap == activeToken) {
+                              m3u8Cache[cacheKey] = entry
+                          }
+                          lastUpstreamStatusCode = 0
+                          lastUpstreamFailedHost = ""
+                          return M3u8FetchOutcome(entry = entry, statusCode = 200, statusMessage = "OK")
+                      }
                   }
               }
 
@@ -1135,17 +1291,50 @@ jobs:
                   return HlsVodMetadata(isVod = hasEndList && totalSec > 0, durationSec = if (hasEndList) totalSec else 0)
               }
 
-              private fun buildRequestBuilderWithHeaders(cleanUrl: String, headers: Map<String, String>): Request.Builder {
+              private fun extractHost(urlStr: String): String {
+                  return try {
+                      URI.create(urlStr).host?.lowercase(Locale.US).orEmpty()
+                  } catch (_: Throwable) {
+                      ""
+                  }
+              }
+
+              private fun sameRootHost(url1: String, url2: String): Boolean {
+                  val h1 = extractHost(url1)
+                  val h2 = extractHost(url2)
+                  if (h1.isBlank() || h2.isBlank()) return false
+                  if (h1 == h2) return true
+                  val r1 = h1.split('.').takeLast(2).joinToString(".")
+                  val r2 = h2.split('.').takeLast(2).joinToString(".")
+                  return r1.isNotBlank() && r1 == r2
+              }
+
+              private fun buildRequestBuilderWithHeaders(
+                  cleanUrl: String,
+                  headers: Map<String, String>,
+                  omitCookiesAndOrigin: Boolean = false
+              ): Request.Builder {
                   val reqBuilder = Request.Builder().url(cleanUrl)
                   var hasUserAgent = false
+                  var hasAccept = false
+                  var hasAcceptLanguage = false
                   for ((k, v) in headers) {
                       val lower = k.lowercase(Locale.US)
                       if (lower in HOP_BY_HOP_HEADERS || lower == "range" || lower == "content-length") continue
+                      if (omitCookiesAndOrigin && (lower == "cookie" || lower == "origin")) continue
                       if (lower == "user-agent") hasUserAgent = true
+                      if (lower == "accept") hasAccept = true
+                      if (lower == "accept-language") hasAcceptLanguage = true
                       reqBuilder.header(k, v)
                   }
                   if (!hasUserAgent) {
                       reqBuilder.header("User-Agent", DEFAULT_USER_AGENT)
+                  }
+                  if (!hasAccept) {
+                      reqBuilder.header("Accept", "*/*")
+                  }
+                  if (!hasAcceptLanguage) {
+                      reqBuilder.header("Accept-Language", "ar,en-US;q=0.9,en;q=0.8")
                   }
                   reqBuilder.header("Accept-Encoding", "identity")
                   return reqBuilder
@@ -1582,17 +1771,111 @@ jobs:
                   }
               }
 
-              private fun buildUpstreamRequestBuilder(cleanUrl: String): Request.Builder {
-                  return buildRequestBuilderWithHeaders(cleanUrl, activeHeaders)
+              private fun buildUpstreamRequestBuilder(
+                  cleanUrl: String,
+                  overrideHeaders: Map<String, String> = activeHeaders,
+                  omitCookiesAndOrigin: Boolean = false
+              ): Request.Builder {
+                  return buildRequestBuilderWithHeaders(cleanUrl, overrideHeaders, omitCookiesAndOrigin)
               }
 
-              private fun probeHeadViaGetRange(cleanUrl: String): Triple<Int, Map<String, String>, String?>? {
+              private fun executeRequestWith403SmartRetry(
+                  client: OkHttpClient,
+                  cleanUrl: String,
+                  baseHeaders: Map<String, String>,
+                  isHeadMethod: Boolean,
+                  clientRange: String?,
+                  isSegment: Boolean
+              ): Response {
+                  val isCrossHostSegment = isSegment &&
+                      !sameRootHost(cleanUrl, activeRemoteUrl) &&
+                      !sameRootHost(cleanUrl, activeM3u8FinalUrl)
+
+                  fun execOnce(hdrs: Map<String, String>, stripCookiesOrigin: Boolean): Response {
+                      val rb = buildUpstreamRequestBuilder(cleanUrl, hdrs, omitCookiesAndOrigin = stripCookiesOrigin)
+                      if (!clientRange.isNullOrBlank()) {
+                          rb.header("Range", clientRange)
+                      }
+                      if (isHeadMethod) rb.head() else rb.get()
+                      return client.newCall(rb.build()).execute()
+                  }
+
+                  val firstResp = execOnce(baseHeaders, isCrossHostSegment)
+                  if (firstResp.code != 403 && firstResp.code != 401) {
+                      if (firstResp.code < 400) {
+                          lastUpstreamStatusCode = 0
+                          lastUpstreamFailedHost = ""
+                      }
+                      return firstResp
+                  }
+
+                  val firstFinalUrl = firstResp.request.url.toString()
+                  try {
+                      firstResp.close()
+                  } catch (_: Throwable) {
+                  }
+
+                  val host = extractHost(firstFinalUrl).ifBlank { extractHost(cleanUrl) }
+                  val scheme = try { URI.create(firstFinalUrl).scheme ?: "https" } catch (_: Throwable) { "https" }
+                  val originBase = if (host.isNotBlank()) "$scheme://$host" else ""
+
+                  val existingReferer = baseHeaders.entries.firstOrNull { it.key.equals("Referer", ignoreCase = true) }?.value.orEmpty()
+                  val existingOrigin = baseHeaders.entries.firstOrNull { it.key.equals("Origin", ignoreCase = true) }?.value.orEmpty()
+
+                  val retryHeaders = HashMap<String, String>()
+                  for ((k, v) in baseHeaders) {
+                      retryHeaders[k] = v
+                  }
+                  var retryStripCookiesOrigin = false
+
+                  if (isCrossHostSegment) {
+                      // مسار مقاطع على CDN خارجي: إذا فشل مع حجب الكوكيز نجرّب بترويسات كاملة أو بدون Referer متعارض
+                      retryStripCookiesOrigin = !isCrossHostSegment
+                      retryHeaders.entries.removeAll {
+                          it.key.equals("Referer", ignoreCase = true) ||
+                              it.key.equals("Origin", ignoreCase = true) ||
+                              it.key.equals("Cookie", ignoreCase = true)
+                      }
+                      if (originBase.isNotBlank()) {
+                          retryHeaders["Referer"] = "$originBase/"
+                      }
+                  } else if (originBase.isNotBlank() && (existingReferer.isBlank() || !sameRootHost(existingReferer, firstFinalUrl))) {
+                      // Referer مفقود أو تابع لصفحة خارجية (مثل الصفحة الأم بدلاً من مشغل الفيديو)
+                      retryHeaders.entries.removeAll {
+                          it.key.equals("Referer", ignoreCase = true) || it.key.equals("Origin", ignoreCase = true)
+                      }
+                      retryHeaders["Referer"] = "$originBase/"
+                      retryHeaders["Origin"] = originBase
+                  } else if (existingOrigin.isNotBlank()) {
+                      // إذا كان Origin مرفوضاً على طلبات GET، نجرب بدونه مع بقاء Referer و Cookie
+                      retryHeaders.entries.removeAll { it.key.equals("Origin", ignoreCase = true) }
+                  } else {
+                      retryStripCookiesOrigin = true
+                  }
+
+                  val secondResp = execOnce(retryHeaders, retryStripCookiesOrigin)
+                  val secondFinalUrl = secondResp.request.url.toString()
+                  if (secondResp.code >= 400) {
+                      lastUpstreamStatusCode = secondResp.code
+                      lastUpstreamUrl = secondFinalUrl
+                      lastUpstreamFailedHost = extractHost(secondFinalUrl).ifBlank { host }
+                  } else {
+                      lastUpstreamStatusCode = 0
+                      lastUpstreamFailedHost = ""
+                  }
+                  return secondResp
+              }
+
+              private fun probeHeadViaGetRange(cleanUrl: String, isSegment: Boolean): Triple<Int, Map<String, String>, String?>? {
                   return try {
-                      val probeReq = buildUpstreamRequestBuilder(cleanUrl)
-                          .header("Range", "bytes=0-0")
-                          .get()
-                          .build()
-                      sharedHttpClient.newCall(probeReq).execute().use { resp ->
+                      executeRequestWith403SmartRetry(
+                          client = sharedHttpClient,
+                          cleanUrl = cleanUrl,
+                          baseHeaders = activeHeaders,
+                          isHeadMethod = false,
+                          clientRange = "bytes=0-0",
+                          isSegment = isSegment
+                      ).use { resp ->
                           val headersMap = HashMap<String, String>()
                           resp.header("Content-Type")?.let { headersMap["Content-Type"] = it }
                           resp.header("Accept-Ranges")?.let { headersMap["Accept-Ranges"] = it }
@@ -1634,15 +1917,49 @@ jobs:
                   val subHeaderUrl = if (isMainMediaPath) activeSubtitleLocalUrl else null
                   val looksLikeM3u8Path = localPath.lowercase(Locale.US).endsWith(".m3u8") ||
                       cleanUrl.substringBefore('?').lowercase(Locale.US).endsWith(".m3u8")
+                  val isSegment = localPath.startsWith("/p/", ignoreCase = true) && !looksLikeM3u8Path
+
+                  // عدم إرسال HEAD خارجياً أبداً لملفات .m3u8: طلب GET واحد + تخزين مؤقت 9 ثوانٍ
+                  if (looksLikeM3u8Path) {
+                      val outcome = fetchAndCacheM3u8(cleanUrl, useProbeTimeout = false, allowCache = true)
+                      val entry = outcome.entry
+                      if (entry != null) {
+                          val bytes = entry.rewrittenBytes
+                          val hlsOp = if (activeIsHlsVod) "10" else "00"
+                          val headers = buildString {
+                              append("HTTP/1.1 200 OK\r\n")
+                              append("Content-Type: application/vnd.apple.mpegurl\r\n")
+                              append("Content-Length: ").append(bytes.size).append("\r\n")
+                              append("Cache-Control: no-cache\r\n")
+                              append("transferMode.dlna.org: Streaming\r\n")
+                              append("contentFeatures.dlna.org: DLNA.ORG_OP=").append(hlsOp).append(";DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                              if (!subHeaderUrl.isNullOrBlank()) {
+                                  append("CaptionInfo.sec: ").append(subHeaderUrl).append("\r\n")
+                              }
+                              append("Connection: close\r\n")
+                              append("\r\n")
+                          }
+                          output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                          if (!isHead) {
+                              output.write(bytes)
+                          }
+                          output.flush()
+                          return
+                      } else if (outcome.statusCode >= 400) {
+                          sendErrorResponse(output, outcome.statusCode, outcome.statusMessage)
+                          return
+                      }
+                  }
 
                   if (isHead) {
-                      val headBuilder = buildUpstreamRequestBuilder(cleanUrl)
-                      if (!clientRange.isNullOrBlank() && !looksLikeM3u8Path) {
-                          headBuilder.header("Range", clientRange)
-                      }
-                      headBuilder.head()
-
-                      sharedHttpClient.newCall(headBuilder.build()).execute().use { resp ->
+                      executeRequestWith403SmartRetry(
+                          client = sharedHttpClient,
+                          cleanUrl = cleanUrl,
+                          baseHeaders = activeHeaders,
+                          isHeadMethod = true,
+                          clientRange = clientRange,
+                          isSegment = isSegment
+                      ).use { resp ->
                           val finalUrl = resp.request.url.toString()
                           var statusCode = resp.code
                           var statusReason = resp.message.ifBlank { "OK" }
@@ -1650,12 +1967,35 @@ jobs:
                           var respLen = resp.header("Content-Length")
                           var respRange = resp.header("Content-Range")
                           var acceptRanges = resp.header("Accept-Ranges")
-                          val isHlsHead = looksLikeM3u8Path ||
-                              contentType.lowercase(Locale.US).contains("mpegurl") ||
+                          val isHlsHead = contentType.lowercase(Locale.US).contains("mpegurl") ||
                               contentType.lowercase(Locale.US).contains("m3u")
 
-                          if ((!resp.isSuccessful || (respLen.isNullOrBlank() && !isHlsHead)) && !isHlsHead) {
-                              val probed = probeHeadViaGetRange(cleanUrl)
+                          if (isHlsHead && resp.isSuccessful) {
+                              val outcome = fetchAndCacheM3u8(finalUrl, useProbeTimeout = false, allowCache = true)
+                              val entry = outcome.entry
+                              if (entry != null) {
+                                  val hlsOp = if (activeIsHlsVod) "10" else "00"
+                                  val headers = buildString {
+                                      append("HTTP/1.1 200 OK\r\n")
+                                      append("Content-Type: application/vnd.apple.mpegurl\r\n")
+                                      append("Content-Length: ").append(entry.rewrittenBytes.size).append("\r\n")
+                                      append("Cache-Control: no-cache\r\n")
+                                      append("transferMode.dlna.org: Streaming\r\n")
+                                      append("contentFeatures.dlna.org: DLNA.ORG_OP=").append(hlsOp).append(";DLNA.ORG_CI=0;DLNA.ORG_FLAGS=01700000000000000000000000000000\r\n")
+                                      if (!subHeaderUrl.isNullOrBlank()) {
+                                          append("CaptionInfo.sec: ").append(subHeaderUrl).append("\r\n")
+                                      }
+                                      append("Connection: close\r\n")
+                                      append("\r\n")
+                                  }
+                                  output.write(headers.toByteArray(StandardCharsets.US_ASCII))
+                                  output.flush()
+                                  return
+                              }
+                          }
+
+                          if ((!resp.isSuccessful || respLen.isNullOrBlank()) && !isHlsHead) {
+                              val probed = probeHeadViaGetRange(cleanUrl, isSegment)
                               if (probed != null && (probed.first in 200..299)) {
                                   val pm = probed.second
                                   contentType = pm["Content-Type"] ?: contentType
@@ -1679,6 +2019,10 @@ jobs:
                           if (statusCode >= 400) {
                               lastUpstreamStatusCode = statusCode
                               lastUpstreamUrl = finalUrl
+                              lastUpstreamFailedHost = extractHost(finalUrl)
+                          } else {
+                              lastUpstreamStatusCode = 0
+                              lastUpstreamFailedHost = ""
                           }
 
                           val dlnaOp = when {
@@ -1713,18 +2057,22 @@ jobs:
                       }
                   }
 
-                  val reqBuilder = buildUpstreamRequestBuilder(cleanUrl)
-                  if (!clientRange.isNullOrBlank() && !looksLikeM3u8Path) {
-                      reqBuilder.header("Range", clientRange)
-                  }
-                  reqBuilder.get()
-
-                  val call = sharedHttpClient.newCall(reqBuilder.build())
-                  call.execute().use { resp ->
+                  executeRequestWith403SmartRetry(
+                      client = sharedHttpClient,
+                      cleanUrl = cleanUrl,
+                      baseHeaders = activeHeaders,
+                      isHeadMethod = false,
+                      clientRange = clientRange,
+                      isSegment = isSegment
+                  ).use { resp ->
                       val finalUrl = resp.request.url.toString()
                       if (resp.code >= 400) {
                           lastUpstreamStatusCode = resp.code
                           lastUpstreamUrl = finalUrl
+                          lastUpstreamFailedHost = extractHost(finalUrl)
+                      } else {
+                          lastUpstreamStatusCode = 0
+                          lastUpstreamFailedHost = ""
                       }
                       val contentType = resp.header("Content-Type") ?: guessMimeFromUrl(finalUrl, activeMimeType)
                       val lowerType = contentType.lowercase(Locale.US)
@@ -1732,15 +2080,15 @@ jobs:
                       val isHlsPlaylist = resp.isSuccessful && (
                           lowerType.contains("mpegurl") ||
                               lowerType.contains("m3u") ||
-                              finalPathNoQuery.endsWith(".m3u8") ||
-                              looksLikeM3u8Path
+                              finalPathNoQuery.endsWith(".m3u8")
                           )
 
                       if (isHlsPlaylist && resp.body != null) {
                           val playlistText = resp.body!!.string()
                           if (playlistText.trimStart().startsWith("#EXTM3U") || finalPathNoQuery.endsWith(".m3u8")) {
-                              val rewritten = rewriteM3u8Playlist(playlistText, finalUrl)
-                              val bytes = rewritten.toByteArray(StandardCharsets.UTF_8)
+                              activeM3u8FinalUrl = finalUrl
+                              val rewriteRes = rewriteM3u8Playlist(playlistText, finalUrl)
+                              val bytes = rewriteRes.rewrittenText.toByteArray(StandardCharsets.UTF_8)
                               val hlsOp = if (activeIsHlsVod) "10" else "00"
                               val headers = buildString {
                                   append("HTTP/1.1 200 OK\r\n")
@@ -1783,11 +2131,11 @@ jobs:
 
                       val respLen = resp.header("Content-Length")
                       val respRange = resp.header("Content-Range")
-                      val acceptRanges = resp.header("Accept-Ranges") ?: if (resp.isSuccessful && !looksLikeM3u8Path) "bytes" else null
-                      val dlnaOp = when {
-                          (looksLikeM3u8Path || lowerType.contains("mpegurl")) && activeIsHlsVod -> "10"
-                          looksLikeM3u8Path || lowerType.contains("mpegurl") -> "00"
-                          else -> "01"
+                      val acceptRanges = resp.header("Accept-Ranges") ?: if (resp.isSuccessful) "bytes" else null
+                      val dlnaOp = if (lowerType.contains("mpegurl")) {
+                          if (activeIsHlsVod) "10" else "00"
+                      } else {
+                          "01"
                       }
 
                       val headers = buildString {
@@ -1872,7 +2220,7 @@ jobs:
                   }
               }
 
-              private fun rewriteM3u8Playlist(body: String, finalBaseUrl: String): String {
+              private fun rewriteM3u8Playlist(body: String, finalBaseUrl: String): M3u8RewriteResult {
                   val baseUri = URI.create(finalBaseUrl)
                   val lines = body.split("\n").map { it.trimEnd('\r') }
 
@@ -1906,6 +2254,11 @@ jobs:
 
                       if (variants.isNotEmpty()) {
                           val best = variants.maxByOrNull { it.bandwidth }!!
+                          val chosenResolvedUrl = try {
+                              baseUri.resolve(best.uriLine).toString()
+                          } catch (_: Throwable) {
+                              best.uriLine
+                          }
                           val sb = StringBuilder(512)
                           for (hl in headerLines) {
                               sb.append(rewriteUriAttributes(hl, baseUri, defaultExt = "m3u8")).append('\n')
@@ -1921,7 +2274,11 @@ jobs:
                           sb.append(best.infLine).append('\n')
                           val proxiedVariant = registerProxySubUrl(baseUri, best.uriLine, defaultExt = "m3u8")
                           sb.append(proxiedVariant).append('\n')
-                          return sb.toString()
+                          return M3u8RewriteResult(
+                              rewrittenText = sb.toString(),
+                              isMasterPlaylist = true,
+                              chosenVariantTargetUrl = chosenResolvedUrl
+                          )
                       }
                   }
 
@@ -1941,7 +2298,11 @@ jobs:
                           sb.append(proxied).append('\n')
                       }
                   }
-                  return sb.toString()
+                  return M3u8RewriteResult(
+                      rewrittenText = sb.toString(),
+                      isMasterPlaylist = isMasterPlaylist,
+                      chosenVariantTargetUrl = null
+                  )
               }
 
               private fun registerProxySubUrl(baseUri: URI, relativeOrAbsolute: String, defaultExt: String): String {
@@ -2087,6 +2448,7 @@ jobs:
           import android.widget.Toast
           import androidx.activity.OnBackPressedCallback
           import androidx.appcompat.app.AppCompatActivity
+          import okhttp3.CookieJar
           import okhttp3.OkHttpClient
           import okhttp3.Request
           import org.json.JSONObject
@@ -2160,7 +2522,8 @@ jobs:
                   val label: String,
                   val headers: Map<String, String>,
                   val priorityScore: Int,
-                  val contentLengthBytes: Long = -1L
+                  val contentLengthBytes: Long = -1L,
+                  val fromDom: Boolean = false
               )
 
               private lateinit var webView: WebView
@@ -2205,6 +2568,7 @@ jobs:
               private val sniffExecutor = Executors.newFixedThreadPool(3)
               private val sniffHttpClient: OkHttpClient by lazy {
                   DlnaHttpServer.sharedHttpClient.newBuilder()
+                      .cookieJar(CookieJar.NO_COOKIES)
                       .connectTimeout(3, TimeUnit.SECONDS)
                       .readTimeout(3, TimeUnit.SECONDS)
                       .callTimeout(3, TimeUnit.SECONDS)
@@ -2887,13 +3251,14 @@ jobs:
                                   mimeType = guessedMime,
                                   label = label?.takeIf { it.isNotBlank() } ?: "",
                                   headers = headers,
-                                  priorityScore = computePriorityScore(cleanPath, safeKind)
+                                  priorityScore = computePriorityScore(cleanPath, safeKind),
+                                  fromDom = true
                               )
                           )
                       } else if (probedUrls.add(cleanUrl)) {
                           val isKnownVideo = isKnownVideoFilePath(cleanPath)
                           sniffExecutor.execute {
-                              probeMediaAsync(cleanUrl, headers, isKnownVideo, guessedMime, label.orEmpty())
+                              probeMediaAsync(cleanUrl, headers, isKnownVideo, guessedMime, label.orEmpty(), fromDom = true)
                           }
                       }
                   }
@@ -3049,6 +3414,7 @@ jobs:
                           "user-agent" -> out["User-Agent"] = v
                           "origin" -> out["Origin"] = v
                           "authorization" -> out["Authorization"] = v
+                          "accept-language" -> out["Accept-Language"] = v
                       }
                   }
                   if (!out.containsKey("Referer") && pageUrlSnap.startsWith("http", ignoreCase = true)) {
@@ -3161,7 +3527,8 @@ jobs:
                   headers: Map<String, String>,
                   isKnownVideoExt: Boolean,
                   fallbackMime: String,
-                  customLabel: String
+                  customLabel: String,
+                  fromDom: Boolean = false
               ) {
                   val cleanPath = urlStr.substringBefore('?').substringBefore('#').lowercase(Locale.US)
                   if (shouldSkipNoiseSegment(urlStr, cleanPath)) return
@@ -3216,12 +3583,12 @@ jobs:
                       effectiveMime.contains("mpegurl") || effectiveMime.contains("x-mpegurl") -> {
                           hasCapturedPlaylist = true
                           addCapturedItem(
-                              SniffedMediaItem(urlStr, "VIDEO", "application/vnd.apple.mpegurl", customLabel.ifBlank { "HLS Stream" }, headers, 98, resolvedLength)
+                              SniffedMediaItem(urlStr, "VIDEO", "application/vnd.apple.mpegurl", customLabel.ifBlank { "HLS Stream" }, headers, 98, resolvedLength, fromDom = fromDom)
                           )
                       }
                       effectiveMime.contains("text/vtt") || effectiveMime.contains("subrip") || effectiveMime.contains("x-subrip") -> {
                           addCapturedItem(
-                              SniffedMediaItem(urlStr, "SUBTITLE", effectiveMime, customLabel.ifBlank { "Subtitle" }, headers, 50, resolvedLength)
+                              SniffedMediaItem(urlStr, "SUBTITLE", effectiveMime, customLabel.ifBlank { "Subtitle" }, headers, 50, resolvedLength, fromDom = fromDom)
                           )
                       }
                       effectiveMime.contains("video/") || (isKnownVideoExt && !resolvedMime.contains("text/")) -> {
@@ -3229,9 +3596,16 @@ jobs:
                           if (resolvedLength in 1 until MIN_MP4_VIDEO_BYTES) return
                           val finalMime = if (effectiveMime.contains("video/")) effectiveMime else fallbackMime
                           addCapturedItem(
-                              SniffedMediaItem(urlStr, "VIDEO", finalMime, customLabel, headers, if (isKnownVideoExt) 90 else 85, resolvedLength)
+                              SniffedMediaItem(urlStr, "VIDEO", finalMime, customLabel, headers, if (isKnownVideoExt) 90 else 85, resolvedLength, fromDom = fromDom)
                           )
                       }
+                  }
+              }
+
+              private fun hasRichNetworkHeaders(headers: Map<String, String>): Boolean {
+                  return headers.keys.any { k ->
+                      val lower = k.lowercase(Locale.US)
+                      lower == "referer" || lower == "origin" || lower == "cookie" || lower == "authorization"
                   }
               }
 
@@ -3255,7 +3629,40 @@ jobs:
                           }
                       }
                   }
-                  capturedMap[item.url] = item
+
+                  val existing = capturedMap[item.url]
+                  if (existing != null) {
+                      // حماية ترويسات طلبات الشبكة الحقيقية (Referer / Origin / Cookie / Authorization) من استبدالها عبر مسح DOM الدوري
+                      if (item.fromDom && (!existing.fromDom || hasRichNetworkHeaders(existing.headers))) {
+                          val mergedHeaders = HashMap<String, String>(item.headers).apply {
+                              putAll(existing.headers)
+                          }
+                          val updated = existing.copy(
+                              label = existing.label.ifBlank { item.label },
+                              headers = mergedHeaders,
+                              priorityScore = maxOf(existing.priorityScore, item.priorityScore),
+                              contentLengthBytes = maxOf(existing.contentLengthBytes, item.contentLengthBytes)
+                          )
+                          if (updated == existing) return
+                          capturedMap[item.url] = updated
+                          runOnUiThread { updateSnifferBadgeAndList() }
+                          return
+                      }
+
+                      val mergedHeaders = HashMap<String, String>(existing.headers).apply {
+                          putAll(item.headers)
+                      }
+                      capturedMap[item.url] = item.copy(
+                          label = item.label.ifBlank { existing.label },
+                          headers = mergedHeaders,
+                          priorityScore = maxOf(existing.priorityScore, item.priorityScore),
+                          contentLengthBytes = maxOf(existing.contentLengthBytes, item.contentLengthBytes),
+                          fromDom = existing.fromDom && item.fromDom
+                      )
+                  } else {
+                      capturedMap[item.url] = item
+                  }
+
                   runOnUiThread {
                       updateSnifferBadgeAndList()
                   }
@@ -3405,6 +3812,10 @@ jobs:
               }
 
               private fun returnCapturedMedia(video: SniffedMediaItem) {
+                  try {
+                      CookieManager.getInstance().flush()
+                  } catch (_: Throwable) {
+                  }
                   val rootJson = JSONObject()
                   val vidJson = JSONObject().apply {
                       put("url", video.url)
@@ -4110,15 +4521,6 @@ jobs:
                   )
 
                   commandExecutor.submit {
-                      val vodMeta = if (isHls && effectiveUseProxy) {
-                          httpServer.inspectHlsVodMetadata(cleanUrl, headers, pinHighestQuality)
-                      } else {
-                          HlsVodMetadata(isVod = false, durationSec = 0)
-                      }
-                      activeIsHlsVod = vodMeta.isVod
-                      parsedVodDurationSec = vodMeta.durationSec
-
-                      val seekable = if (isHls) vodMeta.isVod else true
                       val prepared = if (effectiveUseProxy) {
                           httpServer.prepareProxySession(
                               cleanUrl,
@@ -4126,12 +4528,21 @@ jobs:
                               mimeType,
                               fileExt,
                               pinHighestQuality,
-                              isHlsVod = vodMeta.isVod,
+                              isHlsVod = false,
                               subtitle = subtitle
                           )
                       } else {
                           Pair(cleanUrl, null)
                       }
+                      val vodMeta = if (isHls && effectiveUseProxy) {
+                          httpServer.inspectAndPrimeHlsVodCache()
+                      } else {
+                          HlsVodMetadata(isVod = false, durationSec = 0)
+                      }
+                      activeIsHlsVod = vodMeta.isVod
+                      parsedVodDurationSec = vodMeta.durationSec
+                      val seekable = if (isHls) vodMeta.isVod else true
+
                       castInternal(
                           device = device,
                           title = title,
@@ -4181,19 +4592,6 @@ jobs:
                               (subtitle != null && subtitle.uriOrUrl.isNotBlank())
                           val mode = if (effectiveUseProxy) "LOCAL_PROXY" else "DIRECT_URL"
 
-                          val vodMeta = if (isHls && effectiveUseProxy) {
-                              if (activeIsHlsVod && parsedVodDurationSec > 0) {
-                                  HlsVodMetadata(isVod = true, durationSec = parsedVodDurationSec)
-                              } else {
-                                  httpServer.inspectHlsVodMetadata(cleanUrl, last.headers, last.pinHighestQuality)
-                              }
-                          } else {
-                              HlsVodMetadata()
-                          }
-                          activeIsHlsVod = vodMeta.isVod
-                          parsedVodDurationSec = vodMeta.durationSec
-                          val seekable = if (isHls) vodMeta.isVod else true
-
                           val prepared = if (effectiveUseProxy) {
                               httpServer.prepareProxySession(
                                   cleanUrl,
@@ -4201,12 +4599,21 @@ jobs:
                                   last.mimeType,
                                   last.fileExt,
                                   last.pinHighestQuality,
-                                  isHlsVod = vodMeta.isVod,
+                                  isHlsVod = activeIsHlsVod,
                                   subtitle = subtitle
                               )
                           } else {
                               Pair(cleanUrl, null)
                           }
+                          val vodMeta = if (isHls && effectiveUseProxy) {
+                              httpServer.inspectAndPrimeHlsVodCache()
+                          } else {
+                              HlsVodMetadata()
+                          }
+                          activeIsHlsVod = vodMeta.isVod
+                          parsedVodDurationSec = vodMeta.durationSec
+                          val seekable = if (isHls) vodMeta.isVod else true
+
                           castInternal(
                               device = last.device,
                               title = last.title,
@@ -4318,8 +4725,10 @@ jobs:
                   } catch (e: Throwable) {
                       val baseMsg = e.message ?: "تعذر بدء البث إلى الشاشة"
                       val upstreamCode = httpServer.lastUpstreamStatusCode
+                      val failedHost = httpServer.lastUpstreamFailedHost
                       val enrichedMsg = if (baseMsg.contains("716") && upstreamCode >= 400) {
-                          "$baseMsg (فشل المصدر برمز HTTP $upstreamCode)"
+                          val hostPart = if (failedHost.isNotBlank()) " من $failedHost" else ""
+                          "$baseMsg (فشل المصدر$hostPart برمز HTTP $upstreamCode)"
                       } else {
                           baseMsg
                       }

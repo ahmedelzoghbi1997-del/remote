@@ -852,6 +852,7 @@ jobs:
           import java.util.concurrent.TimeUnit
           import java.util.concurrent.atomic.AtomicBoolean
           import java.util.concurrent.atomic.AtomicInteger
+          import java.util.concurrent.atomic.AtomicReference
           import kotlin.math.roundToInt
 
           data class HlsVodMetadata(
@@ -1707,10 +1708,10 @@ jobs:
                   val eofSentinel = Unit
                   val directBuf = if (isHeadMethod) null else ByteBuffer.allocateDirect(CRONET_READ_BUFFER_BYTES)
 
-                  @Volatile var startedInfo: UrlResponseInfo? = null
-                  @Volatile var startError: Throwable? = null
-                  @Volatile var currentFinalUrl = cleanUrl
-                  var redirectCount = 0
+                  val startedInfoRef = AtomicReference<UrlResponseInfo?>(null)
+                  val startErrorRef = AtomicReference<Throwable?>(null)
+                  val currentFinalUrlRef = AtomicReference(cleanUrl)
+                  val redirectCountRef = AtomicInteger(0)
 
                   fun enqueueBlocking(item: Any): Boolean {
                       while (!closedFlag.get()) {
@@ -1730,22 +1731,23 @@ jobs:
                       cleanUrl,
                       object : UrlRequest.Callback() {
                           override fun onRedirectReceived(request: UrlRequest, info: UrlResponseInfo, newLocationUrl: String) {
-                              saveSetCookiesFromHeaders(currentFinalUrl, info.allHeaders["set-cookie"])
-                              redirectCount++
-                              if (redirectCount > CRONET_MAX_REDIRECTS || closedFlag.get()) {
-                                  startError = IOException("Too many redirects ($redirectCount)")
+                              saveSetCookiesFromHeaders(currentFinalUrlRef.get(), info.allHeaders["set-cookie"])
+                              val count = redirectCountRef.incrementAndGet()
+                              if (count > CRONET_MAX_REDIRECTS || closedFlag.get()) {
+                                  startErrorRef.set(IOException("Too many redirects ($count)"))
                                   request.cancel()
                                   headersLatch.countDown()
                                   return
                               }
-                              currentFinalUrl = newLocationUrl
+                              currentFinalUrlRef.set(newLocationUrl)
                               request.followRedirect()
                           }
 
                           override fun onResponseStarted(request: UrlRequest, info: UrlResponseInfo) {
-                              currentFinalUrl = info.url ?: currentFinalUrl
-                              saveSetCookiesFromHeaders(currentFinalUrl, info.allHeaders["set-cookie"])
-                              startedInfo = info
+                              val resolvedUrl = info.url ?: currentFinalUrlRef.get()
+                              currentFinalUrlRef.set(resolvedUrl)
+                              saveSetCookiesFromHeaders(resolvedUrl, info.allHeaders["set-cookie"])
+                              startedInfoRef.set(info)
                               headersLatch.countDown()
                               if (isHeadMethod || closedFlag.get() || directBuf == null) {
                                   request.cancel()
@@ -1783,8 +1785,8 @@ jobs:
                           }
 
                           override fun onFailed(request: UrlRequest, info: UrlResponseInfo?, error: CronetException) {
-                              if (startedInfo == null) {
-                                  startError = error
+                              if (startedInfoRef.get() == null) {
+                                  startErrorRef.set(error)
                                   headersLatch.countDown()
                               } else {
                                   enqueueBlocking(error)
@@ -1792,8 +1794,8 @@ jobs:
                           }
 
                           override fun onCanceled(request: UrlRequest, info: UrlResponseInfo?) {
-                              if (startedInfo == null && startError == null) {
-                                  startError = IOException("Request canceled")
+                              if (startedInfoRef.get() == null && startErrorRef.get() == null) {
+                                  startErrorRef.set(IOException("Request canceled"))
                                   headersLatch.countDown()
                               }
                               queue.offer(eofSentinel)
@@ -1828,12 +1830,12 @@ jobs:
                       urlRequest.cancel()
                       throw SocketTimeoutException("Cronet timeout waiting for response headers")
                   }
-                  startError?.let {
+                  startErrorRef.get()?.let {
                       closedFlag.set(true)
                       urlRequest.cancel()
                       throw it
                   }
-                  val info = startedInfo ?: throw IOException("Cronet response info missing")
+                  val info = startedInfoRef.get() ?: throw IOException("Cronet response info missing")
 
                   val lowerHeaders = HashMap<String, MutableList<String>>()
                   var rawContentEncoding = ""
@@ -1866,7 +1868,7 @@ jobs:
                   return UpstreamResponse(
                       code = info.httpStatusCode,
                       message = info.httpStatusText?.ifBlank { "OK" } ?: "OK",
-                      finalUrl = info.url ?: currentFinalUrl,
+                      finalUrl = info.url ?: currentFinalUrlRef.get(),
                       engineName = "Cronet",
                       headers = lowerHeaders,
                       decompressedByEngine = decodedByCronet,

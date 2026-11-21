@@ -7,13 +7,21 @@ import { defineConfig, type Plugin } from 'vite';
 function rnJsxPlugin(): Plugin {
   const rootAppJs = path.resolve(__dirname, 'App.js');
   const wifiServiceJs = path.resolve(__dirname, 'src/services/WifiControl.js');
+  const browserTouchpadJs = path.resolve(
+    __dirname,
+    'src/components/TvBrowserTouchpadModal.js'
+  );
 
   return {
     name: 'rn-jsx-loader',
     enforce: 'pre',
     async transform(code, id) {
       const cleanId = id.split('?')[0];
-      if (cleanId === rootAppJs || cleanId === wifiServiceJs) {
+      if (
+        cleanId === rootAppJs ||
+        cleanId === wifiServiceJs ||
+        cleanId === browserTouchpadJs
+      ) {
         const result = await esbuildTransform(code, {
           loader: 'jsx',
           jsx: 'automatic',

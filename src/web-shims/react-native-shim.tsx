@@ -180,12 +180,113 @@ export function StatusBar(_props: { barStyle?: string; backgroundColor?: string 
   return null;
 }
 
+export const PanResponder = {
+  create(config: Record<string, any>) {
+    let startX = 0;
+    let startY = 0;
+    let lastX = 0;
+    let lastY = 0;
+    let lastTime = 0;
+    let granted = false;
+
+    const makeGestureState = (e: any) => {
+      const ne = (e && e.nativeEvent) || {};
+      const pageX = Number(ne.pageX ?? ne.locationX ?? 0);
+      const pageY = Number(ne.pageY ?? ne.locationY ?? 0);
+      const now = Date.now();
+      const dt = Math.max(1, now - (lastTime || now));
+      const vx = (pageX - lastX) / dt;
+      const vy = (pageY - lastY) / dt;
+      lastX = pageX;
+      lastY = pageY;
+      lastTime = now;
+
+      return {
+        stateID: 1,
+        x0: startX,
+        y0: startY,
+        moveX: pageX,
+        moveY: pageY,
+        dx: pageX - startX,
+        dy: pageY - startY,
+        vx,
+        vy,
+        numberActiveTouches: granted ? 1 : 0,
+      };
+    };
+
+    const panHandlers = {
+      onStartShouldSetResponder: (e: any) => {
+        if (typeof config.onStartShouldSetPanResponder === 'function') {
+          const ne = (e && e.nativeEvent) || {};
+          startX = Number(ne.pageX ?? ne.locationX ?? 0);
+          startY = Number(ne.pageY ?? ne.locationY ?? 0);
+          lastX = startX;
+          lastY = startY;
+          lastTime = Date.now();
+          return Boolean(config.onStartShouldSetPanResponder(e, makeGestureState(e)));
+        }
+        return false;
+      },
+      onMoveShouldSetResponder: (e: any) => {
+        if (typeof config.onMoveShouldSetPanResponder === 'function') {
+          return Boolean(config.onMoveShouldSetPanResponder(e, makeGestureState(e)));
+        }
+        return false;
+      },
+      onResponderTerminationRequest: (e: any) => {
+        if (typeof config.onPanResponderTerminationRequest === 'function') {
+          return Boolean(config.onPanResponderTerminationRequest(e, makeGestureState(e)));
+        }
+        return true;
+      },
+      onResponderGrant: (e: any) => {
+        const ne = (e && e.nativeEvent) || {};
+        startX = Number(ne.pageX ?? ne.locationX ?? 0);
+        startY = Number(ne.pageY ?? ne.locationY ?? 0);
+        lastX = startX;
+        lastY = startY;
+        lastTime = Date.now();
+        granted = true;
+        if (typeof config.onPanResponderGrant === 'function') {
+          config.onPanResponderGrant(e, makeGestureState(e));
+        }
+      },
+      onResponderMove: (e: any) => {
+        if (typeof config.onPanResponderMove === 'function') {
+          config.onPanResponderMove(e, makeGestureState(e));
+        }
+      },
+      onResponderRelease: (e: any) => {
+        const gs = makeGestureState(e);
+        granted = false;
+        if (typeof config.onPanResponderRelease === 'function') {
+          config.onPanResponderRelease(e, gs);
+        }
+      },
+      onResponderTerminate: (e: any) => {
+        const gs = makeGestureState(e);
+        granted = false;
+        if (typeof config.onPanResponderTerminate === 'function') {
+          config.onPanResponderTerminate(e, gs);
+        } else if (typeof config.onPanResponderRelease === 'function') {
+          config.onPanResponderRelease(e, gs);
+        }
+      },
+    };
+
+    return { panHandlers };
+  },
+};
+
 export function View({
   style,
   pointerEvents,
   onLayout,
   onStartShouldSetResponder,
+  onMoveShouldSetResponder,
   onResponderGrant,
+  onResponderMove,
   onResponderRelease,
   onResponderTerminate,
   children,
@@ -194,7 +295,9 @@ export function View({
   pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
   onLayout?: (e: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   onStartShouldSetResponder?: (e: any) => boolean;
+  onMoveShouldSetResponder?: (e: any) => boolean;
   onResponderGrant?: (e: any) => void;
+  onResponderMove?: (e: any) => void;
   onResponderRelease?: (e: any) => void;
   onResponderTerminate?: (e: any) => void;
   onResponderTerminationRequest?: (e: any) => boolean;
@@ -204,8 +307,13 @@ export function View({
   const latestOnLayoutRef = React.useRef(onLayout);
   latestOnLayoutRef.current = onLayout;
   const activePointerRef = React.useRef<number | null>(null);
+  const trackingPointerRef = React.useRef<boolean>(false);
   const hasResponder = Boolean(
-    onStartShouldSetResponder || onResponderGrant || onResponderRelease
+    onStartShouldSetResponder ||
+      onMoveShouldSetResponder ||
+      onResponderGrant ||
+      onResponderMove ||
+      onResponderRelease
   );
 
   React.useEffect(() => {
@@ -253,6 +361,7 @@ export function View({
         hasResponder
           ? (e) => {
               const synth = buildNativeEvent(e);
+              trackingPointerRef.current = true;
               if (onStartShouldSetResponder && !onStartShouldSetResponder(synth)) {
                 return;
               }
@@ -266,9 +375,34 @@ export function View({
             }
           : undefined
       }
+      onPointerMove={
+        hasResponder
+          ? (e) => {
+              const synth = buildNativeEvent(e);
+              if (activePointerRef.current !== e.pointerId) {
+                if (
+                  trackingPointerRef.current &&
+                  onMoveShouldSetResponder &&
+                  onMoveShouldSetResponder(synth)
+                ) {
+                  activePointerRef.current = e.pointerId;
+                  try {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                  } catch (_) {
+                    // ignore
+                  }
+                  if (onResponderGrant) onResponderGrant(synth);
+                }
+                return;
+              }
+              if (onResponderMove) onResponderMove(synth);
+            }
+          : undefined
+      }
       onPointerUp={
         hasResponder
           ? (e) => {
+              trackingPointerRef.current = false;
               if (activePointerRef.current !== e.pointerId) return;
               activePointerRef.current = null;
               if (onResponderRelease) onResponderRelease(buildNativeEvent(e));
@@ -278,6 +412,7 @@ export function View({
       onPointerCancel={
         hasResponder
           ? (e) => {
+              trackingPointerRef.current = false;
               if (activePointerRef.current !== e.pointerId) return;
               activePointerRef.current = null;
               if (onResponderTerminate) {

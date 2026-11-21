@@ -20,6 +20,7 @@ import {
 } from 'react-native';
 import WifiControl from './src/services/WifiControl';
 import HapticsManager, { HAPTIC_PATTERNS } from './src/services/HapticsManager';
+import TvBrowserTouchpadModal from './src/components/TvBrowserTouchpadModal';
 import {
   encodeMideaAcPattern,
   MIDEA_MAX_TEMP,
@@ -397,6 +398,53 @@ function HapticsIcon({ color = '#F1F5F9', size = 18 }) {
   );
 }
 
+function TouchpadBrowserIcon({ color = '#F1F5F9', size = 18 }) {
+  const boxW = Math.round(size * 0.94);
+  const boxH = Math.round(size * 0.82);
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        justifyContent: 'center',
+        alignItems: 'center',
+      }}
+    >
+      <View
+        style={{
+          width: boxW,
+          height: boxH,
+          borderRadius: 4,
+          borderWidth: 1.6,
+          borderColor: color,
+          justifyContent: 'space-between',
+          paddingTop: 2.5,
+          paddingBottom: 2,
+          paddingHorizontal: 2.5,
+        }}
+      >
+        <View
+          style={{
+            height: 2,
+            borderRadius: 1,
+            backgroundColor: color,
+            opacity: 0.78,
+          }}
+        />
+        <View
+          style={{
+            width: 4.5,
+            height: 4.5,
+            borderRadius: 2.5,
+            backgroundColor: color,
+            alignSelf: 'center',
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
 const DPAD_WEDGE_ROTATION = {
   UP: '0deg',
   RIGHT: '90deg',
@@ -719,6 +767,7 @@ function App() {
   const [activeDpadDir, setActiveDpadDir] = useState(null);
   const [hapticsConfig, setHapticsConfig] = useState(() => HapticsManager.getConfig());
   const [showHapticsModal, setShowHapticsModal] = useState(false);
+  const [showBrowserTouchpadModal, setShowBrowserTouchpadModal] = useState(false);
   const [isPowerHolding, setIsPowerHolding] = useState(false);
   const [powerHintText, setPowerHintText] = useState('');
 
@@ -1126,6 +1175,21 @@ function App() {
   const handleClearSavedToken = async () => {
     await WifiControl.clearToken(tvIp);
     clearErrorBanner();
+  };
+
+  const handleEnsureWifiForBrowser = async () => {
+    setTvTransport('wifi');
+    const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
+    if (netCheck && !netCheck.sameNetwork) {
+      throw new Error(netCheck.message);
+    }
+    WifiControl.configure({
+      protocol: wifiProtocol,
+      ipAddress: tvIp,
+      port: Number(tvPort) || (wifiProtocol === 'samsung_tizen' ? 8002 : 8080),
+      dialPort: Number(dialPort) || 8080,
+    });
+    return WifiControl.connect();
   };
 
   const handleLaunchYouTube = async () => {
@@ -1983,7 +2047,7 @@ function App() {
               <Text
                 style={[
                   styles.headerTitle,
-                  fallbackScreenW < 360 ? { fontSize: 17 } : null,
+                  fallbackScreenW < 380 ? { fontSize: 16 } : null,
                 ]}
               >
                 الريموت الشامل
@@ -1994,9 +2058,26 @@ function App() {
                   activeOpacity={0.75}
                   onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
                   onPress={handleOpenSearch}
-                  accessibilityLabel="بحث"
+                  accessibilityLabel="بحث يوتيوب"
                 >
-                  <SearchIcon color="#F1F5F9" size={20} />
+                  <SearchIcon color="#F1F5F9" size={18} />
+                </TouchableOpacity>
+              ) : null}
+              {activeTab === 'tv' ? (
+                <TouchableOpacity
+                  style={[
+                    styles.headerSearchIconBtn,
+                    wifiStatus.isConnected && styles.headerHapticsActiveBtn,
+                  ]}
+                  activeOpacity={0.75}
+                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                  onPress={() => setShowBrowserTouchpadModal(true)}
+                  accessibilityLabel="متصفح التلفاز والماوس"
+                >
+                  <TouchpadBrowserIcon
+                    color={wifiStatus.isConnected ? '#38BDF8' : '#F1F5F9'}
+                    size={17}
+                  />
                 </TouchableOpacity>
               ) : null}
               <TouchableOpacity
@@ -2011,7 +2092,7 @@ function App() {
               >
                 <HapticsIcon
                   color={hapticsConfig.enabled ? '#38BDF8' : '#64748B'}
-                  size={18}
+                  size={17}
                 />
               </TouchableOpacity>
             </View>
@@ -2912,6 +2993,13 @@ function App() {
           </View>
         </View>
       </Modal>
+
+      <TvBrowserTouchpadModal
+        visible={showBrowserTouchpadModal}
+        wifiStatus={wifiStatus}
+        onClose={() => setShowBrowserTouchpadModal(false)}
+        onEnsureWifiConnect={handleEnsureWifiForBrowser}
+      />
     </SafeAreaView>
   );
 }
@@ -2932,12 +3020,12 @@ const styles = StyleSheet.create({
   headerBrandGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 7,
   },
   headerSearchIconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',

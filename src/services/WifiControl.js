@@ -24,19 +24,22 @@ const INVIDIOUS_INSTANCES = [
 const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
 const STORAGE_LAST_TV_KEY = '@universal_remote_last_tv_config';
 const STORAGE_SEARCH_HISTORY_KEY = '@universal_remote_youtube_search_history';
+const STORAGE_TV_BOOKMARKS_KEY = '@universal_remote_tv_bookmarks';
 const MAX_SEARCH_HISTORY_ITEMS = 12;
+const MAX_TV_BOOKMARKS = 30;
+const SAMSUNG_BROWSER_APP_ID = 'org.tizen.browser';
+const MOUSE_MOVE_THROTTLE_MS = 40;
 const SAMSUNG_REMOTE_APP_NAME = 'Remote App';
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-function encodeBase64(input) {
-  const str = String(input || '');
+function encodeBytesToBase64(bytes) {
   let output = '';
-  for (let i = 0; i < str.length; i += 3) {
-    const b1 = str.charCodeAt(i) & 0xff;
-    const hasB2 = i + 1 < str.length;
-    const hasB3 = i + 2 < str.length;
-    const b2 = hasB2 ? str.charCodeAt(i + 1) & 0xff : 0;
-    const b3 = hasB3 ? str.charCodeAt(i + 2) & 0xff : 0;
+  for (let i = 0; i < bytes.length; i += 3) {
+    const b1 = bytes[i] & 0xff;
+    const hasB2 = i + 1 < bytes.length;
+    const hasB3 = i + 2 < bytes.length;
+    const b2 = hasB2 ? bytes[i + 1] & 0xff : 0;
+    const b3 = hasB3 ? bytes[i + 2] & 0xff : 0;
     const triplet = (b1 << 16) | (b2 << 8) | b3;
 
     output += BASE64_CHARS[(triplet >>> 18) & 0x3f];
@@ -45,6 +48,71 @@ function encodeBase64(input) {
     output += hasB3 ? BASE64_CHARS[triplet & 0x3f] : '=';
   }
   return output;
+}
+
+function encodeBase64(input) {
+  const str = String(input || '');
+  const bytes = [];
+  for (let i = 0; i < str.length; i += 1) {
+    bytes.push(str.charCodeAt(i) & 0xff);
+  }
+  return encodeBytesToBase64(bytes);
+}
+
+export function encodeUtf8ToBase64(input) {
+  const str = String(input ?? '');
+  const utf8Bytes = [];
+  for (let i = 0; i < str.length; i += 1) {
+    let codePoint = str.charCodeAt(i);
+    if (codePoint >= 0xd800 && codePoint <= 0xdbff && i + 1 < str.length) {
+      const next = str.charCodeAt(i + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00);
+        i += 1;
+      }
+    }
+    if (codePoint < 0x80) {
+      utf8Bytes.push(codePoint);
+    } else if (codePoint < 0x800) {
+      utf8Bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint < 0x10000) {
+      utf8Bytes.push(
+        0xe0 | (codePoint >> 12),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f)
+      );
+    } else {
+      utf8Bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f)
+      );
+    }
+  }
+  return encodeBytesToBase64(utf8Bytes);
+}
+
+export function normalizeBrowserUrl(rawUrl) {
+  const trimmed = String(rawUrl || '').trim();
+  if (!trimmed) {
+    throw new Error('أدخل رابط الموقع أو العنوان أولاً.');
+  }
+  if (/\s/.test(trimmed)) {
+    throw new Error('الرابط غير صالح: تأكد من عدم وجود مسافات.');
+  }
+  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
+  const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
+  if (!/^https?:\/\/([^/\s.:?#]+(\.[^/\s.:?#]+)+|localhost|\d{1,3}(?:\.\d{1,3}){3})(:\d+)?(\/.*)?$/i.test(candidate)) {
+    throw new Error('صيغة الرابط غير صالحة. مثال صحيح: google.com أو https://example.com');
+  }
+  return candidate;
+}
+
+function deriveBookmarkTitle(normalizedUrl) {
+  const withoutProtocol = String(normalizedUrl || '').replace(/^https?:\/\//i, '');
+  const hostPart = withoutProtocol.split('/')[0].split(':')[0].replace(/^www\./i, '');
+  return hostPart || normalizedUrl;
 }
 
 const WIFI_KEY_MAP = {
@@ -196,6 +264,9 @@ class WifiControlService {
     this.manualDisconnect = false;
     this.activeHeldKey = null;
     this._holdSafetyTimer = null;
+    this._mousePendingDx = 0;
+    this._mousePendingDy = 0;
+    this._mouseThrottleTimer = null;
   }
 
   subscribe(listener) {
@@ -400,6 +471,54 @@ class WifiControlService {
   async clearSearchHistory() {
     await this._storageRemove(STORAGE_SEARCH_HISTORY_KEY);
     return [];
+  }
+
+  async getTvBookmarks() {
+    try {
+      const raw = await this._storageGet(STORAGE_TV_BOOKMARKS_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed
+        .filter((item) => item && typeof item.url === 'string' && item.url.trim())
+        .map((item, idx) => ({
+          id: String(item.id || `bm_${idx}_${item.url}`),
+          url: String(item.url).trim(),
+          title: String(item.title || deriveBookmarkTitle(item.url)).trim(),
+          createdAt: Number(item.createdAt) || Date.now(),
+        }))
+        .slice(0, MAX_TV_BOOKMARKS);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  async saveTvBookmark(rawUrl, customTitle = '') {
+    const normalizedUrl = normalizeBrowserUrl(rawUrl);
+    const title = String(customTitle || '').trim() || deriveBookmarkTitle(normalizedUrl);
+    const existing = await this.getTvBookmarks();
+    const lowerUrl = normalizedUrl.toLowerCase();
+    const filtered = existing.filter((item) => item.url.toLowerCase() !== lowerUrl);
+    const newEntry = {
+      id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+      url: normalizedUrl,
+      title,
+      createdAt: Date.now(),
+    };
+    const next = [newEntry, ...filtered].slice(0, MAX_TV_BOOKMARKS);
+    await this._storageSet(STORAGE_TV_BOOKMARKS_KEY, JSON.stringify(next));
+    return next;
+  }
+
+  async removeTvBookmark(targetIdOrUrl) {
+    const key = String(targetIdOrUrl || '').trim();
+    const lowerKey = key.toLowerCase();
+    const existing = await this.getTvBookmarks();
+    const next = existing.filter(
+      (item) => item.id !== key && item.url.toLowerCase() !== lowerKey
+    );
+    await this._storageSet(STORAGE_TV_BOOKMARKS_KEY, JSON.stringify(next));
+    return next;
   }
 
   configure({ protocol, ipAddress, port, dialPort, deviceName }) {
@@ -737,6 +856,7 @@ class WifiControlService {
           handshakeTimer = null;
         }
         this._clearHoldState();
+        this._resetMouseThrottle();
         this.isConnected = false;
         this.isChannelReady = false;
         this._notify();
@@ -757,6 +877,7 @@ class WifiControlService {
           handshakeTimer = null;
         }
         this._clearHoldState();
+        this._resetMouseThrottle();
         this.isConnected = false;
         this.isChannelReady = false;
         this._notify();
@@ -796,8 +917,18 @@ class WifiControlService {
     this.activeHeldKey = null;
   }
 
+  _resetMouseThrottle() {
+    if (this._mouseThrottleTimer) {
+      clearTimeout(this._mouseThrottleTimer);
+      this._mouseThrottleTimer = null;
+    }
+    this._mousePendingDx = 0;
+    this._mousePendingDy = 0;
+  }
+
   disconnect() {
     this.releaseActiveHold();
+    this._resetMouseThrottle();
     this.manualDisconnect = true;
     this._connectPromise = null;
     if (this.ws) {
@@ -1745,6 +1876,171 @@ class WifiControlService {
     }
 
     throw new Error('تعذر جلب نتائج البحث حالياً من خوادم Piped و Invidious. تحقق من الإنترنت وأعد المحاولة.');
+  }
+
+  _assertSamsungWsReady() {
+    if (this.protocol !== 'samsung_tizen') {
+      throw new Error('ميزة متصفح الشاشة والماوس والكيبورد مخصصة لشاشات Samsung Tizen حالياً.');
+    }
+    if (IS_WEB) {
+      return;
+    }
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isChannelReady) {
+      throw new Error('لا يوجد اتصال WebSocket نشط مع الشاشة. يرجى الاتصال بشاشة Samsung أولاً.');
+    }
+  }
+
+  async openUrlInTvBrowser(rawUrl) {
+    const normalizedUrl = normalizeBrowserUrl(rawUrl);
+    this._assertSamsungWsReady();
+
+    const payload = {
+      method: 'ms.channel.emit',
+      params: {
+        event: 'ed.apps.launch',
+        to: 'host',
+        data: {
+          appId: SAMSUNG_BROWSER_APP_ID,
+          action_type: 'NATIVE_LAUNCH',
+          metaTag: normalizedUrl,
+        },
+      },
+    };
+
+    if (IS_WEB) {
+      return { opened: true, mocked: true, url: normalizedUrl, payload };
+    }
+
+    const sent = this._sendWsImmediate(payload);
+    if (!sent) {
+      throw new Error('تعذر إرسال الرابط إلى متصفح الشاشة عبر WebSocket.');
+    }
+    return { opened: true, url: normalizedUrl, payload };
+  }
+
+  flushMouseMove() {
+    if (this._mouseThrottleTimer) {
+      clearTimeout(this._mouseThrottleTimer);
+      this._mouseThrottleTimer = null;
+    }
+    const moveX = Math.round(this._mousePendingDx);
+    const moveY = Math.round(this._mousePendingDy);
+    this._mousePendingDx = 0;
+    this._mousePendingDy = 0;
+
+    if (moveX === 0 && moveY === 0) {
+      return false;
+    }
+    if (this.protocol !== 'samsung_tizen') {
+      return false;
+    }
+
+    const payload = {
+      method: 'ms.remote.control',
+      params: {
+        Cmd: 'Move',
+        Position: {
+          x: moveX,
+          y: moveY,
+          Time: String(Date.now()),
+        },
+        TypeOfRemote: 'ProcessMouseDevice',
+      },
+    };
+
+    if (IS_WEB) {
+      return true;
+    }
+    return this._sendWsImmediate(payload);
+  }
+
+  sendMouseMove(dx, dy) {
+    if (this.protocol !== 'samsung_tizen') {
+      return false;
+    }
+    if (!IS_WEB && (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isChannelReady)) {
+      this._resetMouseThrottle();
+      return false;
+    }
+
+    const numDx = Number(dx) || 0;
+    const numDy = Number(dy) || 0;
+    if (numDx === 0 && numDy === 0) {
+      return false;
+    }
+
+    this._mousePendingDx += numDx;
+    this._mousePendingDy += numDy;
+
+    if (!this._mouseThrottleTimer) {
+      this._mouseThrottleTimer = setTimeout(() => {
+        this._mouseThrottleTimer = null;
+        this.flushMouseMove();
+      }, MOUSE_MOVE_THROTTLE_MS);
+    }
+    return true;
+  }
+
+  async sendMouseClick(cmd = 'LeftClick') {
+    const validCmd = cmd === 'RightClick' ? 'RightClick' : 'LeftClick';
+    this._assertSamsungWsReady();
+    this.flushMouseMove();
+
+    const payload = {
+      method: 'ms.remote.control',
+      params: {
+        Cmd: validCmd,
+        TypeOfRemote: 'ProcessMouseDevice',
+      },
+    };
+
+    if (IS_WEB) {
+      return { sent: true, mocked: true, cmd: validCmd, payload };
+    }
+
+    const sent = this._sendWsImmediate(payload);
+    if (!sent) {
+      throw new Error('تعذر إرسال نقرة الماوس إلى الشاشة عبر WebSocket.');
+    }
+    return { sent: true, cmd: validCmd, payload };
+  }
+
+  async sendTextToTv(text) {
+    const str = String(text ?? '');
+    if (str.length === 0) {
+      throw new Error('أدخل النص المطلوب إرساله إلى الشاشة أولاً.');
+    }
+    this._assertSamsungWsReady();
+
+    const base64Text = encodeUtf8ToBase64(str);
+    const inputPayload = {
+      method: 'ms.remote.control',
+      params: {
+        Cmd: base64Text,
+        DataOfCmd: 'base64',
+        TypeOfRemote: 'SendInputString',
+      },
+    };
+    const endPayload = {
+      method: 'ms.remote.control',
+      params: {
+        TypeOfRemote: 'SendInputEnd',
+      },
+    };
+
+    if (IS_WEB) {
+      return { sent: true, mocked: true, base64: base64Text, inputPayload, endPayload };
+    }
+
+    const sent = this._sendWsImmediate(inputPayload);
+    if (!sent) {
+      throw new Error('تعذر إرسال النص إلى الشاشة عبر WebSocket.');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 90));
+    this._sendWsImmediate(endPayload);
+
+    return { sent: true, base64: base64Text, inputPayload, endPayload };
   }
 }
 

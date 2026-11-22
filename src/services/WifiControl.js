@@ -1890,10 +1890,39 @@ class WifiControlService {
     }
   }
 
+  async launchTvBrowser() {
+    if (this.protocol !== 'samsung_tizen') {
+      throw new Error('ميزة متصفح الشاشة والماوس والكيبورد مخصصة لشاشات Samsung Tizen حالياً.');
+    }
+
+    const endpoint = `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_BROWSER_APP_ID}`;
+    if (IS_WEB) {
+      return {
+        launched: true,
+        mocked: true,
+        method: 'tizen_rest_8001',
+        appId: SAMSUNG_BROWSER_APP_ID,
+        endpoint,
+      };
+    }
+
+    const res = await this._postWithTimeout(endpoint, { method: 'POST' }, 5000);
+    if (!res.ok) {
+      throw new Error(`تعذر فتح متصفح الشاشة على ${this.ipAddress} (${res.status})`);
+    }
+    return {
+      launched: true,
+      method: 'tizen_rest_8001',
+      appId: SAMSUNG_BROWSER_APP_ID,
+      endpoint,
+    };
+  }
+
   async openUrlInTvBrowser(rawUrl) {
     const normalizedUrl = normalizeBrowserUrl(rawUrl);
     this._assertSamsungWsReady();
 
+    // الخطوة 1: إرسال رابط عميق DEEP_LINK عبر WebSocket
     const payload = {
       method: 'ms.channel.emit',
       params: {
@@ -1901,21 +1930,49 @@ class WifiControlService {
         to: 'host',
         data: {
           appId: SAMSUNG_BROWSER_APP_ID,
-          action_type: 'NATIVE_LAUNCH',
+          action_type: 'DEEP_LINK',
           metaTag: normalizedUrl,
         },
       },
     };
 
     if (IS_WEB) {
-      return { opened: true, mocked: true, url: normalizedUrl, payload };
+      return {
+        opened: true,
+        mocked: true,
+        url: normalizedUrl,
+        launchMethod: 'deep_link',
+        payload,
+      };
     }
 
     const sent = this._sendWsImmediate(payload);
     if (!sent) {
       throw new Error('تعذر إرسال الرابط إلى متصفح الشاشة عبر WebSocket.');
     }
-    return { opened: true, url: normalizedUrl, payload };
+
+    // الخطوة 2: انتظار 700ms ثم التحقق من ظهور المتصفح عبر REST :8001 وتنفيذ POST عند الحاجة
+    await new Promise((resolve) => setTimeout(resolve, 700));
+
+    const statusUrl = `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_BROWSER_APP_ID}`;
+    let isBrowserVisible = false;
+    try {
+      const appData = await this._fetchJsonWithTimeout(statusUrl, 2500);
+      isBrowserVisible = Boolean(appData && appData.visible === true);
+    } catch (_) {
+      isBrowserVisible = false;
+    }
+
+    if (!isBrowserVisible) {
+      await this.launchTvBrowser();
+    }
+
+    return {
+      opened: true,
+      url: normalizedUrl,
+      launchMethod: isBrowserVisible ? 'deep_link' : 'rest_8001_fallback',
+      payload,
+    };
   }
 
   flushMouseMove() {

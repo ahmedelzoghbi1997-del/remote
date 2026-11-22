@@ -12,7 +12,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import WifiControl from '../services/WifiControl';
+import WifiControl, { normalizeBrowserUrl } from '../services/WifiControl';
 import HapticsManager, { HAPTIC_PATTERNS } from '../services/HapticsManager';
 
 const TOUCHPAD_SPEEDS = [
@@ -38,6 +38,7 @@ export default function TvBrowserTouchpadModal({
   const [keyboardText, setKeyboardText] = useState('');
   const [isSendingText, setIsSendingText] = useState(false);
   const [isOpeningUrl, setIsOpeningUrl] = useState(false);
+  const [isPastingUrl, setIsPastingUrl] = useState(false);
   const [isConnecting, setIsConnecting] = useState(false);
   const [notice, setNotice] = useState({ text: '', tone: 'neutral' });
 
@@ -118,16 +119,19 @@ export default function TvBrowserTouchpadModal({
 
   const handleOpenUrl = async (targetUrl) => {
     const raw = typeof targetUrl === 'string' ? targetUrl : urlInput;
+    if (typeof targetUrl === 'string') {
+      setUrlInput(targetUrl);
+    }
     HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
     setIsOpeningUrl(true);
     try {
       const res = await WifiControl.openUrlInTvBrowser(raw);
-      if (typeof targetUrl === 'string') {
-        setUrlInput(res.url);
-      } else {
-        setUrlInput(res.url);
-      }
-      showNotice(`تم إرسال الرابط إلى متصفح الشاشة: ${res.url}`, 'success', 2600);
+      setUrlInput(res.url);
+      showNotice(
+        'تم فتح المتصفح على الشاشة. إن لم ينتقل للرابط تلقائياً، انقر على شريط العنوان ثم اضغط «لصق الرابط في شريط العنوان».',
+        'success',
+        5200
+      );
     } catch (err) {
       showNotice(
         err && err.message ? err.message : 'تعذر فتح الرابط في متصفح الشاشة.',
@@ -136,6 +140,40 @@ export default function TvBrowserTouchpadModal({
       );
     } finally {
       setIsOpeningUrl(false);
+    }
+  };
+
+  const handlePasteUrlToAddressBar = async () => {
+    HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+    let normalizedUrl = '';
+    try {
+      normalizedUrl = normalizeBrowserUrl(urlInput);
+      setUrlInput(normalizedUrl);
+    } catch (err) {
+      showNotice(
+        err && err.message ? err.message : 'أدخل رابطاً صالحاً في حقل الرابط أولاً.',
+        'error',
+        3400
+      );
+      return;
+    }
+
+    setIsPastingUrl(true);
+    try {
+      await WifiControl.sendTextToTv(normalizedUrl);
+      showNotice(
+        `تم إرسال الرابط إلى شريط العنوان على الشاشة: ${normalizedUrl}`,
+        'success',
+        2600
+      );
+    } catch (err) {
+      showNotice(
+        err && err.message ? err.message : 'تعذر إرسال الرابط إلى شريط العنوان.',
+        'error',
+        4000
+      );
+    } finally {
+      setIsPastingUrl(false);
     }
   };
 
@@ -390,6 +428,21 @@ export default function TvBrowserTouchpadModal({
                 <Text style={styles.secondaryActionText}>★ حفظ في المفضلة</Text>
               </TouchableOpacity>
             </View>
+
+            <TouchableOpacity
+              style={[styles.pasteAddressBtn, isPastingUrl && styles.btnDisabled]}
+              activeOpacity={0.8}
+              onPress={handlePasteUrlToAddressBar}
+              disabled={isPastingUrl}
+            >
+              {isPastingUrl ? (
+                <ActivityIndicator size="small" color="#38BDF8" />
+              ) : (
+                <Text style={styles.pasteAddressBtnText}>
+                  ⤶ لصق الرابط في شريط العنوان
+                </Text>
+              )}
+            </TouchableOpacity>
           </View>
 
           {/* قسم مواقعي المفضلة */}
@@ -413,7 +466,10 @@ export default function TvBrowserTouchpadModal({
                     <TouchableOpacity
                       style={styles.bookmarkOpenArea}
                       activeOpacity={0.75}
-                      onPress={() => handleOpenUrl(bm.url)}
+                      onPress={() => {
+                        setUrlInput(bm.url);
+                        handleOpenUrl(bm.url);
+                      }}
                     >
                       <Text style={styles.bookmarkTitle} numberOfLines={1}>
                         {bm.title}
@@ -815,6 +871,22 @@ const styles = StyleSheet.create({
   secondaryActionText: {
     color: '#F1F5F9',
     fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  pasteAddressBtn: {
+    minHeight: 38,
+    borderRadius: 11,
+    backgroundColor: 'rgba(14,165,233,0.14)',
+    borderWidth: 1,
+    borderColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  pasteAddressBtnText: {
+    color: '#38BDF8',
+    fontSize: 12.5,
     fontWeight: '700',
     textAlign: 'center',
   },

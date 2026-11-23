@@ -1453,11 +1453,11 @@ class WifiControlService {
   async sendRepeatedCommand(
     commandKey,
     count = 1,
-    delayMs = 120,
+    delayMs = 140,
     shouldAbortFn = null
   ) {
-    const steps = Math.max(1, Math.min(15, Math.round(Number(count) || 1)));
-    const safeDelay = Math.max(60, Math.min(600, Number(delayMs) || 120));
+    const steps = Math.max(1, Math.min(25, Math.round(Number(count) || 1)));
+    const safeDelay = Math.max(60, Math.min(600, Number(delayMs) || 140));
     let completed = 0;
 
     for (let i = 0; i < steps; i += 1) {

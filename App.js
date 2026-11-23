@@ -1289,7 +1289,7 @@ function App() {
   };
 
   const sendRepeatedTvCommand = async (commandKey, count = 1) => {
-    const steps = Math.max(1, Math.min(15, Math.round(Number(count) || 1)));
+    const steps = Math.max(1, Math.min(25, Math.round(Number(count) || 1)));
     if (tvTransport === 'wifi') {
       const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
       if (netCheck && !netCheck.sameNetwork) {
@@ -1298,7 +1298,7 @@ function App() {
       await WifiControl.sendRepeatedCommand(
         commandKey,
         steps,
-        120,
+        140,
         () => voiceAbortRef.current
       );
       return;
@@ -1308,12 +1308,15 @@ function App() {
       if (voiceAbortRef.current) {
         break;
       }
-      await handleTvCommandRef.current(commandKey, { throwOnError: true });
+      await handleTvCommandRef.current(commandKey, {
+        throwOnError: true,
+        burstFrames: steps > 1 ? 2 : 3,
+      });
       if (i < steps - 1) {
         if (voiceAbortRef.current) {
           break;
         }
-        await new Promise((resolve) => setTimeout(resolve, 200));
+        await new Promise((resolve) => setTimeout(resolve, 180));
       }
     }
   };
@@ -1518,7 +1521,20 @@ function App() {
         phase: 'error',
         transcript: cleanText,
         parsedCommand: parsedCmd,
-        errorMessage: 'لم أفهم الأمر. جرّب: «شغّل سورة البقرة» أو «علّي الصوت شوية».',
+        errorMessage: 'لم أفهم الأمر. جرّب: «شغّل سورة البقرة» أو «علّي الصوت 5 درجات».',
+      }));
+      return;
+    }
+
+    if (parsedCmd.type === 'UNSUPPORTED_ABSOLUTE_VOLUME') {
+      HapticsManager.trigger(HAPTIC_PATTERNS.AC_LIMIT_HIT);
+      const levelNote = parsedCmd.targetLevel ? ` (${parsedCmd.targetLevel})` : '';
+      setVoiceSession((prev) => ({
+        ...prev,
+        phase: 'error',
+        transcript: cleanText,
+        parsedCommand: parsedCmd,
+        errorMessage: `الريموت لا يمكنه معرفة مستوى الصوت الحالي للشاشة لضبطه على رقم ثابت${levelNote}. قل مثلاً: «علّي الصوت 5 درجات» أو «وطّي الصوت 5 درجات».`,
       }));
       return;
     }
@@ -2855,20 +2871,19 @@ function App() {
               {item.channelTitle}
             </Text>
 
-            {statsLabel ? (
-              <Text style={styles.videoStatsText} numberOfLines={1}>
-                {statsLabel}
-              </Text>
-            ) : null}
-
             <View style={styles.videoActionRow}>
               <Text style={styles.videoCastLabel}>
                 {isCasting
                   ? 'جاري التشغيل...'
                   : wasCasted
-                  ? 'تم التشغيل على الشاشة'
-                  : 'تشغيل على الشاشة'}
+                  ? 'تم التشغيل'
+                  : '▶ تشغيل'}
               </Text>
+              {statsLabel ? (
+                <Text style={styles.videoStatsText} numberOfLines={1}>
+                  {statsLabel}
+                </Text>
+              ) : null}
             </View>
           </View>
         </TouchableOpacity>
@@ -4458,7 +4473,7 @@ const styles = StyleSheet.create({
   feedbackError: { borderColor: '#F59E0B', backgroundColor: 'rgba(245,158,11,0.14)' },
   feedbackText: { color: '#F1F5F9', fontSize: 12, textAlign: 'center' },
   scrollArea: { flex: 1 },
-  scrollContent: { paddingHorizontal: 14, paddingTop: 10, paddingBottom: 18 },
+  scrollContent: { paddingHorizontal: 14, paddingTop: 8, paddingBottom: 16 },
   tvScrollContent: { flexGrow: 1 },
   streamingDock: {
     flexDirection: 'row',
@@ -4996,13 +5011,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   favoritesSection: {
-    gap: 10,
+    gap: 8,
   },
   favoritesSectionSpaced: {
-    marginTop: 18,
+    marginTop: 16,
   },
   favoritesList: {
-    gap: 10,
+    gap: 6,
   },
   videoSeparatorWrap: {
     width: '100%',
@@ -5032,17 +5047,17 @@ const styles = StyleSheet.create({
     maxWidth: 160,
   },
   videoSeparator: {
-    height: 10,
+    height: 6,
   },
   videoCard: {
     flexDirection: 'row',
-    alignItems: 'stretch',
+    alignItems: 'center',
     backgroundColor: '#131720',
-    borderRadius: 14,
+    borderRadius: 11,
     borderWidth: 1,
     borderColor: '#1E2532',
     overflow: 'hidden',
-    minHeight: 96,
+    minHeight: 66,
   },
   videoCardActive: {
     borderColor: '#0EA5E9',
@@ -5051,95 +5066,104 @@ const styles = StyleSheet.create({
   videoCardMainTap: {
     flex: 1,
     flexDirection: 'row',
-    alignItems: 'stretch',
+    alignItems: 'center',
+    minHeight: 66,
   },
   videoThumbWrap: {
-    width: 132,
-    minHeight: 96,
+    width: 116,
+    height: 66,
     position: 'relative',
     backgroundColor: '#0B0D11',
+    overflow: 'hidden',
+    flexShrink: 0,
   },
   videoThumb: {
-    width: 132,
-    height: '100%',
-    minHeight: 96,
+    width: 116,
+    height: 66,
     backgroundColor: '#0B0D11',
   },
   videoDurationBadge: {
     position: 'absolute',
-    bottom: 6,
-    left: 6,
+    bottom: 4,
+    left: 4,
     backgroundColor: 'rgba(11, 13, 17, 0.88)',
-    borderRadius: 5,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
   },
   videoDurationBadgeText: {
     color: '#F8FAFC',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
     fontVariant: ['tabular-nums'],
   },
   videoLiveBadge: {
     position: 'absolute',
-    bottom: 6,
-    left: 6,
+    bottom: 4,
+    left: 4,
     backgroundColor: '#DC2626',
-    borderRadius: 5,
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
   },
   videoLiveBadgeText: {
     color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 9,
     fontWeight: '700',
   },
   videoInfo: {
     flex: 1,
-    paddingVertical: 9,
-    paddingHorizontal: 10,
-    justifyContent: 'space-between',
-    gap: 4,
+    paddingVertical: 5,
+    paddingHorizontal: 9,
+    justifyContent: 'center',
+    gap: 2,
   },
   videoTitle: {
     color: '#F1F5F9',
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '600',
     textAlign: 'right',
-    lineHeight: 18,
+    lineHeight: 15,
   },
   videoChannel: {
     color: '#94A3B8',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '600',
     textAlign: 'right',
+    lineHeight: 13,
   },
   videoStatsText: {
+    flex: 1,
     color: '#64748B',
     fontSize: 10,
     fontWeight: '500',
     textAlign: 'right',
+    lineHeight: 13,
   },
   videoActionRow: {
     flexDirection: 'row',
-    justifyContent: 'flex-start',
+    justifyContent: 'space-between',
     alignItems: 'center',
-    marginTop: 2,
+    gap: 8,
+    marginTop: 1,
   },
   videoCastLabel: {
     color: '#38BDF8',
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: '700',
+    lineHeight: 13,
+    flexShrink: 0,
   },
   videoStarBtn: {
-    width: 36,
-    paddingTop: 8,
+    width: 34,
+    height: 66,
     alignItems: 'center',
-    justifyContent: 'flex-start',
+    justifyContent: 'center',
+    flexShrink: 0,
   },
   videoStarGlyph: {
     color: '#64748B',
-    fontSize: 17,
+    fontSize: 15,
     fontWeight: '600',
   },
   videoStarGlyphActive: {

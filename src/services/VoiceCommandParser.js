@@ -58,7 +58,12 @@ const WORD_NUMBER_MAP = {
   تلتاشر: 13,
   اربعتاشر: 14,
   خمستاشر: 15,
+  ستاشر: 16,
+  سبعتاشر: 17,
+  تمنتاشر: 18,
+  تسعتاشر: 19,
   عشرين: 20,
+  عشرون: 20,
   تلاتين: 30,
   ثلاثين: 30,
   اربعين: 40,
@@ -100,7 +105,7 @@ function extractNumberFromText(normalizedText) {
 function extractVolumeStepCount(normalizedText) {
   const explicitNum = extractNumberFromText(normalizedText);
   if (explicitNum !== null) {
-    return Math.max(1, Math.min(15, explicitNum));
+    return Math.max(1, Math.min(25, explicitNum));
   }
   if (/(?:^|\s)(?:كتير|جامد|اوي|قوي|خالص|جدا)(?=\s|$)/.test(normalizedText)) {
     return 6;
@@ -315,32 +320,65 @@ export function parseEgyptianVoiceCommand(rawText) {
     };
   }
 
-  // 5. رفع / خفض الصوت مع قاعدة منع فخ كلمة «علي» مع أسماء الأشخاص (مثل: شغل علي جابر)
+  // 5. رفع / خفض الصوت مع التمييز الصارم بين «علّي» (فعل رفع) و«على» (حرف جر لمستوى ثابت مثل: خلي الصوت على 20)
   const startsWithMediaRequestPrefix =
     /^(?:شغل|هات|عايز اسمع|عاوز اسمع|عايز اشوف|عاوز اشوف|اسمع|ابحث عن|دور على|دور علي|افتح فيديو)(?=\s|$)/.test(
       norm
     );
 
-  const hasExplicitVolumeUpVerb = /(?:^|\s)(?:ارفع|زود|اعلي|اعلى|عليلي)(?=\s|$)/.test(norm);
-  const hasAliWord = /(?:^|\s)علي(?=\s|$)/.test(norm);
-  const hasVolumeOrMagnitudeCue =
-    /(?:^|\s)(?:صوت|الصوت|شويه|حبه|كتير|جامد|درجه|درجات|تكه|فوق|اوي|جدا)(?=\s|$)/.test(norm) ||
-    extractNumberFromText(norm) !== null;
-  const isBareAliOnly = /^(?:علي|عللي)(?:\s+(?:الصوت|شويه|حبه|كتير|درجه|درجات|\d+))?$/.test(
-    norm
-  );
+  const hasVolumeWord = /(?:^|\s)(?:صوت|الصوت)(?=\s|$)/.test(norm);
+  const explicitVolumeNum = extractNumberFromText(norm);
 
-  const isVolumeUpCommand =
-    !startsWithMediaRequestPrefix &&
-    (hasExplicitVolumeUpVerb ||
-      isBareAliOnly ||
-      (hasAliWord && hasVolumeOrMagnitudeCue));
+  // رصد أوامر ضبط مستوى ثابت (مثل: خلي الصوت على 20 درجة / اضبط الصوت على 15 / الصوت على 20)
+  const isSetAbsoluteVolumeVerb =
+    /(?:^|\s)(?:خلي|خليلي|اجعل|اضبط|ظبط|حط|ثبت|وصل|وصللي|اعمل)(?=\s|$)/.test(norm) &&
+    hasVolumeWord &&
+    !/(?:^|\s)(?:عالي|اعلي|اعلى|واطي|اوصف|يعلي|يوطي)(?=\s|$)/.test(norm);
+  const hasPrepositionTargetAfterVolume =
+    /(?:^|\s)(?:صوت|الصوت)\s+(?:علي|ل|الي|عند|لحد)\s*(?:\d+|[\u0600-\u06FF]+)(?=\s|$)/.test(
+      norm
+    ) && explicitVolumeNum !== null;
+
+  if (!startsWithMediaRequestPrefix && (isSetAbsoluteVolumeVerb || hasPrepositionTargetAfterVolume)) {
+    return {
+      type: 'UNSUPPORTED_ABSOLUTE_VOLUME',
+      targetLevel: explicitVolumeNum,
+      rawText: original,
+      normalizedText: norm,
+      label:
+        explicitVolumeNum !== null
+          ? `لا يمكن ضبط الصوت مباشرة على ${explicitVolumeNum}`
+          : 'تعديل الصوت نسبي فقط (رفع أو خفض)',
+      confirmDelayMs: 0,
+    };
+  }
+
+  // يجب أن يأتي فعل «علّي» في موضع الفعل (بداية الجملة أو بعد كلمة تهذيب) أو بصيغة صريحة (ارفع/زود/اعلي/عليلي)
+  const hasAliAsRaiseVerb =
+    /^(?:(?:لو سمحت|من فضلك|ممكن|يا ريت)\s+)?(?:علي|عللي|عليلي)(?=\s|$)/.test(norm) ||
+    /(?:^|\s)(?:ارفع|زود|اعلي|اعلى|عليلي)(?=\s|$)/.test(norm);
+
+  const hasVolumeOrMagnitudeCue =
+    hasVolumeWord ||
+    /(?:^|\s)(?:شويه|حبه|كتير|جامد|درجه|درجات|تكه|فوق|تحت|اوي|جدا)(?=\s|$)/.test(norm) ||
+    explicitVolumeNum !== null;
+
+  const isVolumeDownVerb = /(?:^|\s)(?:وطي|وطيلي|خفض|نزل|قلل)(?=\s|$)/.test(norm);
 
   const isVolumeDownCommand =
     !startsWithMediaRequestPrefix &&
-    /(?:^|\s)(?:وطي|خفض|نزل|قلل)(?=\s|$)/.test(norm) &&
+    isVolumeDownVerb &&
     (hasVolumeOrMagnitudeCue ||
-      /^(?:وطي|خفض|نزل|قلل)(?:\s+(?:الصوت|شويه|حبه|كتير|درجه|درجات|\d+))?$/.test(norm));
+      /^(?:وطي|وطيلي|خفض|نزل|قلل)(?:\s+(?:الصوت|شويه|حبه|كتير|درجه|درجات|\d+))?$/.test(norm));
+
+  const isVolumeUpCommand =
+    !startsWithMediaRequestPrefix &&
+    !isVolumeDownCommand &&
+    hasAliAsRaiseVerb &&
+    (hasVolumeOrMagnitudeCue ||
+      /^(?:(?:لو سمحت|من فضلك|ممكن|يا ريت)\s+)?(?:علي|عللي|عليلي|ارفع|زود|اعلي|اعلى)$/.test(
+        norm
+      ));
 
   if (isVolumeUpCommand || isVolumeDownCommand) {
     const count = extractVolumeStepCount(norm);

@@ -18,9 +18,10 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
-import WifiControl from './src/services/WifiControl';
+import WifiControl, { parseSmartSearchInput } from './src/services/WifiControl';
 import HapticsManager, { HAPTIC_PATTERNS } from './src/services/HapticsManager';
-import TvBrowserTouchpadModal from './src/components/TvBrowserTouchpadModal';
+import VoiceControl from './src/services/VoiceControl';
+import { parseEgyptianVoiceCommand } from './src/services/VoiceCommandParser';
 import {
   encodeMideaAcPattern,
   MIDEA_MAX_TEMP,
@@ -107,6 +108,8 @@ const TV_IR_BRANDS = {
       HOME: 0x79,
       MENU: 0x1a,
       INPUT: 0x01,
+      PLAY: 0x47,
+      PAUSE: 0x4a,
       YOUTUBE: 0x7c,
       NETFLIX: 0x34,
     },
@@ -131,6 +134,8 @@ const TV_IR_BRANDS = {
       HOME: 0x7c,
       MENU: 0x43,
       INPUT: 0x0b,
+      PLAY: 0xb0,
+      PAUSE: 0xba,
     },
   },
 };
@@ -176,6 +181,64 @@ const FAN_SPEEDS = [
   { key: 'medium', label: 'متوسط' },
   { key: 'high', label: 'عالي' },
 ];
+
+const SEARCH_FILTER_OPTIONS = [
+  { key: 'all', label: 'الكل' },
+  { key: 'no_shorts', label: 'بدون Shorts' },
+  { key: 'long', label: 'طويلة (+20 د)' },
+  { key: 'live', label: 'بث مباشر (Live)' },
+  { key: 'latest', label: 'الأحدث' },
+];
+
+const DEFAULT_PAGINATION_STATE = {
+  nextPageToken: null,
+  nextPage: 2,
+  hasMore: false,
+  providerType: null,
+  instanceUrl: null,
+};
+
+function filterSearchResults(items, filterKey) {
+  if (!Array.isArray(items) || items.length === 0) return [];
+  if (filterKey === 'no_shorts') {
+    return items.filter((item) => {
+      if (!item) return false;
+      const isShortByFlag = Boolean(item.isShort);
+      const isShortByDuration =
+        !item.isLive && Number(item.durationSeconds) > 0 && Number(item.durationSeconds) <= 60;
+      const isShortByText =
+        /#shorts?\b/i.test(String(item.title || '')) ||
+        /\/shorts\//i.test(String(item.url || ''));
+      return !isShortByFlag && !isShortByDuration && !isShortByText;
+    });
+  }
+  if (filterKey === 'long') {
+    return items.filter(
+      (item) => item && !item.isLive && Number(item.durationSeconds) > 1200
+    );
+  }
+  if (filterKey === 'live') {
+    return items.filter(
+      (item) => item && (Boolean(item.isLive) || item.durationText === 'بث مباشر')
+    );
+  }
+  return items;
+}
+
+function mergeUniqueVideos(existingList, incomingList) {
+  const seen = new Set(
+    (Array.isArray(existingList) ? existingList : [])
+      .map((item) => item && item.videoId)
+      .filter(Boolean)
+  );
+  const merged = Array.isArray(existingList) ? [...existingList] : [];
+  for (const item of Array.isArray(incomingList) ? incomingList : []) {
+    if (!item || !item.videoId || seen.has(item.videoId)) continue;
+    seen.add(item.videoId);
+    merged.push(item);
+  }
+  return merged;
+}
 
 function getSubnetFromIp(ip) {
   const parts = String(ip || '')
@@ -398,49 +461,59 @@ function HapticsIcon({ color = '#F1F5F9', size = 18 }) {
   );
 }
 
-function TouchpadBrowserIcon({ color = '#F1F5F9', size = 18 }) {
-  const boxW = Math.round(size * 0.94);
-  const boxH = Math.round(size * 0.82);
+function MicIcon({ color = '#F1F5F9', size = 18 }) {
+  const s = size / 18;
+  const capsuleW = Math.max(6, Math.round(7 * s));
+  const capsuleH = Math.max(9, Math.round(10 * s));
+  const cupW = Math.max(10, Math.round(12 * s));
+  const cupH = Math.max(6, Math.round(7 * s));
+  const stroke = Math.max(1.5, Math.round(1.8 * s));
+
   return (
     <View
       style={{
         width: size,
         height: size,
-        justifyContent: 'center',
         alignItems: 'center',
+        justifyContent: 'center',
       }}
     >
       <View
         style={{
-          width: boxW,
-          height: boxH,
-          borderRadius: 4,
-          borderWidth: 1.6,
-          borderColor: color,
-          justifyContent: 'space-between',
-          paddingTop: 2.5,
-          paddingBottom: 2,
-          paddingHorizontal: 2.5,
+          width: capsuleW,
+          height: capsuleH,
+          borderRadius: capsuleW / 2,
+          backgroundColor: color,
+          marginBottom: -Math.round(4 * s),
         }}
-      >
-        <View
-          style={{
-            height: 2,
-            borderRadius: 1,
-            backgroundColor: color,
-            opacity: 0.78,
-          }}
-        />
-        <View
-          style={{
-            width: 4.5,
-            height: 4.5,
-            borderRadius: 2.5,
-            backgroundColor: color,
-            alignSelf: 'center',
-          }}
-        />
-      </View>
+      />
+      <View
+        style={{
+          width: cupW,
+          height: cupH,
+          borderBottomLeftRadius: cupW / 2,
+          borderBottomRightRadius: cupW / 2,
+          borderLeftWidth: stroke,
+          borderRightWidth: stroke,
+          borderBottomWidth: stroke,
+          borderColor: color,
+        }}
+      />
+      <View
+        style={{
+          width: stroke,
+          height: Math.max(2, Math.round(2.5 * s)),
+          backgroundColor: color,
+        }}
+      />
+      <View
+        style={{
+          width: Math.max(6, Math.round(7 * s)),
+          height: stroke,
+          borderRadius: stroke / 2,
+          backgroundColor: color,
+        }}
+      />
     </View>
   );
 }
@@ -737,13 +810,18 @@ function App() {
   // حالة البحث والتشغيل المباشر ليوتيوب من أيقونة الهيدر
   const [isSearchInputOpen, setIsSearchInputOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchFilter, setSearchFilter] = useState('all');
   const [searchResults, setSearchResults] = useState([]);
+  const [searchPagination, setSearchPagination] = useState(DEFAULT_PAGINATION_STATE);
   const [isSearching, setIsSearching] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [isLaunchingYouTube, setIsLaunchingYouTube] = useState(false);
+  const [isOpeningBrowserUrl, setIsOpeningBrowserUrl] = useState(false);
   const [castingVideoId, setCastingVideoId] = useState(null);
   const [lastCastedVideoId, setLastCastedVideoId] = useState(null);
   const [hasSearchedOnce, setHasSearchedOnce] = useState(false);
   const [searchHistory, setSearchHistory] = useState([]);
+  const [favoriteVideos, setFavoriteVideos] = useState([]);
   const [networkNotice, setNetworkNotice] = useState(null);
 
   // حالة ريموت التكييف
@@ -767,9 +845,24 @@ function App() {
   const [activeDpadDir, setActiveDpadDir] = useState(null);
   const [hapticsConfig, setHapticsConfig] = useState(() => HapticsManager.getConfig());
   const [showHapticsModal, setShowHapticsModal] = useState(false);
-  const [showBrowserTouchpadModal, setShowBrowserTouchpadModal] = useState(false);
   const [isPowerHolding, setIsPowerHolding] = useState(false);
   const [powerHintText, setPowerHintText] = useState('');
+
+  // حالة الريموت الصوتي بالعامية المصرية ومؤقت نوم الشاشة
+  const [voiceSession, setVoiceSession] = useState({
+    phase: 'idle',
+    transcript: '',
+    partialTranscript: '',
+    rmsLevel: 0,
+    parsedCommand: null,
+    videoCandidate: null,
+    alternateResults: [],
+    countdownRemainingMs: 0,
+    countdownTotalMs: 0,
+    statusMessage: '',
+    errorMessage: '',
+  });
+  const [tvSleepTimer, setTvSleepTimer] = useState(null);
 
   const isSendingRef = useRef(false);
   const hasIrHardwareRef = useRef(null);
@@ -778,7 +871,21 @@ function App() {
   const powerHoldTimerRef = useRef(null);
   const powerHintTimerRef = useRef(null);
   const powerTriggeredRef = useRef(false);
+  const voiceCountdownTimerRef = useRef(null);
+  const voiceDoneTimerRef = useRef(null);
+  const voiceAbortRef = useRef(false);
+  const voiceRequestIdRef = useRef(0);
+  const voiceSessionRef = useRef(voiceSession);
+  voiceSessionRef.current = voiceSession;
+  const handleTvCommandRef = useRef(null);
   const searchRequestIdRef = useRef(0);
+  const searchFilterRef = useRef('all');
+  const searchPaginationRef = useRef(DEFAULT_PAGINATION_STATE);
+  const isLoadingMoreRef = useRef(false);
+  const autoFilterPagesRef = useRef(0);
+  const searchListRef = useRef(null);
+  const bottomSentinelRef = useRef(null);
+  const loadMoreHandlerRef = useRef(null);
 
   useEffect(() => {
     let mounted = true;
@@ -801,6 +908,14 @@ function App() {
       .then((historyItems) => {
         if (mounted && Array.isArray(historyItems)) {
           setSearchHistory(historyItems);
+        }
+      })
+      .catch(() => {});
+
+    WifiControl.getFavoriteVideos()
+      .then((favItems) => {
+        if (mounted && Array.isArray(favItems)) {
+          setFavoriteVideos(favItems);
         }
       })
       .catch(() => {});
@@ -857,6 +972,16 @@ function App() {
         clearTimeout(powerHintTimerRef.current);
         powerHintTimerRef.current = null;
       }
+      if (voiceCountdownTimerRef.current) {
+        clearInterval(voiceCountdownTimerRef.current);
+        voiceCountdownTimerRef.current = null;
+      }
+      if (voiceDoneTimerRef.current) {
+        clearTimeout(voiceDoneTimerRef.current);
+        voiceDoneTimerRef.current = null;
+      }
+      voiceAbortRef.current = true;
+      VoiceControl.cancelSession().catch(() => {});
       HapticsManager.stopHoldFeedback();
       unsubscribe();
       WifiControl.abortDiscovery();
@@ -940,6 +1065,12 @@ function App() {
         WifiControl.releaseActiveHold();
         HapticsManager.stopHoldFeedback();
         cancelPowerHold();
+        if (voiceSessionRef.current && voiceSessionRef.current.phase === 'listening') {
+          VoiceControl.cancelSession().catch(() => {});
+          setVoiceSession((prev) =>
+            prev.phase === 'listening' ? { ...prev, phase: 'idle' } : prev
+          );
+        }
       } else if (isSearchInputOpen) {
         refreshNetworkStatus({ verifyLanReachability: true });
       }
@@ -1016,17 +1147,21 @@ function App() {
       try {
         await WifiControl.sendCommand(commandKey);
         clearErrorBanner();
+        return true;
       } catch (error) {
+        if (options.throwOnError) {
+          throw error;
+        }
         setFeedback({
           text: error && error.message ? error.message : 'تعذر تنفيذ الأمر',
           tone: 'error',
         });
+        return false;
       }
-      return;
     }
 
     if (isSendingRef.current) {
-      return;
+      return false;
     }
     isSendingRef.current = true;
     try {
@@ -1051,14 +1186,490 @@ function App() {
         await WifiControl.sendCommand(commandKey);
         clearErrorBanner();
       }
+      return true;
     } catch (error) {
+      if (options.throwOnError) {
+        throw error;
+      }
       setFeedback({
         text: error && error.message ? error.message : 'تعذر تنفيذ الأمر',
         tone: 'error',
       });
+      return false;
     } finally {
       isSendingRef.current = false;
     }
+  };
+
+  handleTvCommandRef.current = handleTvCommand;
+
+  useEffect(() => {
+    if (!tvSleepTimer || !tvSleepTimer.endTime) {
+      return undefined;
+    }
+    const tickTimer = () => {
+      const remainingMs = tvSleepTimer.endTime - Date.now();
+      if (remainingMs <= 0) {
+        setTvSleepTimer(null);
+        HapticsManager.trigger(HAPTIC_PATTERNS.POWER_TV);
+        if (handleTvCommandRef.current) {
+          handleTvCommandRef.current('POWER');
+        }
+        return false;
+      }
+      const nextSeconds = Math.max(0, Math.ceil(remainingMs / 1000));
+      setTvSleepTimer((prev) => {
+        if (!prev || prev.endTime !== tvSleepTimer.endTime) return prev;
+        if (prev.remainingSeconds === nextSeconds) return prev;
+        return { ...prev, remainingSeconds: nextSeconds };
+      });
+      return true;
+    };
+
+    const stillActive = tickTimer();
+    if (!stillActive) return undefined;
+
+    const intervalId = setInterval(() => {
+      const keepGoing = tickTimer();
+      if (!keepGoing) {
+        clearInterval(intervalId);
+      }
+    }, 1000);
+
+    return () => clearInterval(intervalId);
+  }, [tvSleepTimer ? tvSleepTimer.endTime : null]);
+
+  const clearVoiceTimers = () => {
+    if (voiceCountdownTimerRef.current) {
+      clearInterval(voiceCountdownTimerRef.current);
+      voiceCountdownTimerRef.current = null;
+    }
+    if (voiceDoneTimerRef.current) {
+      clearTimeout(voiceDoneTimerRef.current);
+      voiceDoneTimerRef.current = null;
+    }
+  };
+
+  const resetVoiceSession = () => {
+    clearVoiceTimers();
+    voiceAbortRef.current = true;
+    voiceRequestIdRef.current += 1;
+    setVoiceSession({
+      phase: 'idle',
+      transcript: '',
+      partialTranscript: '',
+      rmsLevel: 0,
+      parsedCommand: null,
+      videoCandidate: null,
+      alternateResults: [],
+      countdownRemainingMs: 0,
+      countdownTotalMs: 0,
+      statusMessage: '',
+      errorMessage: '',
+    });
+  };
+
+  const handleCancelVoiceSession = async () => {
+    voiceAbortRef.current = true;
+    clearVoiceTimers();
+    voiceRequestIdRef.current += 1;
+    await VoiceControl.cancelSession().catch(() => {});
+    resetVoiceSession();
+  };
+
+  const formatSleepRemainingClock = (totalSecs) => {
+    const secs = Math.max(0, Math.floor(Number(totalSecs) || 0));
+    const hrs = Math.floor(secs / 3600);
+    const mins = Math.floor((secs % 3600) / 60);
+    const rem = secs % 60;
+    if (hrs > 0) {
+      return `${hrs}:${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+    }
+    return `${String(mins).padStart(2, '0')}:${String(rem).padStart(2, '0')}`;
+  };
+
+  const sendRepeatedTvCommand = async (commandKey, count = 1) => {
+    const steps = Math.max(1, Math.min(15, Math.round(Number(count) || 1)));
+    if (tvTransport === 'wifi') {
+      const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
+      if (netCheck && !netCheck.sameNetwork) {
+        throw new Error(netCheck.message);
+      }
+      await WifiControl.sendRepeatedCommand(
+        commandKey,
+        steps,
+        120,
+        () => voiceAbortRef.current
+      );
+      return;
+    }
+
+    for (let i = 0; i < steps; i += 1) {
+      if (voiceAbortRef.current) {
+        break;
+      }
+      await handleTvCommandRef.current(commandKey, { throwOnError: true });
+      if (i < steps - 1) {
+        if (voiceAbortRef.current) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+    }
+  };
+
+  const executeVoiceCommand = async (parsedCmd, videoCandidate, requestId) => {
+    if (!parsedCmd || voiceRequestIdRef.current !== requestId) {
+      return;
+    }
+
+    clearVoiceTimers();
+    voiceAbortRef.current = false;
+
+    setVoiceSession((prev) => ({
+      ...prev,
+      phase: 'executing',
+      countdownRemainingMs: 0,
+      statusMessage: parsedCmd.label || 'جاري تنفيذ الأمر الصوتي...',
+      errorMessage: '',
+    }));
+
+    try {
+      if (parsedCmd.type === 'YOUTUBE_DIRECT_PLAY') {
+        if (!videoCandidate || !videoCandidate.videoId) {
+          throw new Error('لم يتم العثور على فيديو مناسب لتشغيله.');
+        }
+        const netCheck = await refreshNetworkStatus({ verifyLanReachability: true });
+        if (netCheck && !netCheck.sameNetwork) {
+          throw new Error(netCheck.message);
+        }
+        await WifiControl.castYouTubeVideo(videoCandidate.videoId);
+        recordSearchHistory(parsedCmd.query);
+        setLastCastedVideoId(videoCandidate.videoId);
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'TV_SLEEP_TIMER') {
+        const totalMinutes = Math.max(1, Number(parsedCmd.minutes) || 1);
+        const endTime = Date.now() + totalMinutes * 60 * 1000;
+        setTvSleepTimer({
+          endTime,
+          totalMinutes,
+          remainingSeconds: totalMinutes * 60,
+        });
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'CANCEL_TV_SLEEP_TIMER') {
+        setTvSleepTimer(null);
+        HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+      } else if (parsedCmd.type === 'LAUNCH_YOUTUBE') {
+        const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
+        if (netCheck && !netCheck.sameNetwork) {
+          throw new Error(netCheck.message);
+        }
+        await WifiControl.launchYouTube();
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'OPEN_BROWSER') {
+        const netCheck = await refreshNetworkStatus({ verifyLanReachability: true });
+        if (netCheck && !netCheck.sameNetwork) {
+          throw new Error(netCheck.message);
+        }
+        await WifiControl.openUrlInTvBrowser(parsedCmd.url || 'https://www.google.com');
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'TV_REPEATED_COMMAND') {
+        await sendRepeatedTvCommand(parsedCmd.commandKey, parsedCmd.count);
+        if (!voiceAbortRef.current) {
+          HapticsManager.trigger(HAPTIC_PATTERNS.NAV_REPEAT);
+        }
+      } else if (parsedCmd.type === 'TV_COMMAND') {
+        if (tvTransport === 'wifi') {
+          const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
+          if (netCheck && !netCheck.sameNetwork) {
+            throw new Error(netCheck.message);
+          }
+        }
+        await handleTvCommandRef.current(parsedCmd.commandKey, { throwOnError: true });
+        HapticsManager.trigger(
+          parsedCmd.commandKey === 'POWER'
+            ? HAPTIC_PATTERNS.POWER_TV
+            : HAPTIC_PATTERNS.OK_CONFIRM
+        );
+      } else {
+        throw new Error('لم يتم فهم الأمر الصوتي المطلوب.');
+      }
+
+      if (voiceRequestIdRef.current !== requestId) {
+        return;
+      }
+
+      clearErrorBanner();
+      setVoiceSession((prev) => ({
+        ...prev,
+        phase: 'done',
+        statusMessage:
+          parsedCmd.type === 'YOUTUBE_DIRECT_PLAY' && videoCandidate
+            ? `تم التشغيل على الشاشة: ${videoCandidate.title}`
+            : parsedCmd.label || 'تم التنفيذ بنجاح',
+      }));
+
+      voiceDoneTimerRef.current = setTimeout(() => {
+        if (voiceRequestIdRef.current === requestId) {
+          resetVoiceSession();
+        }
+      }, 950);
+    } catch (error) {
+      if (voiceRequestIdRef.current !== requestId) {
+        return;
+      }
+      HapticsManager.trigger(HAPTIC_PATTERNS.AC_LIMIT_HIT);
+      setVoiceSession((prev) => ({
+        ...prev,
+        phase: 'error',
+        errorMessage:
+          error && error.message ? error.message : 'تعذر تنفيذ الأمر الصوتي حالياً.',
+      }));
+    }
+  };
+
+  const beginVoiceConfirmationCountdown = (
+    parsedCmd,
+    videoCandidate,
+    alternateResults,
+    requestId
+  ) => {
+    clearVoiceTimers();
+    const totalMs = Math.max(800, Number(parsedCmd.confirmDelayMs) || 1200);
+    const deadline = Date.now() + totalMs;
+
+    setVoiceSession((prev) => ({
+      ...prev,
+      phase: 'confirming',
+      parsedCommand: parsedCmd,
+      videoCandidate: videoCandidate || null,
+      alternateResults: Array.isArray(alternateResults) ? alternateResults : [],
+      countdownRemainingMs: totalMs,
+      countdownTotalMs: totalMs,
+      statusMessage: parsedCmd.label || '',
+      errorMessage: '',
+    }));
+
+    voiceCountdownTimerRef.current = setInterval(() => {
+      if (voiceRequestIdRef.current !== requestId) {
+        clearVoiceTimers();
+        return;
+      }
+      const leftMs = deadline - Date.now();
+      if (leftMs <= 0) {
+        clearVoiceTimers();
+        executeVoiceCommand(parsedCmd, videoCandidate, requestId);
+      } else {
+        setVoiceSession((prev) =>
+          prev.phase === 'confirming'
+            ? { ...prev, countdownRemainingMs: leftMs }
+            : prev
+        );
+      }
+    }, 90);
+  };
+
+  const handleExecuteVoiceCommandNow = () => {
+    const cur = voiceSessionRef.current;
+    if (!cur || !cur.parsedCommand) return;
+    HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+    executeVoiceCommand(
+      cur.parsedCommand,
+      cur.videoCandidate,
+      voiceRequestIdRef.current
+    );
+  };
+
+  const handleOpenVoiceSearchResults = () => {
+    const cur = voiceSessionRef.current;
+    if (!cur || !cur.parsedCommand || !cur.parsedCommand.query) return;
+    const targetQuery = cur.parsedCommand.query;
+    const prefetched = Array.isArray(cur.alternateResults)
+      ? cur.alternateResults
+      : [];
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    resetVoiceSession();
+    clearErrorBanner();
+    searchFilterRef.current = 'no_shorts';
+    setSearchFilter('no_shorts');
+    setSearchQuery(targetQuery);
+    setIsSearchInputOpen(true);
+    refreshNetworkStatus({ verifyLanReachability: true });
+    if (prefetched.length > 0) {
+      setSearchResults(prefetched);
+      setHasSearchedOnce(true);
+      setIsSearching(false);
+    } else {
+      handleSearchYouTube(targetQuery, { filter: 'no_shorts', saveHistory: true });
+    }
+  };
+
+  const handleVoiceTranscriptResolved = async (finalTranscript, requestId) => {
+    if (voiceRequestIdRef.current !== requestId) {
+      return;
+    }
+    const cleanText = String(finalTranscript || '').trim();
+    const parsedCmd = parseEgyptianVoiceCommand(cleanText);
+
+    if (!parsedCmd || parsedCmd.type === 'UNKNOWN') {
+      HapticsManager.trigger(HAPTIC_PATTERNS.AC_LIMIT_HIT);
+      setVoiceSession((prev) => ({
+        ...prev,
+        phase: 'error',
+        transcript: cleanText,
+        parsedCommand: parsedCmd,
+        errorMessage: 'لم أفهم الأمر. جرّب: «شغّل سورة البقرة» أو «علّي الصوت شوية».',
+      }));
+      return;
+    }
+
+    if (parsedCmd.type === 'YOUTUBE_DIRECT_PLAY') {
+      setVoiceSession((prev) => ({
+        ...prev,
+        phase: 'searching',
+        transcript: cleanText,
+        parsedCommand: parsedCmd,
+        videoCandidate: null,
+        alternateResults: [],
+        statusMessage: `جاري البحث عن: ${parsedCmd.query}`,
+        errorMessage: '',
+      }));
+
+      try {
+        const res = await WifiControl.searchYouTubeVideos(parsedCmd.query, {
+          filter: 'no_shorts',
+          page: 1,
+        });
+        if (voiceRequestIdRef.current !== requestId) {
+          return;
+        }
+        const items = Array.isArray(res)
+          ? res
+          : res && Array.isArray(res.items)
+          ? res.items
+          : [];
+        const uniqueItems = mergeUniqueVideos([], items);
+        if (uniqueItems.length === 0) {
+          HapticsManager.trigger(HAPTIC_PATTERNS.AC_LIMIT_HIT);
+          setVoiceSession((prev) => ({
+            ...prev,
+            phase: 'error',
+            transcript: cleanText,
+            parsedCommand: parsedCmd,
+            errorMessage: `لم يتم العثور على نتائج لـ "${parsedCmd.query}".`,
+          }));
+          return;
+        }
+
+        const firstResult = uniqueItems[0];
+        HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+        beginVoiceConfirmationCountdown(parsedCmd, firstResult, uniqueItems, requestId);
+      } catch (err) {
+        if (voiceRequestIdRef.current !== requestId) {
+          return;
+        }
+        HapticsManager.trigger(HAPTIC_PATTERNS.AC_LIMIT_HIT);
+        setVoiceSession((prev) => ({
+          ...prev,
+          phase: 'error',
+          transcript: cleanText,
+          parsedCommand: parsedCmd,
+          errorMessage:
+            err && err.message ? err.message : 'تعذر البحث في يوتيوب حالياً.',
+        }));
+      }
+      return;
+    }
+
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    beginVoiceConfirmationCountdown(parsedCmd, null, [], requestId);
+  };
+
+  const handleVoiceMicPress = async () => {
+    if (voiceSessionRef.current.phase === 'listening') {
+      HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+      await VoiceControl.stopSession();
+      return;
+    }
+
+    HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+    clearVoiceTimers();
+    voiceAbortRef.current = false;
+    const requestId = voiceRequestIdRef.current + 1;
+    voiceRequestIdRef.current = requestId;
+
+    setVoiceSession({
+      phase: 'listening',
+      transcript: '',
+      partialTranscript: '',
+      rmsLevel: 0,
+      parsedCommand: null,
+      videoCandidate: null,
+      alternateResults: [],
+      countdownRemainingMs: 0,
+      countdownTotalMs: 0,
+      statusMessage: 'تحدث الآن بالعامية المصرية...',
+      errorMessage: '',
+    });
+
+    await VoiceControl.startSession({
+      language: 'ar-EG',
+      onReady: () => {
+        if (voiceRequestIdRef.current !== requestId) return;
+        setVoiceSession((prev) =>
+          prev.phase === 'listening'
+            ? { ...prev, statusMessage: 'أسمعك الآن...' }
+            : prev
+        );
+      },
+      onRms: (rmsVal) => {
+        if (voiceRequestIdRef.current !== requestId) return;
+        setVoiceSession((prev) =>
+          prev.phase === 'listening'
+            ? { ...prev, rmsLevel: Math.max(0, Math.min(10, Number(rmsVal) || 0)) }
+            : prev
+        );
+      },
+      onPartial: (partialText) => {
+        if (voiceRequestIdRef.current !== requestId) return;
+        setVoiceSession((prev) =>
+          prev.phase === 'listening'
+            ? { ...prev, partialTranscript: partialText }
+            : prev
+        );
+      },
+      onResult: (finalTranscript) => {
+        if (voiceRequestIdRef.current !== requestId) return;
+        handleVoiceTranscriptResolved(finalTranscript, requestId);
+      },
+      onError: (err) => {
+        if (voiceRequestIdRef.current !== requestId) return;
+        HapticsManager.trigger(HAPTIC_PATTERNS.AC_LIMIT_HIT);
+        setVoiceSession((prev) => ({
+          ...prev,
+          phase: 'error',
+          errorMessage:
+            (err && err.message) || 'تعذر التقاط الأمر الصوتي. حاول مجدداً.',
+        }));
+      },
+      onEnd: () => {
+        if (voiceRequestIdRef.current !== requestId) return;
+        setVoiceSession((prev) => {
+          if (prev.phase !== 'listening') return prev;
+          if (prev.partialTranscript && prev.partialTranscript.trim()) {
+            setTimeout(() => {
+              handleVoiceTranscriptResolved(prev.partialTranscript, requestId);
+            }, 0);
+            return prev;
+          }
+          return {
+            ...prev,
+            phase: 'error',
+            errorMessage: 'لم يتم سماع أي أمر واضح. اضغط المايكروفون وجرّب مجدداً.',
+          };
+        });
+      },
+    });
   };
 
   const handleScanSmartTvs = async (overrideSubnet) => {
@@ -1177,21 +1788,6 @@ function App() {
     clearErrorBanner();
   };
 
-  const handleEnsureWifiForBrowser = async () => {
-    setTvTransport('wifi');
-    const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
-    if (netCheck && !netCheck.sameNetwork) {
-      throw new Error(netCheck.message);
-    }
-    WifiControl.configure({
-      protocol: wifiProtocol,
-      ipAddress: tvIp,
-      port: Number(tvPort) || (wifiProtocol === 'samsung_tizen' ? 8002 : 8080),
-      dialPort: Number(dialPort) || 8080,
-    });
-    return WifiControl.connect();
-  };
-
   const handleLaunchYouTube = async () => {
     setIsLaunchingYouTube(true);
     try {
@@ -1228,9 +1824,16 @@ function App() {
     const targetQuery =
       typeof overrideQuery === 'string' ? overrideQuery : searchQuery;
     const cleanTarget = targetQuery.trim();
-    if (!cleanTarget) {
+    const targetFilter = options.filter || searchFilterRef.current || 'all';
+    const smart = parseSmartSearchInput(cleanTarget);
+
+    if (!cleanTarget || smart.type !== 'query') {
+      searchPaginationRef.current = DEFAULT_PAGINATION_STATE;
+      setSearchPagination(DEFAULT_PAGINATION_STATE);
       setSearchResults([]);
       setIsSearching(false);
+      isLoadingMoreRef.current = false;
+      setIsLoadingMore(false);
       setHasSearchedOnce(false);
       return;
     }
@@ -1250,15 +1853,41 @@ function App() {
 
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
+    autoFilterPagesRef.current = 0;
+    isLoadingMoreRef.current = false;
+    setIsLoadingMore(false);
+    searchPaginationRef.current = DEFAULT_PAGINATION_STATE;
+    setSearchPagination(DEFAULT_PAGINATION_STATE);
     setIsSearching(true);
     setHasSearchedOnce(true);
 
     try {
-      const items = await WifiControl.searchYouTubeVideos(cleanTarget);
+      const response = await WifiControl.searchYouTubeVideos(smart.query, {
+        filter: targetFilter,
+        page: 1,
+      });
       if (searchRequestIdRef.current !== requestId) return;
-      setSearchResults(items);
+
+      const items = Array.isArray(response)
+        ? response
+        : response && Array.isArray(response.items)
+        ? response.items
+        : [];
+      const uniqueItems = mergeUniqueVideos([], items);
+      const nextPag = {
+        nextPageToken: response && response.nextPageToken ? response.nextPageToken : null,
+        nextPage: response && response.nextPage ? response.nextPage : 2,
+        hasMore: Boolean(response && response.hasMore),
+        providerType: response && response.providerType ? response.providerType : null,
+        instanceUrl: response && response.instanceUrl ? response.instanceUrl : null,
+      };
+
+      searchPaginationRef.current = nextPag;
+      setSearchPagination(nextPag);
+      setSearchResults(uniqueItems);
       clearErrorBanner();
-      if (!options.saveHistory && items.length > 0) {
+
+      if (!options.saveHistory && uniqueItems.length > 0) {
         historySettleTimerRef.current = setTimeout(() => {
           if (searchRequestIdRef.current === requestId) {
             recordSearchHistory(cleanTarget);
@@ -1267,6 +1896,8 @@ function App() {
       }
     } catch (error) {
       if (searchRequestIdRef.current !== requestId) return;
+      searchPaginationRef.current = DEFAULT_PAGINATION_STATE;
+      setSearchPagination(DEFAULT_PAGINATION_STATE);
       setSearchResults([]);
       setFeedback({
         text: error && error.message ? error.message : 'فشل البحث في يوتيوب',
@@ -1278,6 +1909,73 @@ function App() {
       }
     }
   };
+
+  const handleLoadMoreResults = async () => {
+    const cleanTarget = searchQuery.trim();
+    const smart = parseSmartSearchInput(cleanTarget);
+    const currentPag = searchPaginationRef.current;
+
+    if (
+      !cleanTarget ||
+      smart.type !== 'query' ||
+      isSearching ||
+      isLoadingMoreRef.current ||
+      !currentPag.hasMore
+    ) {
+      return;
+    }
+
+    const requestId = searchRequestIdRef.current;
+    isLoadingMoreRef.current = true;
+    setIsLoadingMore(true);
+
+    try {
+      const response = await WifiControl.searchYouTubeVideos(smart.query, {
+        filter: searchFilterRef.current || 'all',
+        pageToken: currentPag.nextPageToken,
+        page: currentPag.nextPage || 2,
+        providerType: currentPag.providerType,
+        instanceUrl: currentPag.instanceUrl,
+      });
+      if (searchRequestIdRef.current !== requestId) return;
+
+      const items = Array.isArray(response)
+        ? response
+        : response && Array.isArray(response.items)
+        ? response.items
+        : [];
+
+      const nextPag = {
+        nextPageToken: response && response.nextPageToken ? response.nextPageToken : null,
+        nextPage:
+          response && response.nextPage
+            ? response.nextPage
+            : (currentPag.nextPage || 2) + 1,
+        hasMore: Boolean(response && response.hasMore) && items.length > 0,
+        providerType:
+          (response && response.providerType) || currentPag.providerType || null,
+        instanceUrl:
+          (response && response.instanceUrl) || currentPag.instanceUrl || null,
+      };
+
+      searchPaginationRef.current = nextPag;
+      setSearchPagination(nextPag);
+      setSearchResults((prev) => mergeUniqueVideos(prev, items));
+    } catch (_) {
+      if (searchRequestIdRef.current === requestId) {
+        const stoppedPag = { ...searchPaginationRef.current, hasMore: false };
+        searchPaginationRef.current = stoppedPag;
+        setSearchPagination(stoppedPag);
+      }
+    } finally {
+      if (searchRequestIdRef.current === requestId) {
+        isLoadingMoreRef.current = false;
+        setIsLoadingMore(false);
+      }
+    }
+  };
+
+  loadMoreHandlerRef.current = handleLoadMoreResults;
 
   const isWifiMode = activeTab === 'tv' && tvTransport === 'wifi';
   const isTvSearchAvailable = activeTab === 'tv';
@@ -1291,6 +1989,13 @@ function App() {
       .then((historyItems) => {
         if (Array.isArray(historyItems)) {
           setSearchHistory(historyItems);
+        }
+      })
+      .catch(() => {});
+    WifiControl.getFavoriteVideos()
+      .then((favItems) => {
+        if (Array.isArray(favItems)) {
+          setFavoriteVideos(favItems);
         }
       })
       .catch(() => {});
@@ -1309,10 +2014,15 @@ function App() {
       recordSearchHistory(searchQuery);
     }
     searchRequestIdRef.current += 1;
+    autoFilterPagesRef.current = 0;
+    isLoadingMoreRef.current = false;
+    searchPaginationRef.current = DEFAULT_PAGINATION_STATE;
     setIsSearchInputOpen(false);
     setSearchQuery('');
     setSearchResults([]);
+    setSearchPagination(DEFAULT_PAGINATION_STATE);
     setIsSearching(false);
+    setIsLoadingMore(false);
     setHasSearchedOnce(false);
     setLastCastedVideoId(null);
     setNetworkNotice(null);
@@ -1344,9 +2054,14 @@ function App() {
       recordSearchHistory(searchQuery);
     }
     searchRequestIdRef.current += 1;
+    autoFilterPagesRef.current = 0;
+    isLoadingMoreRef.current = false;
+    searchPaginationRef.current = DEFAULT_PAGINATION_STATE;
     setSearchQuery('');
     setSearchResults([]);
+    setSearchPagination(DEFAULT_PAGINATION_STATE);
     setIsSearching(false);
+    setIsLoadingMore(false);
     setHasSearchedOnce(false);
     setLastCastedVideoId(null);
     clearErrorBanner();
@@ -1358,6 +2073,20 @@ function App() {
     setSearchQuery(clean);
     setLastCastedVideoId(null);
     handleSearchYouTube(clean, { saveHistory: true });
+  };
+
+  const handleSelectSearchFilter = (nextFilterKey) => {
+    if (!nextFilterKey || nextFilterKey === searchFilterRef.current) return;
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    searchFilterRef.current = nextFilterKey;
+    setSearchFilter(nextFilterKey);
+    autoFilterPagesRef.current = 0;
+
+    const trimmed = searchQuery.trim();
+    const smart = parseSmartSearchInput(trimmed);
+    if (trimmed && smart.type === 'query') {
+      handleSearchYouTube(trimmed, { filter: nextFilterKey });
+    }
   };
 
   const handleRemoveSearchHistoryItem = async (term) => {
@@ -1378,6 +2107,21 @@ function App() {
     }
   };
 
+  const handleToggleFavoriteVideo = async (videoItem, event) => {
+    if (event && typeof event.stopPropagation === 'function') {
+      event.stopPropagation();
+    }
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    try {
+      const result = await WifiControl.toggleFavoriteVideo(videoItem);
+      if (result && Array.isArray(result.favorites)) {
+        setFavoriteVideos(result.favorites);
+      }
+    } catch (_) {
+      // ignore
+    }
+  };
+
   const handleSearchQueryChange = (text) => {
     setSearchQuery(text);
     setLastCastedVideoId(null);
@@ -1391,10 +2135,16 @@ function App() {
     }
 
     const trimmed = text.trim();
-    if (!trimmed) {
+    const smart = parseSmartSearchInput(trimmed);
+    if (!trimmed || smart.type !== 'query') {
       searchRequestIdRef.current += 1;
+      autoFilterPagesRef.current = 0;
+      isLoadingMoreRef.current = false;
+      searchPaginationRef.current = DEFAULT_PAGINATION_STATE;
       setSearchResults([]);
+      setSearchPagination(DEFAULT_PAGINATION_STATE);
       setIsSearching(false);
+      setIsLoadingMore(false);
       setHasSearchedOnce(false);
       clearErrorBanner();
       return;
@@ -1407,9 +2157,34 @@ function App() {
     }, 520);
   };
 
+  const handleOpenUrlOnTv = async (rawUrl) => {
+    setIsOpeningBrowserUrl(true);
+    try {
+      const netCheck = await refreshNetworkStatus({ verifyLanReachability: true });
+      if (netCheck && !netCheck.sameNetwork) {
+        setFeedback({ text: netCheck.message, tone: 'error' });
+        return;
+      }
+      await WifiControl.openUrlInTvBrowser(rawUrl);
+      clearErrorBanner();
+    } catch (error) {
+      setFeedback({
+        text:
+          error && error.message
+            ? error.message
+            : 'تعذر فتح الرابط في متصفح الشاشة.',
+        tone: 'error',
+      });
+    } finally {
+      setIsOpeningBrowserUrl(false);
+    }
+  };
+
   const handleCastVideo = async (item) => {
-    if (searchQuery.trim().length >= 2) {
-      recordSearchHistory(searchQuery);
+    const cleanQuery = searchQuery.trim();
+    const smart = parseSmartSearchInput(cleanQuery);
+    if (smart.type === 'query' && cleanQuery.length >= 2) {
+      recordSearchHistory(cleanQuery);
     }
     setCastingVideoId(item.videoId);
     try {
@@ -1958,46 +2733,157 @@ function App() {
 
   const isSearchPageOpen = isTvSearchAvailable && isSearchInputOpen;
   const trimmedSearchQuery = searchQuery.trim();
+  const smartSearchInput = parseSmartSearchInput(trimmedSearchQuery);
   const matchingSearchHistory = trimmedSearchQuery
     ? searchHistory.filter((item) =>
         item.toLowerCase().includes(trimmedSearchQuery.toLowerCase())
       )
     : searchHistory;
+  const visibleSearchResults = filterSearchResults(searchResults, searchFilter);
+  const favoriteVideoIdsSet = new Set(favoriteVideos.map((v) => v.videoId));
+
+  // جلب تلقائي لصفحات إضافية (بحد أقصى 3 صفحات) عند تصفية النتائج على الواجهة وظهور عدد قليل
+  useEffect(() => {
+    if (
+      !isSearchPageOpen ||
+      smartSearchInput.type !== 'query' ||
+      !hasSearchedOnce ||
+      isSearching ||
+      isLoadingMore ||
+      !searchPagination.hasMore ||
+      searchFilter === 'all' ||
+      visibleSearchResults.length >= 8 ||
+      autoFilterPagesRef.current >= 3
+    ) {
+      return;
+    }
+
+    autoFilterPagesRef.current += 1;
+    if (loadMoreHandlerRef.current) {
+      loadMoreHandlerRef.current();
+    }
+  }, [
+    isSearchPageOpen,
+    smartSearchInput.type,
+    hasSearchedOnce,
+    isSearching,
+    isLoadingMore,
+    searchPagination.hasMore,
+    searchFilter,
+    visibleSearchResults.length,
+  ]);
+
+  // مراقبة التمرير اللانهائي عبر IntersectionObserver (rootMargin: 300px) على الويب
+  useEffect(() => {
+    if (
+      Platform.OS !== 'web' ||
+      typeof IntersectionObserver === 'undefined' ||
+      !isSearchPageOpen ||
+      smartSearchInput.type !== 'query' ||
+      visibleSearchResults.length === 0 ||
+      !searchPagination.hasMore
+    ) {
+      return undefined;
+    }
+
+    const sentinelEl = bottomSentinelRef.current;
+    if (!sentinelEl) return undefined;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          if (loadMoreHandlerRef.current) {
+            loadMoreHandlerRef.current();
+          }
+        }
+      },
+      {
+        root: searchListRef.current || null,
+        rootMargin: '300px',
+        threshold: 0,
+      }
+    );
+
+    observer.observe(sentinelEl);
+    return () => observer.disconnect();
+  }, [
+    isSearchPageOpen,
+    smartSearchInput.type,
+    visibleSearchResults.length,
+    searchPagination.hasMore,
+  ]);
 
   const renderVideoItem = ({ item }) => {
     const isCasting = castingVideoId === item.videoId;
     const wasCasted = lastCastedVideoId === item.videoId && !isCasting;
+    const isFavorite = favoriteVideoIdsSet.has(item.videoId);
+    const statsLabel = [item.viewCountText, item.publishedText]
+      .filter(Boolean)
+      .join(' · ');
+
     return (
-      <TouchableOpacity
-        style={[styles.videoCard, (isCasting || wasCasted) && styles.videoCardActive]}
-        activeOpacity={0.75}
-        onPress={() => handleCastVideo(item)}
-        disabled={Boolean(castingVideoId)}
-      >
-        <Image
-          source={{ uri: item.thumbnailUrl }}
-          style={styles.videoThumb}
-          resizeMode="cover"
-        />
-        <View style={styles.videoInfo}>
-          <Text style={styles.videoTitle} numberOfLines={2}>
-            {item.title}
-          </Text>
-          <View style={styles.videoMetaRow}>
-            <Text style={styles.videoChannel} numberOfLines={1}>
-              {item.channelTitle}
-              {item.durationText ? ` · ${item.durationText}` : ''}
-            </Text>
-            <Text style={styles.videoCastLabel}>
-              {isCasting
-                ? 'جاري التشغيل...'
-                : wasCasted
-                ? 'تم التشغيل على الشاشة'
-                : 'تشغيل على الشاشة'}
-            </Text>
+      <View style={[styles.videoCard, (isCasting || wasCasted) && styles.videoCardActive]}>
+        <TouchableOpacity
+          style={styles.videoCardMainTap}
+          activeOpacity={0.78}
+          onPress={() => handleCastVideo(item)}
+          disabled={Boolean(castingVideoId)}
+        >
+          <View style={styles.videoThumbWrap}>
+            <Image
+              source={{ uri: item.thumbnailUrl }}
+              style={styles.videoThumb}
+              resizeMode="cover"
+            />
+            {item.isLive ? (
+              <View style={styles.videoLiveBadge}>
+                <Text style={styles.videoLiveBadgeText}>مباشر</Text>
+              </View>
+            ) : item.durationText ? (
+              <View style={styles.videoDurationBadge}>
+                <Text style={styles.videoDurationBadgeText}>{item.durationText}</Text>
+              </View>
+            ) : null}
           </View>
-        </View>
-      </TouchableOpacity>
+
+          <View style={styles.videoInfo}>
+            <Text dir="auto" style={styles.videoTitle} numberOfLines={2}>
+              {item.title}
+            </Text>
+
+            <Text dir="auto" style={styles.videoChannel} numberOfLines={1}>
+              {item.channelTitle}
+            </Text>
+
+            {statsLabel ? (
+              <Text style={styles.videoStatsText} numberOfLines={1}>
+                {statsLabel}
+              </Text>
+            ) : null}
+
+            <View style={styles.videoActionRow}>
+              <Text style={styles.videoCastLabel}>
+                {isCasting
+                  ? 'جاري التشغيل...'
+                  : wasCasted
+                  ? 'تم التشغيل على الشاشة'
+                  : 'تشغيل على الشاشة'}
+              </Text>
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={styles.videoStarBtn}
+          activeOpacity={0.7}
+          onPress={(e) => handleToggleFavoriteVideo(item, e)}
+          accessibilityLabel={isFavorite ? 'إزالة من المفضلة' : 'إضافة إلى المفضلة'}
+        >
+          <Text style={[styles.videoStarGlyph, isFavorite && styles.videoStarGlyphActive]}>
+            {isFavorite ? '★' : '☆'}
+          </Text>
+        </TouchableOpacity>
+      </View>
     );
   };
 
@@ -2021,13 +2907,24 @@ function App() {
               style={styles.headerSearchInput}
               value={searchQuery}
               onChangeText={handleSearchQueryChange}
-              placeholder="ابحث في يوتيوب..."
+              placeholder="ابحث في يوتيوب أو الصق رابطاً..."
               placeholderTextColor="#64748B"
               returnKeyType="search"
               autoFocus
-              onSubmitEditing={() =>
-                handleSearchYouTube(undefined, { saveHistory: true })
-              }
+              onSubmitEditing={() => {
+                if (smartSearchInput.type === 'youtube_url') {
+                  handleCastVideo({
+                    videoId: smartSearchInput.videoId,
+                    title: 'تشغيل من رابط يوتيوب',
+                    channelTitle: 'YouTube',
+                    thumbnailUrl: `https://i.ytimg.com/vi/${smartSearchInput.videoId}/mqdefault.jpg`,
+                  });
+                } else if (smartSearchInput.type === 'web_url') {
+                  handleOpenUrlOnTv(smartSearchInput.url);
+                } else {
+                  handleSearchYouTube(undefined, { saveHistory: true });
+                }
+              }}
             />
 
             {searchQuery.length > 0 ? (
@@ -2043,42 +2940,41 @@ function App() {
           </View>
         ) : (
           <>
-            <View style={styles.headerBrandGroup}>
+            <View style={[styles.headerBrandGroup, fallbackScreenW < 360 && styles.headerBrandGroupCompact]}>
               <Text
                 style={[
                   styles.headerTitle,
-                  fallbackScreenW < 380 ? { fontSize: 16 } : null,
+                  fallbackScreenW < 360 ? { fontSize: 16 } : null,
                 ]}
               >
                 الريموت الشامل
               </Text>
               {isTvSearchAvailable ? (
-                <TouchableOpacity
-                  style={styles.headerSearchIconBtn}
-                  activeOpacity={0.75}
-                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
-                  onPress={handleOpenSearch}
-                  accessibilityLabel="بحث يوتيوب"
-                >
-                  <SearchIcon color="#F1F5F9" size={18} />
-                </TouchableOpacity>
-              ) : null}
-              {activeTab === 'tv' ? (
-                <TouchableOpacity
-                  style={[
-                    styles.headerSearchIconBtn,
-                    wifiStatus.isConnected && styles.headerHapticsActiveBtn,
-                  ]}
-                  activeOpacity={0.75}
-                  onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
-                  onPress={() => setShowBrowserTouchpadModal(true)}
-                  accessibilityLabel="متصفح التلفاز والماوس"
-                >
-                  <TouchpadBrowserIcon
-                    color={wifiStatus.isConnected ? '#38BDF8' : '#F1F5F9'}
-                    size={17}
-                  />
-                </TouchableOpacity>
+                <>
+                  <TouchableOpacity
+                    style={[
+                      styles.headerSearchIconBtn,
+                      voiceSession.phase === 'listening' && styles.headerMicActiveBtn,
+                    ]}
+                    activeOpacity={0.75}
+                    onPress={handleVoiceMicPress}
+                    accessibilityLabel="الريموت الصوتي بالعامية المصرية"
+                  >
+                    <MicIcon
+                      color={voiceSession.phase === 'listening' ? '#38BDF8' : '#F1F5F9'}
+                      size={18}
+                    />
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.headerSearchIconBtn}
+                    activeOpacity={0.75}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                    onPress={handleOpenSearch}
+                    accessibilityLabel="بحث"
+                  >
+                    <SearchIcon color="#F1F5F9" size={20} />
+                  </TouchableOpacity>
+                </>
               ) : null}
               <TouchableOpacity
                 style={[
@@ -2092,7 +2988,7 @@ function App() {
               >
                 <HapticsIcon
                   color={hapticsConfig.enabled ? '#38BDF8' : '#64748B'}
-                  size={17}
+                  size={18}
                 />
               </TouchableOpacity>
             </View>
@@ -2145,6 +3041,24 @@ function App() {
         </View>
       ) : null}
 
+      {activeTab === 'tv' && !isSearchPageOpen && tvSleepTimer ? (
+        <View style={styles.tvSleepBanner}>
+          <Text style={styles.tvSleepBannerText} numberOfLines={1}>
+            إغلاق الشاشة تلقائياً بعد {formatSleepRemainingClock(tvSleepTimer.remainingSeconds)}
+          </Text>
+          <TouchableOpacity
+            style={styles.tvSleepCancelBtn}
+            activeOpacity={0.75}
+            onPress={() => {
+              HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+              setTvSleepTimer(null);
+            }}
+          >
+            <Text style={styles.tvSleepCancelText}>إلغاء</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
       {isSearchPageOpen ? (
         <View style={styles.searchPageWrap}>
           {networkNotice && networkNotice.message ? (
@@ -2168,7 +3082,96 @@ function App() {
               </View>
             </View>
           ) : null}
-          {trimmedSearchQuery.length === 0 ? (
+
+          {smartSearchInput.type !== 'youtube_url' && smartSearchInput.type !== 'web_url' ? (
+            <View style={styles.filterBarContainer}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.filterBarContent}
+                keyboardShouldPersistTaps="handled"
+              >
+                {SEARCH_FILTER_OPTIONS.map((option) => {
+                  const isActive = searchFilter === option.key;
+                  return (
+                    <TouchableOpacity
+                      key={option.key}
+                      style={[
+                        styles.filterChip,
+                        isActive && styles.filterChipActive,
+                      ]}
+                      activeOpacity={0.75}
+                      onPress={() => handleSelectSearchFilter(option.key)}
+                    >
+                      <Text
+                        style={[
+                          styles.filterChipText,
+                          isActive && styles.filterChipTextActive,
+                        ]}
+                      >
+                        {option.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+            </View>
+          ) : null}
+
+          {smartSearchInput.type === 'youtube_url' ? (
+            <View style={styles.smartLinkWrap}>
+              <View style={styles.smartLinkCard}>
+                <Text style={styles.smartLinkTitle}>تم التعرّف على رابط فيديو يوتيوب</Text>
+                <Text dir="ltr" style={styles.smartLinkUrl} numberOfLines={1}>
+                  {smartSearchInput.url}
+                </Text>
+                <TouchableOpacity
+                  style={styles.smartLinkYoutubeBtn}
+                  activeOpacity={0.8}
+                  disabled={Boolean(castingVideoId)}
+                  onPress={() =>
+                    handleCastVideo({
+                      videoId: smartSearchInput.videoId,
+                      title: 'تشغيل من رابط مباشر',
+                      channelTitle: 'YouTube',
+                      thumbnailUrl: `https://i.ytimg.com/vi/${smartSearchInput.videoId}/mqdefault.jpg`,
+                    })
+                  }
+                >
+                  {castingVideoId === smartSearchInput.videoId ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.smartLinkBtnText}>
+                      تشغيل الرابط مباشرة على الشاشة
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : smartSearchInput.type === 'web_url' ? (
+            <View style={styles.smartLinkWrap}>
+              <View style={styles.smartLinkCard}>
+                <Text style={styles.smartLinkTitle}>تم التعرّف على رابط موقع ويب</Text>
+                <Text dir="ltr" style={styles.smartLinkUrl} numberOfLines={1}>
+                  {smartSearchInput.url}
+                </Text>
+                <TouchableOpacity
+                  style={styles.smartLinkBrowserBtn}
+                  activeOpacity={0.8}
+                  disabled={isOpeningBrowserUrl}
+                  onPress={() => handleOpenUrlOnTv(smartSearchInput.url)}
+                >
+                  {isOpeningBrowserUrl ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={styles.smartLinkBtnText}>
+                      فتح الرابط في متصفح الشاشة
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : trimmedSearchQuery.length === 0 ? (
             <ScrollView
               style={styles.scrollArea}
               contentContainerStyle={styles.scrollContent}
@@ -2178,30 +3181,30 @@ function App() {
               {searchHistory.length > 0 ? (
                 <View style={styles.historySection}>
                   <View style={styles.historyHeader}>
-                    <Text style={styles.historyHeaderTitle}>عمليات البحث السابقة</Text>
+                    <Text style={styles.historyHeaderTitle}>آخر عمليات البحث</Text>
                     <TouchableOpacity
                       onPress={handleClearAllSearchHistory}
                       activeOpacity={0.75}
                     >
-                      <Text style={styles.historyClearAllText}>مسح الكل</Text>
+                      <Text style={styles.historyClearAllText}>مسح</Text>
                     </TouchableOpacity>
                   </View>
 
-                  <View style={styles.historyList}>
+                  <View style={styles.recentChipsWrap}>
                     {searchHistory.map((term) => (
-                      <View key={term} style={styles.historyRow}>
+                      <View key={term} style={styles.recentSearchPill}>
                         <TouchableOpacity
-                          style={styles.historyItemMain}
+                          style={styles.recentSearchPillMain}
                           activeOpacity={0.75}
                           onPress={() => handleSelectSuggestion(term)}
                         >
-                          <SearchIcon color="#64748B" size={16} />
-                          <Text style={styles.historyItemText} numberOfLines={1}>
+                          <SearchIcon color="#64748B" size={14} />
+                          <Text dir="auto" style={styles.recentSearchPillText} numberOfLines={1}>
                             {term}
                           </Text>
                         </TouchableOpacity>
                         <TouchableOpacity
-                          style={styles.historyDeleteBtn}
+                          style={styles.recentSearchPillDelete}
                           activeOpacity={0.7}
                           onPress={() => handleRemoveSearchHistoryItem(term)}
                           accessibilityLabel={`حذف ${term}`}
@@ -2212,13 +3215,32 @@ function App() {
                     ))}
                   </View>
                 </View>
-              ) : (
+              ) : null}
+
+              {favoriteVideos.length > 0 ? (
+                <View style={[styles.favoritesSection, searchHistory.length > 0 && styles.favoritesSectionSpaced]}>
+                  <View style={styles.historyHeader}>
+                    <Text style={styles.historyHeaderTitle}>
+                      المفضلة السريعة ({favoriteVideos.length})
+                    </Text>
+                  </View>
+                  <View style={styles.favoritesList}>
+                    {favoriteVideos.map((fav) => (
+                      <View key={`fav-${fav.videoId}`} style={styles.videoSeparatorWrap}>
+                        {renderVideoItem({ item: fav })}
+                      </View>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
+              {searchHistory.length === 0 && favoriteVideos.length === 0 ? (
                 <Text style={styles.emptySearchText}>
-                  اكتب اسم الفيديو أو القناة للبحث، وستظهر كلماتك السابقة هنا كاقتراحات تلقائياً.
+                  اكتب اسم الفيديو أو القناة للبحث، أو الصق رابط يوتيوب أو موقع ويب لتشغيله على الشاشة.
                 </Text>
-              )}
+              ) : null}
             </ScrollView>
-          ) : isSearching && searchResults.length === 0 ? (
+          ) : isSearching && visibleSearchResults.length === 0 ? (
             <View style={styles.searchPageWrap}>
               {matchingSearchHistory.length > 0 ? (
                 <View style={styles.matchingHistoryWrap}>
@@ -2230,7 +3252,7 @@ function App() {
                       onPress={() => handleSelectSuggestion(term)}
                     >
                       <SearchIcon color="#0EA5E9" size={15} />
-                      <Text style={styles.historyItemText} numberOfLines={1}>
+                      <Text dir="auto" style={styles.historyItemText} numberOfLines={1}>
                         {term}
                       </Text>
                     </TouchableOpacity>
@@ -2244,18 +3266,69 @@ function App() {
             </View>
           ) : (
             <FlatList
+              ref={searchListRef}
               style={styles.scrollArea}
               contentContainerStyle={styles.scrollContent}
-              data={searchResults}
+              data={visibleSearchResults}
               keyExtractor={(item, index) => `${item.videoId}_${index}`}
               renderItem={renderVideoItem}
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
+              onEndReached={handleLoadMoreResults}
+              onEndReachedThreshold={0.4}
               ItemSeparatorComponent={() => <View style={styles.videoSeparator} />}
-              ListEmptyComponent={
-                !isSearching && hasSearchedOnce && !feedback.text ? (
-                  <Text style={styles.emptySearchText}>لم يتم العثور على نتائج مطابقة.</Text>
+              ListHeaderComponent={
+                matchingSearchHistory.length > 0 &&
+                matchingSearchHistory.some(
+                  (term) => term.toLowerCase() !== trimmedSearchQuery.toLowerCase()
+                ) ? (
+                  <View style={styles.inlineAutocompleteWrap}>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.inlineAutocompleteScroll}
+                      keyboardShouldPersistTaps="handled"
+                    >
+                      {matchingSearchHistory
+                        .filter(
+                          (term) => term.toLowerCase() !== trimmedSearchQuery.toLowerCase()
+                        )
+                        .slice(0, 4)
+                        .map((term) => (
+                          <TouchableOpacity
+                            key={`ac-${term}`}
+                            style={styles.inlineAutocompleteChip}
+                            activeOpacity={0.75}
+                            onPress={() => handleSelectSuggestion(term)}
+                          >
+                            <SearchIcon color="#38BDF8" size={13} />
+                            <Text dir="auto" style={styles.inlineAutocompleteText} numberOfLines={1}>
+                              {term}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                    </ScrollView>
+                  </View>
                 ) : null
+              }
+              ListEmptyComponent={
+                !isSearching && !isLoadingMore && hasSearchedOnce && !feedback.text ? (
+                  <Text style={styles.emptySearchText}>
+                    {searchFilter !== 'all'
+                      ? 'لا توجد نتائج مطابقة لهذا الفلتر حالياً. جرّب اختيار "الكل" أو عبارة بحث أخرى.'
+                      : 'لم يتم العثور على نتائج مطابقة.'}
+                  </Text>
+                ) : null
+              }
+              ListFooterComponent={
+                <View style={styles.listFooterBox}>
+                  {isLoadingMore ? (
+                    <View style={styles.loadMoreSpinnerWrap}>
+                      <ActivityIndicator size="small" color="#0EA5E9" />
+                    </View>
+                  ) : null}
+                  <View ref={bottomSentinelRef} style={styles.infiniteScrollSentinel} />
+                </View>
               }
             />
           )}
@@ -2994,12 +4067,272 @@ function App() {
         </View>
       </Modal>
 
-      <TvBrowserTouchpadModal
-        visible={showBrowserTouchpadModal}
-        wifiStatus={wifiStatus}
-        onClose={() => setShowBrowserTouchpadModal(false)}
-        onEnsureWifiConnect={handleEnsureWifiForBrowser}
-      />
+      <Modal
+        visible={voiceSession.phase !== 'idle'}
+        transparent
+        animationType="fade"
+        onRequestClose={handleCancelVoiceSession}
+      >
+        <View style={styles.voiceModalBackdrop}>
+          <View style={styles.voiceOverlayCard}>
+            <View style={styles.voiceHeaderRow}>
+              <Text style={styles.voiceOverlayTitle}>
+                {voiceSession.phase === 'listening'
+                  ? 'الريموت الصوتي (مصرى ar-EG)'
+                  : voiceSession.phase === 'searching'
+                  ? 'جاري البحث على يوتيوب...'
+                  : voiceSession.phase === 'confirming'
+                  ? 'تأكيد تنفيذ الأمر'
+                  : voiceSession.phase === 'executing'
+                  ? 'جاري التنفيذ...'
+                  : voiceSession.phase === 'done'
+                  ? 'تم بنجاح'
+                  : 'تعذر تنفيذ الأمر الصوتي'}
+              </Text>
+              <TouchableOpacity
+                style={styles.voiceCloseChip}
+                activeOpacity={0.75}
+                onPress={handleCancelVoiceSession}
+                accessibilityLabel="إغلاق الريموت الصوتي"
+              >
+                <Text style={styles.voiceCloseGlyph}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            {voiceSession.phase === 'listening' ? (
+              <View style={styles.voiceBodyStack}>
+                <View style={styles.voicePulseRing}>
+                  <View style={styles.voicePulseCore}>
+                    <MicIcon color="#FFFFFF" size={28} />
+                  </View>
+                </View>
+
+                <View style={styles.voiceWaveRow}>
+                  {[0.45, 0.85, 1.0, 0.72, 0.5].map((mult, idx) => {
+                    const dynamicH = Math.round(
+                      10 + mult * (12 + Math.min(10, voiceSession.rmsLevel) * 2.4)
+                    );
+                    return (
+                      <View
+                        key={`wave-${idx}`}
+                        style={[styles.voiceWaveBar, { height: dynamicH }]}
+                      />
+                    );
+                  })}
+                </View>
+
+                <Text dir="auto" style={styles.voiceTranscriptPreview}>
+                  {voiceSession.partialTranscript || voiceSession.statusMessage || 'تحدث الآن...'}
+                </Text>
+
+                <Text style={styles.voiceExamplesHint}>
+                  أمثلة: «شغّل سورة البقرة ناصر القطامي» • «وطّي الصوت 5 درجات» • «اقفل بعد نص ساعة»
+                </Text>
+
+                <View style={styles.voiceActionsRow}>
+                  <TouchableOpacity
+                    style={styles.voicePrimaryBtn}
+                    activeOpacity={0.8}
+                    onPress={() => VoiceControl.stopSession()}
+                  >
+                    <Text style={styles.btnTextBold}>إرسال الآن</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.voiceSecondaryBtn}
+                    activeOpacity={0.8}
+                    onPress={handleCancelVoiceSession}
+                  >
+                    <Text style={styles.btnText}>إلغاء</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {voiceSession.phase === 'searching' ? (
+              <View style={styles.voiceBodyStack}>
+                <ActivityIndicator size="large" color="#0EA5E9" />
+                <Text dir="auto" style={styles.voiceTranscriptPreview}>
+                  {voiceSession.statusMessage}
+                </Text>
+                <View style={styles.voiceActionsRow}>
+                  <TouchableOpacity
+                    style={styles.voiceSecondaryBtn}
+                    activeOpacity={0.8}
+                    onPress={handleCancelVoiceSession}
+                  >
+                    <Text style={styles.btnText}>إلغاء</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {voiceSession.phase === 'confirming' ? (
+              <View style={styles.voiceBodyStack}>
+                {voiceSession.parsedCommand &&
+                voiceSession.parsedCommand.type === 'YOUTUBE_DIRECT_PLAY' &&
+                voiceSession.videoCandidate ? (
+                  <View style={styles.voiceVideoPreviewCard}>
+                    <Image
+                      source={{ uri: voiceSession.videoCandidate.thumbnailUrl }}
+                      style={styles.voiceVideoThumb}
+                    />
+                    <View style={styles.voiceVideoMeta}>
+                      <Text dir="auto" style={styles.voiceVideoTitle} numberOfLines={2}>
+                        {voiceSession.videoCandidate.title}
+                      </Text>
+                      <Text dir="auto" style={styles.voiceVideoChannel} numberOfLines={1}>
+                        {voiceSession.videoCandidate.channelTitle}
+                        {voiceSession.videoCandidate.durationText
+                          ? ` · ${voiceSession.videoCandidate.durationText}`
+                          : ''}
+                      </Text>
+                    </View>
+                  </View>
+                ) : (
+                  <View style={styles.voiceCommandBadge}>
+                    <Text style={styles.voiceCommandLabel}>
+                      {voiceSession.statusMessage}
+                    </Text>
+                    {voiceSession.transcript ? (
+                      <Text dir="auto" style={styles.voiceRawHeard} numberOfLines={1}>
+                        «{voiceSession.transcript}»
+                      </Text>
+                    ) : null}
+                  </View>
+                )}
+
+                <View style={styles.voiceCountdownWrap}>
+                  <View
+                    style={[
+                      styles.voiceCountdownFill,
+                      {
+                        width: `${Math.max(
+                          0,
+                          Math.min(
+                            100,
+                            voiceSession.countdownTotalMs > 0
+                              ? (voiceSession.countdownRemainingMs /
+                                  voiceSession.countdownTotalMs) *
+                                  100
+                              : 0
+                          )
+                        )}%`,
+                      },
+                    ]}
+                  />
+                </View>
+
+                <Text style={styles.voiceCountdownCaption}>
+                  التنفيذ التلقائي خلال{' '}
+                  {Math.max(0.1, voiceSession.countdownRemainingMs / 1000).toFixed(1)} ث
+                </Text>
+
+                {voiceSession.parsedCommand &&
+                voiceSession.parsedCommand.type === 'YOUTUBE_DIRECT_PLAY' ? (
+                  <View style={styles.voiceActionsRow}>
+                    <TouchableOpacity
+                      style={styles.voicePrimaryBtn}
+                      activeOpacity={0.8}
+                      onPress={handleExecuteVoiceCommandNow}
+                    >
+                      <Text style={styles.btnTextBold}>تشغيل فوراً</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.voiceAltBtn}
+                      activeOpacity={0.8}
+                      onPress={handleOpenVoiceSearchResults}
+                    >
+                      <Text style={styles.voiceAltBtnText}>نتائج أخرى</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.voiceSecondaryBtn}
+                      activeOpacity={0.8}
+                      onPress={handleCancelVoiceSession}
+                    >
+                      <Text style={styles.btnText}>إلغاء</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <View style={styles.voiceActionsRow}>
+                    <TouchableOpacity
+                      style={[
+                        styles.voicePrimaryBtn,
+                        voiceSession.parsedCommand &&
+                          voiceSession.parsedCommand.isDestructive &&
+                          styles.voiceDangerBtn,
+                      ]}
+                      activeOpacity={0.8}
+                      onPress={handleExecuteVoiceCommandNow}
+                    >
+                      <Text style={styles.btnTextBold}>تنفيذ الآن</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.voiceSecondaryBtn}
+                      activeOpacity={0.8}
+                      onPress={handleCancelVoiceSession}
+                    >
+                      <Text style={styles.btnText}>إلغاء</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            ) : null}
+
+            {voiceSession.phase === 'executing' ? (
+              <View style={styles.voiceBodyStack}>
+                <ActivityIndicator size="large" color="#0EA5E9" />
+                <Text dir="auto" style={styles.voiceTranscriptPreview}>
+                  {voiceSession.statusMessage}
+                </Text>
+                <View style={styles.voiceActionsRow}>
+                  <TouchableOpacity
+                    style={styles.voiceSecondaryBtn}
+                    activeOpacity={0.8}
+                    onPress={handleCancelVoiceSession}
+                  >
+                    <Text style={styles.btnText}>إيقاف</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+
+            {voiceSession.phase === 'done' ? (
+              <View style={styles.voiceBodyStack}>
+                <View style={styles.voiceSuccessBadge}>
+                  <Text style={styles.voiceSuccessIcon}>✓</Text>
+                </View>
+                <Text dir="auto" style={styles.voiceTranscriptPreview}>
+                  {voiceSession.statusMessage}
+                </Text>
+              </View>
+            ) : null}
+
+            {voiceSession.phase === 'error' ? (
+              <View style={styles.voiceBodyStack}>
+                <Text dir="auto" style={styles.voiceErrorText}>
+                  {voiceSession.errorMessage}
+                </Text>
+                <View style={styles.voiceActionsRow}>
+                  <TouchableOpacity
+                    style={styles.voicePrimaryBtn}
+                    activeOpacity={0.8}
+                    onPress={handleVoiceMicPress}
+                  >
+                    <Text style={styles.btnTextBold}>حاول مجدداً</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={styles.voiceSecondaryBtn}
+                    activeOpacity={0.8}
+                    onPress={handleCancelVoiceSession}
+                  >
+                    <Text style={styles.btnText}>إغلاق</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -3020,17 +4353,24 @@ const styles = StyleSheet.create({
   headerBrandGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 8,
+  },
+  headerBrandGroupCompact: {
+    gap: 6,
   },
   headerSearchIconBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 35,
+    height: 35,
+    borderRadius: 17.5,
     backgroundColor: '#131720',
     borderWidth: 1,
     borderColor: '#1E2532',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  headerMicActiveBtn: {
+    borderColor: '#38BDF8',
+    backgroundColor: 'rgba(14,165,233,0.22)',
   },
   headerHapticsActiveBtn: {
     borderColor: 'rgba(14,165,233,0.45)',
@@ -3539,55 +4879,286 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     paddingVertical: 24,
   },
+  filterBarContainer: {
+    borderBottomWidth: 1,
+    borderBottomColor: '#161B26',
+    backgroundColor: '#0B0D11',
+  },
+  filterBarContent: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 8,
+    alignItems: 'center',
+  },
+  filterChip: {
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 18,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  filterChipActive: {
+    backgroundColor: 'rgba(14, 165, 233, 0.18)',
+    borderColor: '#0EA5E9',
+  },
+  filterChipText: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  filterChipTextActive: {
+    color: '#38BDF8',
+    fontWeight: '700',
+  },
+  smartLinkWrap: {
+    paddingHorizontal: 14,
+    paddingTop: 14,
+  },
+  smartLinkCard: {
+    backgroundColor: '#131720',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    padding: 14,
+    gap: 10,
+  },
+  smartLinkTitle: {
+    color: '#F1F5F9',
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  smartLinkUrl: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'left',
+  },
+  smartLinkYoutubeBtn: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: '#DC2626',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  smartLinkBrowserBtn: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  smartLinkBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  recentChipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  recentSearchPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#131720',
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingRight: 10,
+    paddingLeft: 4,
+    minHeight: 34,
+    maxWidth: '100%',
+    gap: 4,
+  },
+  recentSearchPillMain: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingVertical: 6,
+    flexShrink: 1,
+  },
+  recentSearchPillText: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '600',
+    maxWidth: 180,
+  },
+  recentSearchPillDelete: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  favoritesSection: {
+    gap: 10,
+  },
+  favoritesSectionSpaced: {
+    marginTop: 18,
+  },
+  favoritesList: {
+    gap: 10,
+  },
+  videoSeparatorWrap: {
+    width: '100%',
+  },
+  inlineAutocompleteWrap: {
+    marginBottom: 8,
+  },
+  inlineAutocompleteScroll: {
+    gap: 6,
+    paddingVertical: 2,
+  },
+  inlineAutocompleteChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#131720',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  inlineAutocompleteText: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontWeight: '600',
+    maxWidth: 160,
+  },
   videoSeparator: {
     height: 10,
   },
   videoCard: {
     flexDirection: 'row',
+    alignItems: 'stretch',
     backgroundColor: '#131720',
     borderRadius: 14,
     borderWidth: 1,
     borderColor: '#1E2532',
     overflow: 'hidden',
-    minHeight: 84,
+    minHeight: 96,
   },
   videoCardActive: {
     borderColor: '#0EA5E9',
     backgroundColor: 'rgba(14,165,233,0.12)',
   },
-  videoThumb: {
-    width: 124,
-    height: 84,
+  videoCardMainTap: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'stretch',
+  },
+  videoThumbWrap: {
+    width: 132,
+    minHeight: 96,
+    position: 'relative',
     backgroundColor: '#0B0D11',
+  },
+  videoThumb: {
+    width: 132,
+    height: '100%',
+    minHeight: 96,
+    backgroundColor: '#0B0D11',
+  },
+  videoDurationBadge: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    backgroundColor: 'rgba(11, 13, 17, 0.88)',
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  videoDurationBadgeText: {
+    color: '#F8FAFC',
+    fontSize: 10,
+    fontWeight: '700',
+    fontVariant: ['tabular-nums'],
+  },
+  videoLiveBadge: {
+    position: 'absolute',
+    bottom: 6,
+    left: 6,
+    backgroundColor: '#DC2626',
+    borderRadius: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+  },
+  videoLiveBadgeText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '700',
   },
   videoInfo: {
     flex: 1,
-    padding: 10,
+    paddingVertical: 9,
+    paddingHorizontal: 10,
     justifyContent: 'space-between',
-    gap: 6,
+    gap: 4,
   },
   videoTitle: {
     color: '#F1F5F9',
     fontSize: 13,
     fontWeight: '600',
     textAlign: 'right',
-  },
-  videoMetaRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
+    lineHeight: 18,
   },
   videoChannel: {
     color: '#94A3B8',
     fontSize: 11,
-    flex: 1,
+    fontWeight: '600',
     textAlign: 'right',
   },
+  videoStatsText: {
+    color: '#64748B',
+    fontSize: 10,
+    fontWeight: '500',
+    textAlign: 'right',
+  },
+  videoActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-start',
+    alignItems: 'center',
+    marginTop: 2,
+  },
   videoCastLabel: {
-    color: '#0EA5E9',
+    color: '#38BDF8',
     fontSize: 11,
     fontWeight: '700',
+  },
+  videoStarBtn: {
+    width: 36,
+    paddingTop: 8,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  videoStarGlyph: {
+    color: '#64748B',
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  videoStarGlyphActive: {
+    color: '#FACC15',
+  },
+  listFooterBox: {
+    width: '100%',
+    alignItems: 'center',
+    paddingTop: 8,
+  },
+  loadMoreSpinnerWrap: {
+    paddingVertical: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  infiniteScrollSentinel: {
+    width: '100%',
+    height: 1,
+    opacity: 0,
   },
   acScrollContent: {
     flexGrow: 1,
@@ -3863,6 +5434,266 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(239,68,68,0.08)',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  tvSleepBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 18,
+    marginTop: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: 'rgba(14,165,233,0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(56,189,248,0.4)',
+    gap: 10,
+  },
+  tvSleepBannerText: {
+    color: '#E0F2FE',
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+    flex: 1,
+    textAlign: 'right',
+  },
+  tvSleepCancelBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 8,
+    backgroundColor: 'rgba(239,68,68,0.18)',
+    borderWidth: 1,
+    borderColor: 'rgba(239,68,68,0.45)',
+  },
+  tvSleepCancelText: {
+    color: '#FCA5A5',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  voiceModalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(4,7,14,0.78)',
+    justifyContent: 'flex-end',
+    padding: 16,
+  },
+  voiceOverlayCard: {
+    backgroundColor: '#131720',
+    borderRadius: 20,
+    borderWidth: 1,
+    borderColor: '#253044',
+    padding: 18,
+    gap: 14,
+  },
+  voiceHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  voiceOverlayTitle: {
+    color: '#F1F5F9',
+    fontSize: 15,
+    fontWeight: '700',
+    flex: 1,
+    textAlign: 'right',
+  },
+  voiceCloseChip: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  voiceCloseGlyph: {
+    color: '#94A3B8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  voiceBodyStack: {
+    alignItems: 'center',
+    gap: 12,
+  },
+  voicePulseRing: {
+    width: 76,
+    height: 76,
+    borderRadius: 38,
+    backgroundColor: 'rgba(14,165,233,0.18)',
+    borderWidth: 1.5,
+    borderColor: 'rgba(56,189,248,0.55)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  voicePulseCore: {
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  voiceWaveRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: 38,
+    gap: 6,
+  },
+  voiceWaveBar: {
+    width: 5,
+    borderRadius: 3,
+    backgroundColor: '#38BDF8',
+  },
+  voiceTranscriptPreview: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 22,
+  },
+  voiceExamplesHint: {
+    color: '#64748B',
+    fontSize: 11,
+    textAlign: 'center',
+    lineHeight: 17,
+  },
+  voiceVideoPreviewCard: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#0B0D11',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 10,
+    gap: 10,
+  },
+  voiceVideoThumb: {
+    width: 108,
+    height: 62,
+    borderRadius: 8,
+    backgroundColor: '#1A202C',
+  },
+  voiceVideoMeta: {
+    flex: 1,
+    gap: 4,
+  },
+  voiceVideoTitle: {
+    color: '#F1F5F9',
+    fontSize: 13,
+    fontWeight: '700',
+    textAlign: 'right',
+    lineHeight: 18,
+  },
+  voiceVideoChannel: {
+    color: '#94A3B8',
+    fontSize: 11,
+    textAlign: 'right',
+  },
+  voiceCommandBadge: {
+    width: '100%',
+    backgroundColor: '#0B0D11',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 4,
+    alignItems: 'center',
+  },
+  voiceCommandLabel: {
+    color: '#38BDF8',
+    fontSize: 15,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  voiceRawHeard: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+  },
+  voiceCountdownWrap: {
+    width: '100%',
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: '#1E2532',
+    overflow: 'hidden',
+  },
+  voiceCountdownFill: {
+    height: '100%',
+    backgroundColor: '#0EA5E9',
+  },
+  voiceCountdownCaption: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontVariant: ['tabular-nums'],
+  },
+  voiceActionsRow: {
+    width: '100%',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  voicePrimaryBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  voiceDangerBtn: {
+    backgroundColor: '#EF4444',
+  },
+  voiceAltBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#38BDF8',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  voiceAltBtnText: {
+    color: '#38BDF8',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  voiceSecondaryBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 12,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  voiceSuccessBadge: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    backgroundColor: 'rgba(34,197,94,0.2)',
+    borderWidth: 1.5,
+    borderColor: '#22C55E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  voiceSuccessIcon: {
+    color: '#22C55E',
+    fontSize: 22,
+    fontWeight: '700',
+  },
+  voiceErrorText: {
+    color: '#FCA5A5',
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 20,
   },
 });
 

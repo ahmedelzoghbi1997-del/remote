@@ -55,6 +55,7 @@ jobs:
           permissions = [
               "android.permission.TRANSMIT_IR",
               "android.permission.VIBRATE",
+              "android.permission.RECORD_AUDIO",
               "android.permission.ACCESS_NETWORK_STATE",
               "android.permission.ACCESS_WIFI_STATE",
               "android.permission.FOREGROUND_SERVICE",
@@ -68,6 +69,21 @@ jobs:
                   manifest = manifest.replace(
                       '<uses-permission android:name="android.permission.INTERNET" />',
                       f'<uses-permission android:name="android.permission.INTERNET" />\n    <uses-permission android:name="{perm}" />',
+                      1,
+                  )
+
+          if "android.speech.RecognitionService" not in manifest:
+              speech_intent = (
+                  '        <intent>\n'
+                  '            <action android:name="android.speech.RecognitionService" />\n'
+                  '        </intent>\n'
+              )
+              if "</queries>" in manifest:
+                  manifest = manifest.replace("</queries>", f"{speech_intent}    </queries>", 1)
+              else:
+                  manifest = manifest.replace(
+                      "<application",
+                      f'    <queries>\n{speech_intent}    </queries>\n    <application',
                       1,
                   )
 
@@ -797,6 +813,252 @@ jobs:
                       vibrator?.cancel()
                   } catch (_: Throwable) {
                   }
+              }
+          }
+          EOF
+
+          cat << 'EOF' > universalremote/android/app/src/main/java/com/universalremote/VoiceModule.kt
+          package com.universalremote
+
+          import android.Manifest
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.os.Bundle
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+          import androidx.core.content.ContextCompat
+          import com.facebook.react.bridge.Arguments
+          import com.facebook.react.bridge.Promise
+          import com.facebook.react.bridge.ReactApplicationContext
+          import com.facebook.react.bridge.ReactContextBaseJavaModule
+          import com.facebook.react.bridge.ReactMethod
+          import com.facebook.react.bridge.UiThreadUtil
+          import com.facebook.react.bridge.WritableMap
+          import com.facebook.react.modules.core.DeviceEventManagerModule
+
+          class VoiceModule(reactContext: ReactApplicationContext) :
+              ReactContextBaseJavaModule(reactContext) {
+
+              private var speechRecognizer: SpeechRecognizer? = null
+              private var isListeningActive: Boolean = false
+
+              override fun getName(): String = "VoiceModule"
+
+              private fun sendEvent(eventName: String, params: WritableMap? = null) {
+                  try {
+                      if (reactApplicationContext.hasActiveReactInstance()) {
+                          reactApplicationContext
+                              .getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+                              .emit(eventName, params)
+                      }
+                  } catch (_: Throwable) {
+                  }
+              }
+
+              private fun destroyRecognizerOnUiThread() {
+                  isListeningActive = false
+                  try {
+                      speechRecognizer?.cancel()
+                  } catch (_: Throwable) {
+                  }
+                  try {
+                      speechRecognizer?.destroy()
+                  } catch (_: Throwable) {
+                  }
+                  speechRecognizer = null
+              }
+
+              private fun mapErrorCode(error: Int): Pair<String, String> = when (error) {
+                  SpeechRecognizer.ERROR_AUDIO ->
+                      "ERROR_AUDIO" to "حدث خطأ في التقاط الصوت من المايكروفون."
+                  SpeechRecognizer.ERROR_CLIENT ->
+                      "ERROR_CLIENT" to "تعذر إكمال جلسة المايكروفون على الجهاز."
+                  SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
+                      "ERROR_INSUFFICIENT_PERMISSIONS" to "يرجى منح صلاحية المايكروفون أولاً."
+                  SpeechRecognizer.ERROR_NETWORK ->
+                      "ERROR_NETWORK" to "تعذر الاتصال بخدمة التعرف الصوتي عبر الشبكة."
+                  SpeechRecognizer.ERROR_NETWORK_TIMEOUT ->
+                      "ERROR_NETWORK_TIMEOUT" to "انتهت مهلة الاتصال بخدمة التعرف الصوتي."
+                  SpeechRecognizer.ERROR_NO_MATCH ->
+                      "ERROR_NO_MATCH" to "لم نسمع أمراً واضحاً. حاول التحدث بوضوح مجدداً."
+                  SpeechRecognizer.ERROR_RECOGNIZER_BUSY ->
+                      "ERROR_RECOGNIZER_BUSY" to "المايكروفون مشغول حالياً، يرجى المحاولة مرة أخرى."
+                  SpeechRecognizer.ERROR_SERVER ->
+                      "ERROR_SERVER" to "خدمة التعرف الصوتي غير متاحة مؤقتاً."
+                  SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                      "ERROR_SPEECH_TIMEOUT" to "لم يتم رصد صوت خلال المهلة المحددة."
+                  else ->
+                      "ERROR_UNKNOWN" to "حدث خطأ أثناء التعرف الصوتي ($error)."
+              }
+
+              @ReactMethod
+              fun addListener(eventName: String) {
+                  // Required by React Native NativeEventEmitter
+              }
+
+              @ReactMethod
+              fun removeListeners(count: Int) {
+                  // Required by React Native NativeEventEmitter
+              }
+
+              @ReactMethod
+              fun isAvailable(promise: Promise) {
+                  UiThreadUtil.runOnUiThread {
+                      try {
+                          val available = SpeechRecognizer.isRecognitionAvailable(reactApplicationContext)
+                          promise.resolve(available)
+                      } catch (e: Throwable) {
+                          promise.resolve(false)
+                      }
+                  }
+              }
+
+              @ReactMethod
+              fun startListening(locale: String?, promise: Promise) {
+                  val targetLocale = if (locale.isNullOrBlank()) "ar-EG" else locale.trim()
+                  val permState = ContextCompat.checkSelfPermission(
+                      reactApplicationContext,
+                      Manifest.permission.RECORD_AUDIO
+                  )
+                  if (permState != PackageManager.PERMISSION_GRANTED) {
+                      promise.reject("PERMISSION_DENIED", "صلاحية المايكروفون غير ممنوحة.")
+                      return
+                  }
+
+                  UiThreadUtil.runOnUiThread {
+                      try {
+                          if (!SpeechRecognizer.isRecognitionAvailable(reactApplicationContext)) {
+                              promise.reject(
+                                  "RECOGNITION_UNAVAILABLE",
+                                  "خدمة التعرف الصوتي غير متوفرة على هذا الجهاز."
+                              )
+                              return@runOnUiThread
+                          }
+
+                          // تنظيف صارم قبل إنشاء مثيل جديد لتفادي ERROR_RECOGNIZER_BUSY وتعليق MIUI/HyperOS
+                          destroyRecognizerOnUiThread()
+
+                          val recognizer = SpeechRecognizer.createSpeechRecognizer(reactApplicationContext)
+                          speechRecognizer = recognizer
+                          isListeningActive = true
+
+                          recognizer.setRecognitionListener(object : RecognitionListener {
+                              override fun onReadyForSpeech(params: Bundle?) {
+                                  sendEvent("onVoiceReady", null)
+                              }
+
+                              override fun onBeginningOfSpeech() {}
+
+                              override fun onRmsChanged(rmsdB: Float) {
+                                  val map = Arguments.createMap()
+                                  map.putDouble("rms", rmsdB.toDouble())
+                                  sendEvent("onVoiceRms", map)
+                              }
+
+                              override fun onBufferReceived(buffer: ByteArray?) {}
+
+                              override fun onEndOfSpeech() {
+                                  sendEvent("onVoiceEnd", null)
+                              }
+
+                              override fun onError(error: Int) {
+                                  val wasActive = isListeningActive
+                                  destroyRecognizerOnUiThread()
+                                  if (!wasActive && error == SpeechRecognizer.ERROR_CLIENT) {
+                                      return
+                                  }
+                                  val (codeStr, messageStr) = mapErrorCode(error)
+                                  val map = Arguments.createMap()
+                                  map.putString("code", codeStr)
+                                  map.putString("message", messageStr)
+                                  sendEvent("onVoiceError", map)
+                              }
+
+                              override fun onResults(results: Bundle?) {
+                                  val matches =
+                                      results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                  val transcript =
+                                      matches?.firstOrNull { !it.isNullOrBlank() }?.trim() ?: ""
+                                  destroyRecognizerOnUiThread()
+                                  val map = Arguments.createMap()
+                                  map.putString("transcript", transcript)
+                                  sendEvent("onVoiceResult", map)
+                              }
+
+                              override fun onPartialResults(partialResults: Bundle?) {
+                                  val matches =
+                                      partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                                  val transcript =
+                                      matches?.firstOrNull { !it.isNullOrBlank() }?.trim() ?: ""
+                                  if (transcript.isNotEmpty()) {
+                                      val map = Arguments.createMap()
+                                      map.putString("transcript", transcript)
+                                      sendEvent("onVoicePartial", map)
+                                  }
+                              }
+
+                              override fun onEvent(eventType: Int, params: Bundle?) {}
+                          })
+
+                          val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                              putExtra(
+                                  RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                                  RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                              )
+                              putExtra(RecognizerIntent.EXTRA_LANGUAGE, targetLocale)
+                              putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, targetLocale)
+                              putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+                              putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                              putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
+                              putExtra(
+                                  RecognizerIntent.EXTRA_CALLING_PACKAGE,
+                                  reactApplicationContext.packageName
+                              )
+                          }
+
+                          recognizer.startListening(intent)
+                          promise.resolve(true)
+                      } catch (e: Throwable) {
+                          destroyRecognizerOnUiThread()
+                          promise.reject(
+                              "START_ERROR",
+                              e.message ?: "تعذر بدء التعرف الصوتي."
+                          )
+                      }
+                  }
+              }
+
+              @ReactMethod
+              fun stopListening(promise: Promise) {
+                  UiThreadUtil.runOnUiThread {
+                      try {
+                          speechRecognizer?.stopListening()
+                          promise.resolve(true)
+                      } catch (e: Throwable) {
+                          promise.resolve(false)
+                      }
+                  }
+              }
+
+              @ReactMethod
+              fun cancelListening(promise: Promise) {
+                  UiThreadUtil.runOnUiThread {
+                      destroyRecognizerOnUiThread()
+                      sendEvent("onVoiceCancel", null)
+                      promise.resolve(true)
+                  }
+              }
+
+              override fun invalidate() {
+                  if (UiThreadUtil.isOnUiThread()) {
+                      destroyRecognizerOnUiThread()
+                  } else {
+                      UiThreadUtil.runOnUiThread {
+                          destroyRecognizerOnUiThread()
+                      }
+                  }
+                  super.invalidate()
               }
           }
           EOF
@@ -6690,7 +6952,8 @@ jobs:
                   listOf(
                       IrManagerModule(reactContext),
                       HapticsModule(reactContext),
-                      DlnaCastModule(reactContext)
+                      DlnaCastModule(reactContext),
+                      VoiceModule(reactContext)
                   ).toMutableList()
           }
           EOF

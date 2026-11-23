@@ -24,22 +24,21 @@ const INVIDIOUS_INSTANCES = [
 const STORAGE_TOKEN_PREFIX = '@universal_remote_tizen_token_';
 const STORAGE_LAST_TV_KEY = '@universal_remote_last_tv_config';
 const STORAGE_SEARCH_HISTORY_KEY = '@universal_remote_youtube_search_history';
-const STORAGE_TV_BOOKMARKS_KEY = '@universal_remote_tv_bookmarks';
+const STORAGE_FAVORITE_VIDEOS_KEY = '@universal_remote_youtube_favorites';
 const MAX_SEARCH_HISTORY_ITEMS = 12;
-const MAX_TV_BOOKMARKS = 30;
-const SAMSUNG_BROWSER_APP_ID = 'org.tizen.browser';
-const MOUSE_MOVE_THROTTLE_MS = 40;
+const MAX_FAVORITE_VIDEOS = 25;
 const SAMSUNG_REMOTE_APP_NAME = 'Remote App';
 const BASE64_CHARS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
-function encodeBytesToBase64(bytes) {
+function encodeBase64(input) {
+  const str = String(input || '');
   let output = '';
-  for (let i = 0; i < bytes.length; i += 3) {
-    const b1 = bytes[i] & 0xff;
-    const hasB2 = i + 1 < bytes.length;
-    const hasB3 = i + 2 < bytes.length;
-    const b2 = hasB2 ? bytes[i + 1] & 0xff : 0;
-    const b3 = hasB3 ? bytes[i + 2] & 0xff : 0;
+  for (let i = 0; i < str.length; i += 3) {
+    const b1 = str.charCodeAt(i) & 0xff;
+    const hasB2 = i + 1 < str.length;
+    const hasB3 = i + 2 < str.length;
+    const b2 = hasB2 ? str.charCodeAt(i + 1) & 0xff : 0;
+    const b3 = hasB3 ? str.charCodeAt(i + 2) & 0xff : 0;
     const triplet = (b1 << 16) | (b2 << 8) | b3;
 
     output += BASE64_CHARS[(triplet >>> 18) & 0x3f];
@@ -48,71 +47,6 @@ function encodeBytesToBase64(bytes) {
     output += hasB3 ? BASE64_CHARS[triplet & 0x3f] : '=';
   }
   return output;
-}
-
-function encodeBase64(input) {
-  const str = String(input || '');
-  const bytes = [];
-  for (let i = 0; i < str.length; i += 1) {
-    bytes.push(str.charCodeAt(i) & 0xff);
-  }
-  return encodeBytesToBase64(bytes);
-}
-
-export function encodeUtf8ToBase64(input) {
-  const str = String(input ?? '');
-  const utf8Bytes = [];
-  for (let i = 0; i < str.length; i += 1) {
-    let codePoint = str.charCodeAt(i);
-    if (codePoint >= 0xd800 && codePoint <= 0xdbff && i + 1 < str.length) {
-      const next = str.charCodeAt(i + 1);
-      if (next >= 0xdc00 && next <= 0xdfff) {
-        codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00);
-        i += 1;
-      }
-    }
-    if (codePoint < 0x80) {
-      utf8Bytes.push(codePoint);
-    } else if (codePoint < 0x800) {
-      utf8Bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
-    } else if (codePoint < 0x10000) {
-      utf8Bytes.push(
-        0xe0 | (codePoint >> 12),
-        0x80 | ((codePoint >> 6) & 0x3f),
-        0x80 | (codePoint & 0x3f)
-      );
-    } else {
-      utf8Bytes.push(
-        0xf0 | (codePoint >> 18),
-        0x80 | ((codePoint >> 12) & 0x3f),
-        0x80 | ((codePoint >> 6) & 0x3f),
-        0x80 | (codePoint & 0x3f)
-      );
-    }
-  }
-  return encodeBytesToBase64(utf8Bytes);
-}
-
-export function normalizeBrowserUrl(rawUrl) {
-  const trimmed = String(rawUrl || '').trim();
-  if (!trimmed) {
-    throw new Error('أدخل رابط الموقع أو العنوان أولاً.');
-  }
-  if (/\s/.test(trimmed)) {
-    throw new Error('الرابط غير صالح: تأكد من عدم وجود مسافات.');
-  }
-  const hasProtocol = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed);
-  const candidate = hasProtocol ? trimmed : `https://${trimmed}`;
-  if (!/^https?:\/\/([^/\s.:?#]+(\.[^/\s.:?#]+)+|localhost|\d{1,3}(?:\.\d{1,3}){3})(:\d+)?(\/.*)?$/i.test(candidate)) {
-    throw new Error('صيغة الرابط غير صالحة. مثال صحيح: google.com أو https://example.com');
-  }
-  return candidate;
-}
-
-function deriveBookmarkTitle(normalizedUrl) {
-  const withoutProtocol = String(normalizedUrl || '').replace(/^https?:\/\//i, '');
-  const hostPart = withoutProtocol.split('/')[0].split(':')[0].replace(/^www\./i, '');
-  return hostPart || normalizedUrl;
 }
 
 const WIFI_KEY_MAP = {
@@ -131,6 +65,8 @@ const WIFI_KEY_MAP = {
   HOME: { roku: 'Home', androidTv: 'KEYCODE_HOME', tizen: 'KEY_HOME' },
   MENU: { roku: 'Info', androidTv: 'KEYCODE_MENU', tizen: 'KEY_MENU' },
   INPUT: { roku: 'InputHDMI1', androidTv: 'KEYCODE_TV_INPUT', tizen: 'KEY_SOURCE' },
+  PLAY: { roku: 'Play', androidTv: 'KEYCODE_MEDIA_PLAY', tizen: 'KEY_PLAY' },
+  PAUSE: { roku: 'Pause', androidTv: 'KEYCODE_MEDIA_PAUSE', tizen: 'KEY_PAUSE' },
   YOUTUBE: { roku: 'Home', androidTv: 'KEYCODE_MEDIA_TOP_MENU', tizen: 'KEY_APPS' },
   NETFLIX: { roku: 'Home', androidTv: 'KEYCODE_BUTTON_1', tizen: 'KEY_APPS' },
 };
@@ -148,15 +84,110 @@ function formatDurationSeconds(seconds, isLive = false) {
   return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
 }
 
+export function formatViewCountArabic(views) {
+  const num = Number(views);
+  if (!Number.isFinite(num) || num < 0) return '';
+  if (num >= 1000000) {
+    const val = (num / 1000000).toFixed(num >= 10000000 ? 0 : 1).replace(/\.0$/, '');
+    return `${val} مليون مشاهدة`;
+  }
+  if (num >= 1000) {
+    const val = (num / 1000).toFixed(num >= 10000 ? 0 : 1).replace(/\.0$/, '');
+    return `${val} ألف مشاهدة`;
+  }
+  return `${Math.round(num)} مشاهدة`;
+}
+
+function normalizePublishedText(rawText) {
+  const text = String(rawText || '').trim();
+  if (!text) return '';
+  if (/[\u0600-\u06FF]/.test(text)) return text;
+  const match = text.match(
+    /(?:streamed\s+)?(\d+)\s+(second|seconds|minute|minutes|hour|hours|day|days|week|weeks|month|months|year|years)\s+ago/i
+  );
+  if (!match) return text;
+  const count = Number(match[1]);
+  const unit = match[2].toLowerCase();
+  const unitMap = {
+    second: count === 1 ? 'ثانية' : count === 2 ? 'ثانيتين' : count <= 10 ? 'ثوانٍ' : 'ثانية',
+    seconds: count <= 10 ? 'ثوانٍ' : 'ثانية',
+    minute: count === 1 ? 'دقيقة' : count === 2 ? 'دقيقتين' : count <= 10 ? 'دقائق' : 'دقيقة',
+    minutes: count <= 10 ? 'دقائق' : 'دقيقة',
+    hour: count === 1 ? 'ساعة' : count === 2 ? 'ساعتين' : count <= 10 ? 'ساعات' : 'ساعة',
+    hours: count <= 10 ? 'ساعات' : 'ساعة',
+    day: count === 1 ? 'يوم' : count === 2 ? 'يومين' : count <= 10 ? 'أيام' : 'يوماً',
+    days: count <= 10 ? 'أيام' : 'يوماً',
+    week: count === 1 ? 'أسبوع' : count === 2 ? 'أسبوعين' : count <= 10 ? 'أسابيع' : 'أسبوعاً',
+    weeks: count <= 10 ? 'أسابيع' : 'أسبوعاً',
+    month: count === 1 ? 'شهر' : count === 2 ? 'شهرين' : count <= 10 ? 'أشهر' : 'شهراً',
+    months: count <= 10 ? 'أشهر' : 'شهراً',
+    year: count === 1 ? 'سنة' : count === 2 ? 'سنتين' : count <= 10 ? 'سنوات' : 'سنة',
+    years: count <= 10 ? 'سنوات' : 'سنة',
+  };
+  const arUnit = unitMap[unit];
+  if (!arUnit) return text;
+  if (count === 1 || count === 2) {
+    return `منذ ${arUnit}`;
+  }
+  return `منذ ${count} ${arUnit}`;
+}
+
 function extractYoutubeVideoId(urlOrId) {
   const raw = String(urlOrId || '').trim();
   if (!raw) return '';
   if (/^[a-zA-Z0-9_-]{11}$/.test(raw)) return raw;
   const vMatch = raw.match(/[?&]v=([a-zA-Z0-9_-]{11})/);
   if (vMatch && vMatch[1]) return vMatch[1];
-  const shortMatch = raw.match(/(?:\/shorts\/|youtu\.be\/|\/embed\/)([a-zA-Z0-9_-]{11})/);
+  const shortMatch = raw.match(
+    /(?:\/shorts\/|youtu\.be\/|\/embed\/|\/live\/|\/v\/)([a-zA-Z0-9_-]{11})/
+  );
   if (shortMatch && shortMatch[1]) return shortMatch[1];
   return '';
+}
+
+export function parseSmartSearchInput(rawText) {
+  const trimmed = String(rawText || '').trim();
+  if (!trimmed) {
+    return { type: 'empty', query: '' };
+  }
+
+  const singleToken = !/\s/.test(trimmed);
+  const isYoutubeHost = /(?:^https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtube\.com|youtu\.be)(?:\/|$|\?)/i.test(
+    trimmed
+  );
+  if (singleToken && isYoutubeHost) {
+    const normalizedUrl = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const videoId = extractYoutubeVideoId(normalizedUrl);
+    if (videoId) {
+      return {
+        type: 'youtube_url',
+        videoId,
+        url: normalizedUrl,
+      };
+    }
+    return {
+      type: 'web_url',
+      url: normalizedUrl,
+    };
+  }
+
+  const hasHttpScheme = /^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(trimmed);
+  const hasDomainPattern =
+    singleToken &&
+    /^(?:[a-z0-9-]+\.)+[a-z]{2,12}(?::\d{2,5})?(?:\/[^\s]*)?$/i.test(trimmed);
+
+  if (hasHttpScheme || hasDomainPattern) {
+    const normalizedUrl = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    return {
+      type: 'web_url',
+      url: normalizedUrl,
+    };
+  }
+
+  return {
+    type: 'query',
+    query: trimmed,
+  };
 }
 
 function resolveYoutubeThumbnailUrl(videoId, rawUrl) {
@@ -180,10 +211,11 @@ function raceFirstNonEmpty(tasks) {
     tasks.forEach((task) => {
       Promise.resolve()
         .then(task)
-        .then((items) => {
-          if (!settled && Array.isArray(items) && items.length > 0) {
+        .then((res) => {
+          const items = Array.isArray(res) ? res : res && Array.isArray(res.items) ? res.items : null;
+          if (!settled && items && items.length > 0) {
             settled = true;
-            resolve(items);
+            resolve(res);
             return;
           }
           pending -= 1;
@@ -264,9 +296,6 @@ class WifiControlService {
     this.manualDisconnect = false;
     this.activeHeldKey = null;
     this._holdSafetyTimer = null;
-    this._mousePendingDx = 0;
-    this._mousePendingDy = 0;
-    this._mouseThrottleTimer = null;
   }
 
   subscribe(listener) {
@@ -473,52 +502,72 @@ class WifiControlService {
     return [];
   }
 
-  async getTvBookmarks() {
+  parseSmartSearchInput(rawText) {
+    return parseSmartSearchInput(rawText);
+  }
+
+  async getFavoriteVideos() {
     try {
-      const raw = await this._storageGet(STORAGE_TV_BOOKMARKS_KEY);
+      const raw = await this._storageGet(STORAGE_FAVORITE_VIDEOS_KEY);
       if (!raw) return [];
       const parsed = JSON.parse(raw);
       if (!Array.isArray(parsed)) return [];
       return parsed
-        .filter((item) => item && typeof item.url === 'string' && item.url.trim())
-        .map((item, idx) => ({
-          id: String(item.id || `bm_${idx}_${item.url}`),
-          url: String(item.url).trim(),
-          title: String(item.title || deriveBookmarkTitle(item.url)).trim(),
-          createdAt: Number(item.createdAt) || Date.now(),
-        }))
-        .slice(0, MAX_TV_BOOKMARKS);
+        .filter((item) => item && item.videoId)
+        .slice(0, MAX_FAVORITE_VIDEOS);
     } catch (_) {
       return [];
     }
   }
 
-  async saveTvBookmark(rawUrl, customTitle = '') {
-    const normalizedUrl = normalizeBrowserUrl(rawUrl);
-    const title = String(customTitle || '').trim() || deriveBookmarkTitle(normalizedUrl);
-    const existing = await this.getTvBookmarks();
-    const lowerUrl = normalizedUrl.toLowerCase();
-    const filtered = existing.filter((item) => item.url.toLowerCase() !== lowerUrl);
-    const newEntry = {
-      id: `bm_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-      url: normalizedUrl,
-      title,
-      createdAt: Date.now(),
-    };
-    const next = [newEntry, ...filtered].slice(0, MAX_TV_BOOKMARKS);
-    await this._storageSet(STORAGE_TV_BOOKMARKS_KEY, JSON.stringify(next));
+  async toggleFavoriteVideo(videoItem) {
+    const videoId = extractYoutubeVideoId(videoItem && videoItem.videoId);
+    if (!videoId) {
+      const current = await this.getFavoriteVideos();
+      return { favorites: current, isFavorite: false };
+    }
+    const existing = await this.getFavoriteVideos();
+    const existsIndex = existing.findIndex((item) => item.videoId === videoId);
+    let next;
+    let isFavorite = false;
+
+    if (existsIndex !== -1) {
+      next = existing.filter((item) => item.videoId !== videoId);
+      isFavorite = false;
+    } else {
+      const entry = {
+        videoId,
+        title: String(videoItem.title || 'فيديو يوتيوب'),
+        channelTitle: String(videoItem.channelTitle || 'YouTube'),
+        thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, videoItem.thumbnailUrl),
+        durationText: String(videoItem.durationText || ''),
+        durationSeconds: Number(videoItem.durationSeconds) || 0,
+        isLive: Boolean(videoItem.isLive),
+        isShort: Boolean(videoItem.isShort),
+        viewCount: typeof videoItem.viewCount === 'number' ? videoItem.viewCount : null,
+        viewCountText: String(videoItem.viewCountText || ''),
+        publishedText: String(videoItem.publishedText || ''),
+        savedAt: Date.now(),
+      };
+      next = [entry, ...existing].slice(0, MAX_FAVORITE_VIDEOS);
+      isFavorite = true;
+    }
+
+    await this._storageSet(STORAGE_FAVORITE_VIDEOS_KEY, JSON.stringify(next));
+    return { favorites: next, isFavorite };
+  }
+
+  async removeFavoriteVideo(videoId) {
+    const cleanId = extractYoutubeVideoId(videoId) || String(videoId || '').trim();
+    const existing = await this.getFavoriteVideos();
+    const next = existing.filter((item) => item.videoId !== cleanId);
+    await this._storageSet(STORAGE_FAVORITE_VIDEOS_KEY, JSON.stringify(next));
     return next;
   }
 
-  async removeTvBookmark(targetIdOrUrl) {
-    const key = String(targetIdOrUrl || '').trim();
-    const lowerKey = key.toLowerCase();
-    const existing = await this.getTvBookmarks();
-    const next = existing.filter(
-      (item) => item.id !== key && item.url.toLowerCase() !== lowerKey
-    );
-    await this._storageSet(STORAGE_TV_BOOKMARKS_KEY, JSON.stringify(next));
-    return next;
+  async clearFavoriteVideos() {
+    await this._storageRemove(STORAGE_FAVORITE_VIDEOS_KEY);
+    return [];
   }
 
   configure({ protocol, ipAddress, port, dialPort, deviceName }) {
@@ -856,7 +905,6 @@ class WifiControlService {
           handshakeTimer = null;
         }
         this._clearHoldState();
-        this._resetMouseThrottle();
         this.isConnected = false;
         this.isChannelReady = false;
         this._notify();
@@ -877,7 +925,6 @@ class WifiControlService {
           handshakeTimer = null;
         }
         this._clearHoldState();
-        this._resetMouseThrottle();
         this.isConnected = false;
         this.isChannelReady = false;
         this._notify();
@@ -917,18 +964,8 @@ class WifiControlService {
     this.activeHeldKey = null;
   }
 
-  _resetMouseThrottle() {
-    if (this._mouseThrottleTimer) {
-      clearTimeout(this._mouseThrottleTimer);
-      this._mouseThrottleTimer = null;
-    }
-    this._mousePendingDx = 0;
-    this._mousePendingDy = 0;
-  }
-
   disconnect() {
     this.releaseActiveHold();
-    this._resetMouseThrottle();
     this.manualDisconnect = true;
     this._connectPromise = null;
     if (this.ws) {
@@ -1413,6 +1450,33 @@ class WifiControlService {
     return { sent: true, protocol: this.protocol, payload };
   }
 
+  async sendRepeatedCommand(
+    commandKey,
+    count = 1,
+    delayMs = 120,
+    shouldAbortFn = null
+  ) {
+    const steps = Math.max(1, Math.min(15, Math.round(Number(count) || 1)));
+    const safeDelay = Math.max(60, Math.min(600, Number(delayMs) || 120));
+    let completed = 0;
+
+    for (let i = 0; i < steps; i += 1) {
+      if (typeof shouldAbortFn === 'function' && shouldAbortFn()) {
+        break;
+      }
+      await this.sendCommand(commandKey);
+      completed += 1;
+      if (i < steps - 1) {
+        if (typeof shouldAbortFn === 'function' && shouldAbortFn()) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, safeDelay));
+      }
+    }
+
+    return { sent: true, commandKey, completed, requested: steps };
+  }
+
   async _sendWsJson(payload) {
     if (IS_WEB) {
       this.isConnected = true;
@@ -1470,6 +1534,7 @@ class WifiControlService {
         method: 'GET',
         headers: {
           Accept: 'application/json',
+          'Accept-Language': 'ar-EG,ar;q=0.9',
         },
       },
       timeoutMs
@@ -1762,78 +1827,471 @@ class WifiControlService {
     );
   }
 
-  async _searchPipedInstance(baseUrl, cleanQuery, timeoutMs = 4500) {
-    const searchUrl = `${baseUrl}/search?q=${encodeURIComponent(cleanQuery)}&filter=videos`;
-    const data = await this._fetchJsonWithTimeout(searchUrl, timeoutMs);
-    const items = data && Array.isArray(data.items) ? data.items : [];
-    const seenIds = new Set();
-    const results = [];
+  async openUrlInTvBrowser(rawUrl) {
+    const trimmed = String(rawUrl || '').trim();
+    if (!trimmed) {
+      throw new Error('أدخل رابط موقع صالح لفتحه على الشاشة.');
+    }
+    const normalizedUrl = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 
-    for (const item of items) {
-      if (!item || (item.type && item.type !== 'stream')) continue;
-      const videoId = extractYoutubeVideoId(item.url || item.videoId);
-      if (!videoId || seenIds.has(videoId)) continue;
-      seenIds.add(videoId);
-
-      results.push({
-        videoId,
-        title: item.title || 'فيديو يوتيوب',
-        channelTitle: item.uploaderName || item.uploader || 'YouTube',
-        thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, item.thumbnail),
-        durationText: formatDurationSeconds(item.duration, item.duration === -1),
-      });
-
-      if (results.length >= 12) break;
+    if (IS_WEB) {
+      return {
+        opened: true,
+        url: normalizedUrl,
+        protocol: this.protocol,
+        mocked: true,
+      };
     }
 
-    return results;
+    if (this.protocol === 'samsung_tizen') {
+      const wsLaunchPayload = {
+        method: 'ms.channel.emit',
+        params: {
+          event: 'ed.apps.launch',
+          to: 'host',
+          data: {
+            action_type: 'NATIVE_LAUNCH',
+            appId: 'org.tizen.browser',
+            metaTag: normalizedUrl,
+          },
+        },
+      };
+
+      try {
+        await this._sendWsJson(wsLaunchPayload);
+        return {
+          opened: true,
+          url: normalizedUrl,
+          method: 'tizen_ws_browser',
+        };
+      } catch (wsErr) {
+        try {
+          const restUrl = `http://${this.ipAddress}:8001/api/v2/applications/org.tizen.browser`;
+          const res = await this._postWithTimeout(
+            restUrl,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+              body: normalizedUrl,
+            },
+            5000
+          );
+          if (res.ok) {
+            return {
+              opened: true,
+              url: normalizedUrl,
+              method: 'tizen_rest_browser',
+            };
+          }
+        } catch (_) {
+          // تجاهل والرجوع لخطأ التوصيل الأصلي
+        }
+        throw new Error(
+          (wsErr && wsErr.message) ||
+            `تعذر فتح الرابط في متصفح الشاشة على ${this.ipAddress}.`
+        );
+      }
+    }
+
+    if (this.protocol === 'roku') {
+      const url = `http://${this.ipAddress}:${this.port}/launch/12?url=${encodeURIComponent(
+        normalizedUrl
+      )}`;
+      const res = await this._postWithTimeout(url, { method: 'POST' }, 4500);
+      if (!res.ok) {
+        throw new Error(`تعذر فتح الرابط على Roku (${res.status}).`);
+      }
+      return { opened: true, url: normalizedUrl, method: 'roku_ecp' };
+    }
+
+    // Android TV عبر محاولة فتح متصفح النظام أو إرجاع رسالة واضحة
+    try {
+      await this.sendCommand('HOME');
+    } catch (_) {
+      // ignore
+    }
+    throw new Error(
+      'فتح الروابط في المتصفح مدعوم تلقائياً لشاشات Samsung Tizen؛ تأكد من اختيار وضع Samsung Tizen.'
+    );
   }
 
-  async _searchInvidiousInstance(baseUrl, cleanQuery, timeoutMs = 4500) {
-    const searchUrl = `${baseUrl}/api/v1/search?q=${encodeURIComponent(cleanQuery)}&type=video`;
-    const items = await this._fetchJsonWithTimeout(searchUrl, timeoutMs);
-    if (!Array.isArray(items)) return [];
+  _normalizePipedItem(item) {
+    if (!item || (item.type && item.type !== 'stream')) return null;
+    const videoId = extractYoutubeVideoId(item.url || item.videoId);
+    if (!videoId) return null;
+
+    const rawDuration = Number(item.duration);
+    const isLive = rawDuration === -1 || Boolean(item.isLive);
+    const durationSeconds = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 0;
+    const title = item.title || 'فيديو يوتيوب';
+    const isShort =
+      Boolean(item.isShort) ||
+      /#shorts?\b/i.test(title) ||
+      /\/shorts\//i.test(String(item.url || '')) ||
+      (!isLive && durationSeconds > 0 && durationSeconds <= 60);
+    const viewCount =
+      typeof item.views === 'number' && Number.isFinite(item.views) && item.views >= 0
+        ? item.views
+        : null;
+
+    return {
+      videoId,
+      title,
+      channelTitle: item.uploaderName || item.uploader || 'YouTube',
+      thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, item.thumbnail),
+      durationSeconds,
+      durationText: formatDurationSeconds(isLive ? -1 : durationSeconds, isLive),
+      isLive,
+      isShort,
+      viewCount,
+      viewCountText: formatViewCountArabic(viewCount),
+      publishedText: normalizePublishedText(item.uploadedDate),
+      url: String(item.url || ''),
+    };
+  }
+
+  _normalizeInvidiousItem(item) {
+    if (!item || (item.type && item.type !== 'video')) return null;
+    const videoId = extractYoutubeVideoId(item.videoId);
+    if (!videoId) return null;
+
+    const thumbs = Array.isArray(item.videoThumbnails) ? item.videoThumbnails : [];
+    const preferredThumb = thumbs.find((t) => t.quality === 'medium') || thumbs[0] || null;
+    const rawDuration = Number(item.lengthSeconds);
+    const isLive = Boolean(item.liveNow);
+    const durationSeconds = Number.isFinite(rawDuration) && rawDuration > 0 ? rawDuration : 0;
+    const title = item.title || 'فيديو يوتيوب';
+    const isShort =
+      /#shorts?\b/i.test(title) ||
+      (!isLive && durationSeconds > 0 && durationSeconds <= 60);
+    const viewCount =
+      typeof item.viewCount === 'number' && Number.isFinite(item.viewCount) && item.viewCount >= 0
+        ? item.viewCount
+        : null;
+
+    return {
+      videoId,
+      title,
+      channelTitle: item.author || 'YouTube',
+      thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, preferredThumb && preferredThumb.url),
+      durationSeconds,
+      durationText: formatDurationSeconds(isLive ? -1 : durationSeconds, isLive),
+      isLive,
+      isShort,
+      viewCount,
+      viewCountText: formatViewCountArabic(viewCount),
+      publishedText: normalizePublishedText(item.publishedText),
+      url: `/watch?v=${videoId}`,
+    };
+  }
+
+  async _searchPipedInstance(
+    baseUrl,
+    cleanQuery,
+    { filter = 'all', pageToken = null, timeoutMs = 5000 } = {}
+  ) {
+    const pipedFilter = filter === 'all' ? 'all' : 'videos';
+    const buildUrl = (token) =>
+      token
+        ? `${baseUrl}/nextpage/search?nextpage=${encodeURIComponent(token)}&q=${encodeURIComponent(
+            cleanQuery
+          )}&filter=${pipedFilter}&hl=ar&gl=EG&region=EG`
+        : `${baseUrl}/search?q=${encodeURIComponent(
+            cleanQuery
+          )}&filter=${pipedFilter}&hl=ar&gl=EG&region=EG`;
+
     const seenIds = new Set();
     const results = [];
+    let currentToken = pageToken;
+    let nextPageToken = null;
+    const maxPulls = pageToken ? 1 : 2;
 
-    for (const item of items) {
-      if (!item || (item.type && item.type !== 'video')) continue;
-      const videoId = extractYoutubeVideoId(item.videoId);
-      if (!videoId || seenIds.has(videoId)) continue;
-      seenIds.add(videoId);
+    for (let pull = 0; pull < maxPulls; pull += 1) {
+      const data = await this._fetchJsonWithTimeout(buildUrl(currentToken), timeoutMs);
+      const rawItems = data && Array.isArray(data.items) ? data.items : [];
+      for (const rawItem of rawItems) {
+        const normalized = this._normalizePipedItem(rawItem);
+        if (!normalized || seenIds.has(normalized.videoId)) continue;
+        seenIds.add(normalized.videoId);
+        results.push(normalized);
+      }
 
-      const thumbs = Array.isArray(item.videoThumbnails) ? item.videoThumbnails : [];
-      const preferredThumb = thumbs.find((t) => t.quality === 'medium') || thumbs[0] || null;
+      nextPageToken =
+        data && typeof data.nextpage === 'string' && data.nextpage.trim()
+          ? data.nextpage.trim()
+          : null;
 
-      results.push({
-        videoId,
-        title: item.title || 'فيديو يوتيوب',
-        channelTitle: item.author || 'YouTube',
-        thumbnailUrl: resolveYoutubeThumbnailUrl(videoId, preferredThumb && preferredThumb.url),
-        durationText: formatDurationSeconds(item.lengthSeconds, Boolean(item.liveNow)),
-      });
-
-      if (results.length >= 12) break;
+      if (results.length >= 20 || !nextPageToken) {
+        break;
+      }
+      currentToken = nextPageToken;
     }
 
-    return results;
+    return {
+      items: results,
+      nextPageToken,
+      nextPage: null,
+      hasMore: Boolean(nextPageToken),
+      providerType: 'piped',
+      instanceUrl: baseUrl,
+    };
+  }
+
+  async _searchInvidiousInstance(
+    baseUrl,
+    cleanQuery,
+    { filter = 'all', page = 1, timeoutMs = 5000 } = {}
+  ) {
+    const buildUrl = (targetPage) => {
+      const params = [
+        `q=${encodeURIComponent(cleanQuery)}`,
+        'type=video',
+        'region=EG',
+        'hl=ar',
+        `page=${Math.max(1, Number(targetPage) || 1)}`,
+      ];
+      if (filter === 'latest') {
+        params.push('sort_by=upload_date');
+      } else {
+        params.push('sort_by=relevance');
+      }
+      if (filter === 'long') {
+        params.push('duration=long');
+      }
+      if (filter === 'live') {
+        params.push('features=live');
+      }
+      return `${baseUrl}/api/v1/search?${params.join('&')}`;
+    };
+
+    const seenIds = new Set();
+    const results = [];
+    let currentPage = Math.max(1, Number(page) || 1);
+    let lastBatchCount = 0;
+    const maxPulls = currentPage === 1 ? 2 : 1;
+
+    for (let pull = 0; pull < maxPulls; pull += 1) {
+      const rawItems = await this._fetchJsonWithTimeout(buildUrl(currentPage), timeoutMs);
+      if (!Array.isArray(rawItems)) break;
+      lastBatchCount = rawItems.length;
+
+      for (const rawItem of rawItems) {
+        const normalized = this._normalizeInvidiousItem(rawItem);
+        if (!normalized || seenIds.has(normalized.videoId)) continue;
+        seenIds.add(normalized.videoId);
+        results.push(normalized);
+      }
+
+      if (results.length >= 20 || rawItems.length === 0) {
+        currentPage += 1;
+        break;
+      }
+      currentPage += 1;
+    }
+
+    return {
+      items: results,
+      nextPageToken: null,
+      nextPage: currentPage,
+      hasMore: lastBatchCount >= 10 && results.length > 0,
+      providerType: 'invidious',
+      instanceUrl: baseUrl,
+    };
+  }
+
+  _buildWebPreviewMockSearchPage(cleanQuery, { filter = 'all', page = 1 } = {}) {
+    const sampleIds = [
+      'dQw4w9WgXcQ',
+      'aqz-KE-bpKQ',
+      'jfKfPfyJRdk',
+      'M7lc1UVf-VE',
+      'LXb3EKWsInQ',
+      'EngW7tLk6R8',
+      'YE7VzlLtp-4',
+      'jNQXAC9IVRw',
+    ];
+    const channels = [
+      'القناة التقنية العربية',
+      'مراجعة الشاشات والترفيه',
+      'Tech & Smart TV Arabic',
+      'البث المباشر للأخبار',
+      'تلاوات وهدوء',
+      'شروحات الأندرويد',
+    ];
+    const durations = [42, 345, 780, 1460, 2140, 55, 1120, -1, 1680, 915, 290, 1980];
+    const viewsList = [18400, 128500, 940200, 1450000, 6320, 412000, 2300000, 89500];
+    const publishedList = [
+      'منذ ساعتين',
+      'منذ 5 ساعات',
+      'منذ يومين',
+      'منذ 4 أيام',
+      'منذ أسبوع',
+      'منذ شهر',
+    ];
+
+    const allMockItems = [];
+    for (let i = 0; i < 66; i += 1) {
+      const videoId = sampleIds[i % sampleIds.length];
+      const rawDur = durations[i % durations.length];
+      const isLive = rawDur === -1;
+      const durationSeconds = isLive ? 0 : rawDur;
+      const isShort = !isLive && durationSeconds <= 60;
+      const titleSuffix = isLive
+        ? 'بث مباشر الآن'
+        : isShort
+        ? '#shorts مقطع سريع'
+        : durationSeconds > 1200
+        ? 'حلقة كاملة ومفصلة'
+        : 'مراجعة شاملة 4K HDR';
+      const title =
+        i % 3 === 0
+          ? `${cleanQuery} — ${titleSuffix} (${i + 1})`
+          : `${titleSuffix}: ${cleanQuery} | Smart TV Review #${i + 1}`;
+      const viewCount = viewsList[i % viewsList.length];
+      const suffix = String(i + 1).padStart(2, '0');
+      const uniqueVideoId = `${videoId.slice(0, 9)}${suffix}`;
+      allMockItems.push({
+        videoId: uniqueVideoId,
+        title,
+        channelTitle: channels[i % channels.length],
+        thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/mqdefault.jpg`,
+        durationSeconds,
+        durationText: formatDurationSeconds(isLive ? -1 : durationSeconds, isLive),
+        isLive,
+        isShort,
+        viewCount,
+        viewCountText: formatViewCountArabic(viewCount),
+        publishedText: isLive ? 'يبث الآن' : publishedList[i % publishedList.length],
+        url: isShort ? `/shorts/${uniqueVideoId}` : `/watch?v=${uniqueVideoId}`,
+      });
+    }
+
+    const filteredPool = allMockItems.filter((item) => {
+      if (filter === 'no_shorts') return !item.isShort;
+      if (filter === 'long') return !item.isLive && item.durationSeconds > 1200;
+      if (filter === 'live') return item.isLive;
+      return true;
+    });
+
+    const pageSize = 22;
+    const currentPage = Math.max(1, Number(page) || 1);
+    const start = (currentPage - 1) * pageSize;
+    const slice = filteredPool.slice(start, start + pageSize);
+
+    return {
+      items: slice,
+      nextPageToken: null,
+      nextPage: currentPage + 1,
+      hasMore: start + pageSize < filteredPool.length,
+      providerType: 'mock',
+      instanceUrl: 'mock://web-preview',
+    };
   }
 
   /**
-   * البحث في يوتيوب مجاناً وبدون أي مفتاح API عبر سباق متوازٍ بين خوادم Piped و Invidious
+   * البحث في يوتيوب مجاناً وبدون أي مفتاح API مع دعم الترقيم الحقيقي والفلاتر واللغة العربية
    */
-  async searchYouTubeVideos(query) {
+  async searchYouTubeVideos(
+    query,
+    {
+      filter = 'all',
+      pageToken = null,
+      page = 1,
+      providerType = null,
+      instanceUrl = null,
+    } = {}
+  ) {
     const cleanQuery = (query || '').trim();
     if (!cleanQuery) {
       throw new Error('أدخل عبارة للبحث في يوتيوب.');
     }
 
-    const wave1Tasks = [
-      ...PIPED_INSTANCES.slice(0, 3).map((url) => () => this._searchPipedInstance(url, cleanQuery, 4500)),
-      ...INVIDIOUS_INSTANCES.slice(0, 3).map(
-        (url) => () => this._searchInvidiousInstance(url, cleanQuery, 4500)
-      ),
-    ];
+    const targetPage = Math.max(1, Number(page) || 1);
+
+    // إذا كان لدينا جلسة صفحة سابقة من نفس المزود نتابع منها أولاً للحفاظ على اتساق الترقيم
+    if (providerType === 'mock' && IS_WEB) {
+      return this._buildWebPreviewMockSearchPage(cleanQuery, { filter, page: targetPage });
+    }
+
+    if (providerType === 'piped' && pageToken) {
+      const orderedInstances = instanceUrl
+        ? [instanceUrl, ...PIPED_INSTANCES.filter((u) => u !== instanceUrl)]
+        : PIPED_INSTANCES;
+      try {
+        return await raceFirstNonEmpty(
+          orderedInstances.slice(0, 4).map(
+            (url) => () =>
+              this._searchPipedInstance(url, cleanQuery, {
+                filter,
+                pageToken,
+                timeoutMs: 5000,
+              })
+          )
+        );
+      } catch (_) {
+        // المتابعة للخوادم البديلة
+      }
+    }
+
+    if (providerType === 'invidious' && targetPage > 1) {
+      const orderedInstances = instanceUrl
+        ? [instanceUrl, ...INVIDIOUS_INSTANCES.filter((u) => u !== instanceUrl)]
+        : INVIDIOUS_INSTANCES;
+      try {
+        return await raceFirstNonEmpty(
+          orderedInstances.slice(0, 4).map(
+            (url) => () =>
+              this._searchInvidiousInstance(url, cleanQuery, {
+                filter,
+                page: targetPage,
+                timeoutMs: 5000,
+              })
+          )
+        );
+      } catch (_) {
+        // المتابعة للخوادم البديلة
+      }
+    }
+
+    // في حالة فلاتر Invidious المتقدمة (الأحدث / طويلة / بث مباشر) نعطي أولوية متوازية لـ Invidious مع Piped
+    const prefersInvidious = filter === 'long' || filter === 'live' || filter === 'latest';
+    const wave1Tasks = prefersInvidious
+      ? [
+          ...INVIDIOUS_INSTANCES.slice(0, 3).map(
+            (url) => () =>
+              this._searchInvidiousInstance(url, cleanQuery, {
+                filter,
+                page: targetPage,
+                timeoutMs: 4800,
+              })
+          ),
+          ...PIPED_INSTANCES.slice(0, 2).map(
+            (url) => () =>
+              this._searchPipedInstance(url, cleanQuery, {
+                filter,
+                pageToken: targetPage === 1 ? null : pageToken,
+                timeoutMs: 4800,
+              })
+          ),
+        ]
+      : [
+          ...PIPED_INSTANCES.slice(0, 3).map(
+            (url) => () =>
+              this._searchPipedInstance(url, cleanQuery, {
+                filter,
+                pageToken: targetPage === 1 ? null : pageToken,
+                timeoutMs: 4800,
+              })
+          ),
+          ...INVIDIOUS_INSTANCES.slice(0, 3).map(
+            (url) => () =>
+              this._searchInvidiousInstance(url, cleanQuery, {
+                filter,
+                page: targetPage,
+                timeoutMs: 4800,
+              })
+          ),
+        ];
 
     try {
       return await raceFirstNonEmpty(wave1Tasks);
@@ -1842,9 +2300,21 @@ class WifiControlService {
     }
 
     const wave2Tasks = [
-      ...PIPED_INSTANCES.slice(3).map((url) => () => this._searchPipedInstance(url, cleanQuery, 5500)),
+      ...PIPED_INSTANCES.slice(3).map(
+        (url) => () =>
+          this._searchPipedInstance(url, cleanQuery, {
+            filter,
+            pageToken: targetPage === 1 ? null : pageToken,
+            timeoutMs: 5500,
+          })
+      ),
       ...INVIDIOUS_INSTANCES.slice(3).map(
-        (url) => () => this._searchInvidiousInstance(url, cleanQuery, 5500)
+        (url) => () =>
+          this._searchInvidiousInstance(url, cleanQuery, {
+            filter,
+            page: targetPage,
+            timeoutMs: 5500,
+          })
       ),
     ];
 
@@ -1857,247 +2327,12 @@ class WifiControlService {
     }
 
     if (IS_WEB) {
-      return [
-        {
-          videoId: 'dQw4w9WgXcQ',
-          title: `معاينة نتيجة بحث: ${cleanQuery}`,
-          channelTitle: 'YouTube Preview',
-          thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg',
-          durationText: '3:32',
-        },
-        {
-          videoId: 'aqz-KE-bpKQ',
-          title: `فيديو تجريبي للبث المباشر (${cleanQuery})`,
-          channelTitle: 'Smart TV Cast',
-          thumbnailUrl: 'https://i.ytimg.com/vi/aqz-KE-bpKQ/mqdefault.jpg',
-          durationText: '10:34',
-        },
-      ];
+      return this._buildWebPreviewMockSearchPage(cleanQuery, { filter, page: targetPage });
     }
 
-    throw new Error('تعذر جلب نتائج البحث حالياً من خوادم Piped و Invidious. تحقق من الإنترنت وأعد المحاولة.');
-  }
-
-  _assertSamsungWsReady() {
-    if (this.protocol !== 'samsung_tizen') {
-      throw new Error('ميزة متصفح الشاشة والماوس والكيبورد مخصصة لشاشات Samsung Tizen حالياً.');
-    }
-    if (IS_WEB) {
-      return;
-    }
-    if (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isChannelReady) {
-      throw new Error('لا يوجد اتصال WebSocket نشط مع الشاشة. يرجى الاتصال بشاشة Samsung أولاً.');
-    }
-  }
-
-  async launchTvBrowser() {
-    if (this.protocol !== 'samsung_tizen') {
-      throw new Error('ميزة متصفح الشاشة والماوس والكيبورد مخصصة لشاشات Samsung Tizen حالياً.');
-    }
-
-    const endpoint = `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_BROWSER_APP_ID}`;
-    if (IS_WEB) {
-      return {
-        launched: true,
-        mocked: true,
-        method: 'tizen_rest_8001',
-        appId: SAMSUNG_BROWSER_APP_ID,
-        endpoint,
-      };
-    }
-
-    const res = await this._postWithTimeout(endpoint, { method: 'POST' }, 5000);
-    if (!res.ok) {
-      throw new Error(`تعذر فتح متصفح الشاشة على ${this.ipAddress} (${res.status})`);
-    }
-    return {
-      launched: true,
-      method: 'tizen_rest_8001',
-      appId: SAMSUNG_BROWSER_APP_ID,
-      endpoint,
-    };
-  }
-
-  async openUrlInTvBrowser(rawUrl) {
-    const normalizedUrl = normalizeBrowserUrl(rawUrl);
-    this._assertSamsungWsReady();
-
-    // الخطوة 1: إرسال رابط عميق DEEP_LINK عبر WebSocket
-    const payload = {
-      method: 'ms.channel.emit',
-      params: {
-        event: 'ed.apps.launch',
-        to: 'host',
-        data: {
-          appId: SAMSUNG_BROWSER_APP_ID,
-          action_type: 'DEEP_LINK',
-          metaTag: normalizedUrl,
-        },
-      },
-    };
-
-    if (IS_WEB) {
-      return {
-        opened: true,
-        mocked: true,
-        url: normalizedUrl,
-        launchMethod: 'deep_link',
-        payload,
-      };
-    }
-
-    const sent = this._sendWsImmediate(payload);
-    if (!sent) {
-      throw new Error('تعذر إرسال الرابط إلى متصفح الشاشة عبر WebSocket.');
-    }
-
-    // الخطوة 2: انتظار 700ms ثم التحقق من ظهور المتصفح عبر REST :8001 وتنفيذ POST عند الحاجة
-    await new Promise((resolve) => setTimeout(resolve, 700));
-
-    const statusUrl = `http://${this.ipAddress}:8001/api/v2/applications/${SAMSUNG_BROWSER_APP_ID}`;
-    let isBrowserVisible = false;
-    try {
-      const appData = await this._fetchJsonWithTimeout(statusUrl, 2500);
-      isBrowserVisible = Boolean(appData && appData.visible === true);
-    } catch (_) {
-      isBrowserVisible = false;
-    }
-
-    if (!isBrowserVisible) {
-      await this.launchTvBrowser();
-    }
-
-    return {
-      opened: true,
-      url: normalizedUrl,
-      launchMethod: isBrowserVisible ? 'deep_link' : 'rest_8001_fallback',
-      payload,
-    };
-  }
-
-  flushMouseMove() {
-    if (this._mouseThrottleTimer) {
-      clearTimeout(this._mouseThrottleTimer);
-      this._mouseThrottleTimer = null;
-    }
-    const moveX = Math.round(this._mousePendingDx);
-    const moveY = Math.round(this._mousePendingDy);
-    this._mousePendingDx = 0;
-    this._mousePendingDy = 0;
-
-    if (moveX === 0 && moveY === 0) {
-      return false;
-    }
-    if (this.protocol !== 'samsung_tizen') {
-      return false;
-    }
-
-    const payload = {
-      method: 'ms.remote.control',
-      params: {
-        Cmd: 'Move',
-        Position: {
-          x: moveX,
-          y: moveY,
-          Time: String(Date.now()),
-        },
-        TypeOfRemote: 'ProcessMouseDevice',
-      },
-    };
-
-    if (IS_WEB) {
-      return true;
-    }
-    return this._sendWsImmediate(payload);
-  }
-
-  sendMouseMove(dx, dy) {
-    if (this.protocol !== 'samsung_tizen') {
-      return false;
-    }
-    if (!IS_WEB && (!this.ws || this.ws.readyState !== WebSocket.OPEN || !this.isChannelReady)) {
-      this._resetMouseThrottle();
-      return false;
-    }
-
-    const numDx = Number(dx) || 0;
-    const numDy = Number(dy) || 0;
-    if (numDx === 0 && numDy === 0) {
-      return false;
-    }
-
-    this._mousePendingDx += numDx;
-    this._mousePendingDy += numDy;
-
-    if (!this._mouseThrottleTimer) {
-      this._mouseThrottleTimer = setTimeout(() => {
-        this._mouseThrottleTimer = null;
-        this.flushMouseMove();
-      }, MOUSE_MOVE_THROTTLE_MS);
-    }
-    return true;
-  }
-
-  async sendMouseClick(cmd = 'LeftClick') {
-    const validCmd = cmd === 'RightClick' ? 'RightClick' : 'LeftClick';
-    this._assertSamsungWsReady();
-    this.flushMouseMove();
-
-    const payload = {
-      method: 'ms.remote.control',
-      params: {
-        Cmd: validCmd,
-        TypeOfRemote: 'ProcessMouseDevice',
-      },
-    };
-
-    if (IS_WEB) {
-      return { sent: true, mocked: true, cmd: validCmd, payload };
-    }
-
-    const sent = this._sendWsImmediate(payload);
-    if (!sent) {
-      throw new Error('تعذر إرسال نقرة الماوس إلى الشاشة عبر WebSocket.');
-    }
-    return { sent: true, cmd: validCmd, payload };
-  }
-
-  async sendTextToTv(text) {
-    const str = String(text ?? '');
-    if (str.length === 0) {
-      throw new Error('أدخل النص المطلوب إرساله إلى الشاشة أولاً.');
-    }
-    this._assertSamsungWsReady();
-
-    const base64Text = encodeUtf8ToBase64(str);
-    const inputPayload = {
-      method: 'ms.remote.control',
-      params: {
-        Cmd: base64Text,
-        DataOfCmd: 'base64',
-        TypeOfRemote: 'SendInputString',
-      },
-    };
-    const endPayload = {
-      method: 'ms.remote.control',
-      params: {
-        TypeOfRemote: 'SendInputEnd',
-      },
-    };
-
-    if (IS_WEB) {
-      return { sent: true, mocked: true, base64: base64Text, inputPayload, endPayload };
-    }
-
-    const sent = this._sendWsImmediate(inputPayload);
-    if (!sent) {
-      throw new Error('تعذر إرسال النص إلى الشاشة عبر WebSocket.');
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, 90));
-    this._sendWsImmediate(endPayload);
-
-    return { sent: true, base64: base64Text, inputPayload, endPayload };
+    throw new Error(
+      'تعذر جلب نتائج البحث حالياً من خوادم Piped و Invidious. تحقق من الإنترنت وأعد المحاولة.'
+    );
   }
 }
 

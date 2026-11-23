@@ -9,6 +9,46 @@ export const Platform = {
 
 export const NativeModules: Record<string, unknown> = {};
 
+export const PermissionsAndroid = {
+  PERMISSIONS: {
+    RECORD_AUDIO: 'android.permission.RECORD_AUDIO',
+  },
+  RESULTS: {
+    GRANTED: 'granted',
+    DENIED: 'denied',
+    NEVER_ASK_AGAIN: 'never_ask_again',
+  },
+  async check(_permission: string) {
+    return true;
+  },
+  async request(_permission: string, _rationale?: unknown) {
+    return 'granted';
+  },
+};
+
+export class NativeEventEmitter {
+  private listeners = new Map<string, Set<(payload: any) => void>>();
+  constructor(_nativeModule?: unknown) {}
+  addListener(eventName: string, listener: (payload: any) => void) {
+    if (!this.listeners.has(eventName)) {
+      this.listeners.set(eventName, new Set());
+    }
+    this.listeners.get(eventName)!.add(listener);
+    return {
+      remove: () => {
+        this.listeners.get(eventName)?.delete(listener);
+      },
+    };
+  }
+  removeAllListeners(eventName?: string) {
+    if (eventName) {
+      this.listeners.delete(eventName);
+    } else {
+      this.listeners.clear();
+    }
+  }
+}
+
 export const I18nManager = {
   isRTL: true,
   allowRTL: () => {},
@@ -180,140 +220,51 @@ export function StatusBar(_props: { barStyle?: string; backgroundColor?: string 
   return null;
 }
 
-export const PanResponder = {
-  create(config: Record<string, any>) {
-    let startX = 0;
-    let startY = 0;
-    let lastX = 0;
-    let lastY = 0;
-    let lastTime = 0;
-    let granted = false;
-
-    const makeGestureState = (e: any) => {
-      const ne = (e && e.nativeEvent) || {};
-      const pageX = Number(ne.pageX ?? ne.locationX ?? 0);
-      const pageY = Number(ne.pageY ?? ne.locationY ?? 0);
-      const now = Date.now();
-      const dt = Math.max(1, now - (lastTime || now));
-      const vx = (pageX - lastX) / dt;
-      const vy = (pageY - lastY) / dt;
-      lastX = pageX;
-      lastY = pageY;
-      lastTime = now;
-
-      return {
-        stateID: 1,
-        x0: startX,
-        y0: startY,
-        moveX: pageX,
-        moveY: pageY,
-        dx: pageX - startX,
-        dy: pageY - startY,
-        vx,
-        vy,
-        numberActiveTouches: granted ? 1 : 0,
-      };
-    };
-
-    const panHandlers = {
-      onStartShouldSetResponder: (e: any) => {
-        if (typeof config.onStartShouldSetPanResponder === 'function') {
-          const ne = (e && e.nativeEvent) || {};
-          startX = Number(ne.pageX ?? ne.locationX ?? 0);
-          startY = Number(ne.pageY ?? ne.locationY ?? 0);
-          lastX = startX;
-          lastY = startY;
-          lastTime = Date.now();
-          return Boolean(config.onStartShouldSetPanResponder(e, makeGestureState(e)));
-        }
-        return false;
-      },
-      onMoveShouldSetResponder: (e: any) => {
-        if (typeof config.onMoveShouldSetPanResponder === 'function') {
-          return Boolean(config.onMoveShouldSetPanResponder(e, makeGestureState(e)));
-        }
-        return false;
-      },
-      onResponderTerminationRequest: (e: any) => {
-        if (typeof config.onPanResponderTerminationRequest === 'function') {
-          return Boolean(config.onPanResponderTerminationRequest(e, makeGestureState(e)));
-        }
-        return true;
-      },
-      onResponderGrant: (e: any) => {
-        const ne = (e && e.nativeEvent) || {};
-        startX = Number(ne.pageX ?? ne.locationX ?? 0);
-        startY = Number(ne.pageY ?? ne.locationY ?? 0);
-        lastX = startX;
-        lastY = startY;
-        lastTime = Date.now();
-        granted = true;
-        if (typeof config.onPanResponderGrant === 'function') {
-          config.onPanResponderGrant(e, makeGestureState(e));
-        }
-      },
-      onResponderMove: (e: any) => {
-        if (typeof config.onPanResponderMove === 'function') {
-          config.onPanResponderMove(e, makeGestureState(e));
-        }
-      },
-      onResponderRelease: (e: any) => {
-        const gs = makeGestureState(e);
-        granted = false;
-        if (typeof config.onPanResponderRelease === 'function') {
-          config.onPanResponderRelease(e, gs);
-        }
-      },
-      onResponderTerminate: (e: any) => {
-        const gs = makeGestureState(e);
-        granted = false;
-        if (typeof config.onPanResponderTerminate === 'function') {
-          config.onPanResponderTerminate(e, gs);
-        } else if (typeof config.onPanResponderRelease === 'function') {
-          config.onPanResponderRelease(e, gs);
-        }
-      },
-    };
-
-    return { panHandlers };
-  },
-};
-
-export function View({
-  style,
-  pointerEvents,
-  onLayout,
-  onStartShouldSetResponder,
-  onMoveShouldSetResponder,
-  onResponderGrant,
-  onResponderMove,
-  onResponderRelease,
-  onResponderTerminate,
-  children,
-}: {
+type ViewProps = {
   style?: RNStyle;
+  dir?: 'auto' | 'rtl' | 'ltr';
   pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
   onLayout?: (e: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   onStartShouldSetResponder?: (e: any) => boolean;
-  onMoveShouldSetResponder?: (e: any) => boolean;
   onResponderGrant?: (e: any) => void;
-  onResponderMove?: (e: any) => void;
   onResponderRelease?: (e: any) => void;
   onResponderTerminate?: (e: any) => void;
   onResponderTerminationRequest?: (e: any) => boolean;
   children?: React.ReactNode;
-}) {
+};
+
+export const View = React.forwardRef<HTMLDivElement, ViewProps>(function View(
+  {
+    style,
+    dir,
+    pointerEvents,
+    onLayout,
+    onStartShouldSetResponder,
+    onResponderGrant,
+    onResponderRelease,
+    onResponderTerminate,
+    children,
+  },
+  forwardedRef
+) {
   const hostRef = React.useRef<HTMLDivElement | null>(null);
+  const setRefs = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      hostRef.current = node;
+      if (typeof forwardedRef === 'function') {
+        forwardedRef(node);
+      } else if (forwardedRef && typeof forwardedRef === 'object') {
+        (forwardedRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+      }
+    },
+    [forwardedRef]
+  );
+
   const latestOnLayoutRef = React.useRef(onLayout);
   latestOnLayoutRef.current = onLayout;
   const activePointerRef = React.useRef<number | null>(null);
-  const trackingPointerRef = React.useRef<boolean>(false);
   const hasResponder = Boolean(
-    onStartShouldSetResponder ||
-      onMoveShouldSetResponder ||
-      onResponderGrant ||
-      onResponderMove ||
-      onResponderRelease
+    onStartShouldSetResponder || onResponderGrant || onResponderRelease
   );
 
   React.useEffect(() => {
@@ -356,12 +307,12 @@ export function View({
 
   return (
     <div
-      ref={hostRef}
+      ref={setRefs}
+      dir={dir}
       onPointerDown={
         hasResponder
           ? (e) => {
               const synth = buildNativeEvent(e);
-              trackingPointerRef.current = true;
               if (onStartShouldSetResponder && !onStartShouldSetResponder(synth)) {
                 return;
               }
@@ -375,34 +326,9 @@ export function View({
             }
           : undefined
       }
-      onPointerMove={
-        hasResponder
-          ? (e) => {
-              const synth = buildNativeEvent(e);
-              if (activePointerRef.current !== e.pointerId) {
-                if (
-                  trackingPointerRef.current &&
-                  onMoveShouldSetResponder &&
-                  onMoveShouldSetResponder(synth)
-                ) {
-                  activePointerRef.current = e.pointerId;
-                  try {
-                    e.currentTarget.setPointerCapture(e.pointerId);
-                  } catch (_) {
-                    // ignore
-                  }
-                  if (onResponderGrant) onResponderGrant(synth);
-                }
-                return;
-              }
-              if (onResponderMove) onResponderMove(synth);
-            }
-          : undefined
-      }
       onPointerUp={
         hasResponder
           ? (e) => {
-              trackingPointerRef.current = false;
               if (activePointerRef.current !== e.pointerId) return;
               activePointerRef.current = null;
               if (onResponderRelease) onResponderRelease(buildNativeEvent(e));
@@ -412,7 +338,6 @@ export function View({
       onPointerCancel={
         hasResponder
           ? (e) => {
-              trackingPointerRef.current = false;
               if (activePointerRef.current !== e.pointerId) return;
               activePointerRef.current = null;
               if (onResponderTerminate) {
@@ -433,15 +358,17 @@ export function View({
       {children}
     </div>
   );
-}
+});
 
 export function Text({
   style,
   numberOfLines,
+  dir,
   children,
 }: {
   style?: RNStyle;
   numberOfLines?: number;
+  dir?: 'auto' | 'rtl' | 'ltr';
   children?: React.ReactNode;
 }) {
   const clampStyle: React.CSSProperties =
@@ -456,6 +383,7 @@ export function Text({
 
   return (
     <span
+      dir={dir}
       style={toWebStyle(style, {
         margin: 0,
         lineHeight: 1.35,
@@ -478,7 +406,7 @@ export function TouchableOpacity({
   children,
 }: {
   style?: RNStyle;
-  onPress?: () => void;
+  onPress?: (e?: any) => void;
   onPressIn?: () => void;
   onPressOut?: () => void;
   disabled?: boolean;
@@ -495,8 +423,8 @@ export function TouchableOpacity({
       type="button"
       aria-label={accessibilityLabel}
       disabled={disabled}
-      onClick={() => {
-        if (!disabled && onPress) onPress();
+      onClick={(e) => {
+        if (!disabled && onPress) onPress(e);
       }}
       onPointerDown={() => {
         if (disabled) return;
@@ -546,12 +474,17 @@ export function TouchableOpacity({
 export function ScrollView({
   style,
   contentContainerStyle,
+  horizontal = false,
+  showsHorizontalScrollIndicator = true,
+  showsVerticalScrollIndicator = true,
   scrollEnabled = true,
   onLayout,
   children,
 }: {
   style?: RNStyle;
   contentContainerStyle?: RNStyle;
+  horizontal?: boolean;
+  showsHorizontalScrollIndicator?: boolean;
   showsVerticalScrollIndicator?: boolean;
   scrollEnabled?: boolean;
   nestedScrollEnabled?: boolean;
@@ -589,20 +522,26 @@ export function ScrollView({
     return undefined;
   }, [Boolean(onLayout)]);
 
+  const hideScrollbar =
+    (horizontal && !showsHorizontalScrollIndicator) ||
+    (!horizontal && !showsVerticalScrollIndicator);
+
   return (
     <div
       ref={hostRef}
       style={toWebStyle(style, {
-        overflowY: scrollEnabled ? 'auto' : 'hidden',
-        overflowX: 'hidden',
+        overflowX: horizontal ? (scrollEnabled ? 'auto' : 'hidden') : 'hidden',
+        overflowY: horizontal ? 'hidden' : (scrollEnabled ? 'auto' : 'hidden'),
         display: 'flex',
-        flexDirection: 'column',
+        flexDirection: horizontal ? 'row' : 'column',
+        ...(hideScrollbar ? { scrollbarWidth: 'none' } : {}),
       })}
     >
       <div
         style={toWebStyle(contentContainerStyle, {
           display: 'flex',
-          flexDirection: 'column',
+          flexDirection: horizontal ? 'row' : 'column',
+          ...(horizontal ? { flexShrink: 0, alignItems: 'center' } : {}),
         })}
       >
         {children}
@@ -611,34 +550,81 @@ export function ScrollView({
   );
 }
 
-export function FlatList<T>({
-  style,
-  contentContainerStyle,
-  data = [],
-  keyExtractor,
-  renderItem,
-  ListHeaderComponent,
-  ItemSeparatorComponent,
-}: {
+type FlatListProps<T> = {
   style?: RNStyle;
   contentContainerStyle?: RNStyle;
   data?: T[];
   keyExtractor?: (item: T, index: number) => string;
   renderItem: (info: { item: T; index: number }) => React.ReactNode;
   ListHeaderComponent?: React.ReactNode | React.ComponentType;
+  ListFooterComponent?: React.ReactNode | React.ComponentType;
+  ListEmptyComponent?: React.ReactNode | React.ComponentType;
   ItemSeparatorComponent?: React.ComponentType;
+  onEndReached?: (info: { distanceFromEnd: number }) => void;
+  onEndReachedThreshold?: number;
   keyboardShouldPersistTaps?: string;
   showsVerticalScrollIndicator?: boolean;
-}) {
-  const headerNode =
-    typeof ListHeaderComponent === 'function' ? (
-      <ListHeaderComponent />
-    ) : (
-      ListHeaderComponent || null
-    );
+};
+
+function renderSlotComponent(Comp?: React.ReactNode | React.ComponentType) {
+  if (!Comp) return null;
+  if (typeof Comp === 'function') {
+    const Component = Comp as React.ComponentType;
+    return <Component />;
+  }
+  return Comp;
+}
+
+export const FlatList = React.forwardRef(function FlatListInner<T>(
+  {
+    style,
+    contentContainerStyle,
+    data = [],
+    keyExtractor,
+    renderItem,
+    ListHeaderComponent,
+    ListFooterComponent,
+    ListEmptyComponent,
+    ItemSeparatorComponent,
+    onEndReached,
+    onEndReachedThreshold = 0.35,
+  }: FlatListProps<T>,
+  forwardedRef: React.ForwardedRef<HTMLDivElement>
+) {
+  const scrollContainerRef = React.useRef<HTMLDivElement | null>(null);
+  const setScrollRefs = React.useCallback(
+    (node: HTMLDivElement | null) => {
+      scrollContainerRef.current = node;
+      if (typeof forwardedRef === 'function') {
+        forwardedRef(node);
+      } else if (forwardedRef && typeof forwardedRef === 'object') {
+        (forwardedRef as React.MutableRefObject<HTMLDivElement | null>).current = node;
+      }
+    },
+    [forwardedRef]
+  );
+
+  const headerNode = renderSlotComponent(ListHeaderComponent);
+  const footerNode = renderSlotComponent(ListFooterComponent);
+  const emptyNode = data.length === 0 ? renderSlotComponent(ListEmptyComponent) : null;
+
+  const handleScroll = React.useCallback(
+    (e: React.UIEvent<HTMLDivElement>) => {
+      if (!onEndReached) return;
+      const target = e.currentTarget;
+      const distanceFromEnd = target.scrollHeight - target.scrollTop - target.clientHeight;
+      const thresholdPx = Math.max(120, target.clientHeight * onEndReachedThreshold);
+      if (distanceFromEnd <= thresholdPx) {
+        onEndReached({ distanceFromEnd });
+      }
+    },
+    [onEndReached, onEndReachedThreshold]
+  );
 
   return (
     <div
+      ref={setScrollRefs}
+      onScroll={onEndReached ? handleScroll : undefined}
       style={toWebStyle(style, {
         overflowY: 'auto',
         overflowX: 'hidden',
@@ -653,19 +639,24 @@ export function FlatList<T>({
         })}
       >
         {headerNode}
-        {data.map((item, index) => {
-          const key = keyExtractor ? keyExtractor(item, index) : String(index);
-          return (
-            <React.Fragment key={key}>
-              {index > 0 && ItemSeparatorComponent ? <ItemSeparatorComponent /> : null}
-              {renderItem({ item, index })}
-            </React.Fragment>
-          );
-        })}
+        {data.length === 0
+          ? emptyNode
+          : data.map((item, index) => {
+              const key = keyExtractor ? keyExtractor(item, index) : String(index);
+              return (
+                <React.Fragment key={key}>
+                  {index > 0 && ItemSeparatorComponent ? <ItemSeparatorComponent /> : null}
+                  {renderItem({ item, index })}
+                </React.Fragment>
+              );
+            })}
+        {footerNode}
       </div>
     </div>
   );
-}
+}) as <T>(
+  props: FlatListProps<T> & { ref?: React.Ref<HTMLDivElement> }
+) => React.ReactElement | null;
 
 export function TextInput({
   style,

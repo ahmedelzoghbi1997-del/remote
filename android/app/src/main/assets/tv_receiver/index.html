@@ -1,0 +1,1006 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>مشغّل السينما الذكي — الريموت الشامل</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background-color: #000000;
+      color: #f8fafc;
+      font-family: "Noto Sans Arabic", "Segoe UI", Tahoma, Arial, sans-serif;
+      overflow: hidden;
+    }
+    #stage {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      background: #000000;
+      overflow: hidden;
+    }
+    #player {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: #000000;
+      object-fit: contain;
+    }
+    #standby {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: radial-gradient(circle at 50% 35%, #111b2e 0%, #05070b 65%, #000000 100%);
+      text-align: center;
+      padding: 40px;
+      z-index: 5;
+      transition: opacity 0.35s ease;
+    }
+    #standby.hidden {
+      opacity: 0;
+      pointer-events: none;
+    }
+    .standby-ring {
+      width: 112px;
+      height: 112px;
+      border-radius: 56px;
+      border: 2px solid rgba(56, 189, 248, 0.35);
+      background: rgba(14, 165, 233, 0.1);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 28px;
+      box-shadow: 0 0 48px rgba(14, 165, 233, 0.22);
+    }
+    .standby-play {
+      width: 0;
+      height: 0;
+      border-style: solid;
+      border-width: 18px 0 18px 32px;
+      border-color: transparent transparent transparent #38bdf8;
+      margin-right: -6px;
+    }
+    .standby-title {
+      font-size: 34px;
+      font-weight: 700;
+      color: #f8fafc;
+      margin-bottom: 14px;
+      letter-spacing: 0.2px;
+    }
+    .standby-sub {
+      font-size: 20px;
+      color: #94a3b8;
+      margin-bottom: 26px;
+    }
+    .standby-pill {
+      display: inline-block;
+      padding: 10px 22px;
+      border-radius: 999px;
+      background: rgba(15, 23, 42, 0.9);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      color: #7dd3fc;
+      font-size: 18px;
+      direction: ltr;
+      font-family: monospace;
+    }
+    #subLayer {
+      position: absolute;
+      left: 6%;
+      right: 6%;
+      bottom: 8%;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: flex-end;
+      pointer-events: none;
+      z-index: 15;
+      text-align: center;
+    }
+    #subBox {
+      display: none;
+      max-width: 88%;
+      padding: 6px 16px;
+      border-radius: 8px;
+      font-size: 34px;
+      font-weight: 700;
+      line-height: 1.45;
+      color: #ffffff;
+      background: rgba(0, 0, 0, 0.45);
+      text-shadow: 0 2px 6px rgba(0, 0, 0, 0.95), 0 0 2px rgba(0, 0, 0, 1);
+      white-space: pre-line;
+      word-break: break-word;
+    }
+    #hud {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 28px 42px;
+      background: linear-gradient(180deg, rgba(0,0,0,0.75) 0%, rgba(0,0,0,0) 24%, rgba(0,0,0,0) 70%, rgba(0,0,0,0.85) 100%);
+      opacity: 0;
+      transition: opacity 0.28s ease;
+      pointer-events: none;
+      z-index: 20;
+    }
+    #hud.visible {
+      opacity: 1;
+    }
+    .hud-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+    .hud-title {
+      font-size: 28px;
+      font-weight: 700;
+      color: #f8fafc;
+      text-shadow: 0 2px 8px rgba(0, 0, 0, 0.85);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      max-width: 72%;
+    }
+    .hud-badges {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      direction: ltr;
+    }
+    .hud-badge {
+      padding: 6px 14px;
+      border-radius: 8px;
+      background: rgba(15, 23, 42, 0.85);
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      color: #38bdf8;
+      font-size: 16px;
+      font-weight: 700;
+    }
+    .hud-bottom {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .progress-track {
+      position: relative;
+      width: 100%;
+      height: 8px;
+      border-radius: 4px;
+      background: rgba(255, 255, 255, 0.22);
+      overflow: hidden;
+      direction: ltr;
+    }
+    .progress-buffer {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      background: rgba(255, 255, 255, 0.32);
+      width: 0%;
+    }
+    .progress-fill {
+      position: absolute;
+      top: 0;
+      left: 0;
+      height: 100%;
+      background: #0ea5e9;
+      width: 0%;
+    }
+    .hud-meta {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 20px;
+      color: #e2e8f0;
+      font-weight: 600;
+    }
+    .hud-time {
+      direction: ltr;
+      font-family: monospace;
+      font-size: 21px;
+    }
+    #centerToast {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 16px 28px;
+      border-radius: 14px;
+      background: rgba(11, 13, 17, 0.88);
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      color: #f8fafc;
+      font-size: 26px;
+      font-weight: 700;
+      z-index: 30;
+      opacity: 0;
+      transition: opacity 0.22s ease;
+      pointer-events: none;
+    }
+    #centerToast.visible {
+      opacity: 1;
+    }
+    #spinner {
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      width: 68px;
+      height: 68px;
+      border: 5px solid rgba(255, 255, 255, 0.16);
+      border-top-color: #0ea5e9;
+      border-radius: 50%;
+      animation: spin 0.85s linear infinite;
+      z-index: 25;
+      display: none;
+    }
+    #spinner.visible {
+      display: block;
+    }
+    @keyframes spin {
+      to { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+    #nextOverlay {
+      position: absolute;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      background: rgba(0, 0, 0, 0.72);
+      z-index: 35;
+    }
+    #nextOverlay.visible {
+      display: flex;
+    }
+    .next-card {
+      background: #131720;
+      border: 1px solid #38bdf8;
+      border-radius: 20px;
+      padding: 30px 44px;
+      text-align: center;
+      max-width: 75%;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.75);
+    }
+    .next-label {
+      font-size: 22px;
+      color: #38bdf8;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+    .next-title {
+      font-size: 30px;
+      color: #f8fafc;
+      font-weight: 700;
+      margin-bottom: 16px;
+    }
+    .next-counter {
+      font-size: 46px;
+      font-weight: 800;
+      color: #facc15;
+    }
+  </style>
+</head>
+<body>
+  <div id="stage">
+    <video id="player" playsinline autoplay></video>
+
+    <div id="subLayer" dir="rtl">
+      <div id="subBox" dir="rtl"></div>
+    </div>
+
+    <div id="standby">
+      <div class="standby-ring"><div class="standby-play"></div></div>
+      <div class="standby-title">جاهز لاستقبال الفيلم من تطبيق الريموت</div>
+      <div class="standby-sub">اختر الفيلم أو المسلسل من هاتفك وسيبدأ العرض هنا فوراً بالترجمة العربية</div>
+      <div class="standby-pill" id="receiverAddrPill">http://LAN:8899/tv</div>
+    </div>
+
+    <div id="hud">
+      <div class="hud-top">
+        <div class="hud-title" id="hudTitle">بث السينما الذكي</div>
+        <div class="hud-badges">
+          <span class="hud-badge" id="hudQuality">AUTO</span>
+          <span class="hud-badge" id="hudRate">1.0x</span>
+        </div>
+      </div>
+      <div class="hud-bottom">
+        <div class="progress-track">
+          <div class="progress-buffer" id="hudBuffer"></div>
+          <div class="progress-fill" id="hudFill"></div>
+        </div>
+        <div class="hud-meta">
+          <span id="hudStateLabel">جاري التشغيل</span>
+          <span class="hud-time" id="hudTime">00:00 / 00:00</span>
+        </div>
+      </div>
+    </div>
+
+    <div id="spinner"></div>
+    <div id="centerToast"></div>
+
+    <div id="nextOverlay">
+      <div class="next-card">
+        <div class="next-label">الحلقة التالية تبدأ تلقائياً</div>
+        <div class="next-title" id="nextEpTitle">...</div>
+        <div class="next-counter" id="nextEpCounter">5</div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/tv/hls.min.js"></script>
+  <script>
+    (function () {
+      var video = document.getElementById('player');
+      var standby = document.getElementById('standby');
+      var receiverAddrPill = document.getElementById('receiverAddrPill');
+      var hud = document.getElementById('hud');
+      var hudTitle = document.getElementById('hudTitle');
+      var hudQuality = document.getElementById('hudQuality');
+      var hudRate = document.getElementById('hudRate');
+      var hudBuffer = document.getElementById('hudBuffer');
+      var hudFill = document.getElementById('hudFill');
+      var hudStateLabel = document.getElementById('hudStateLabel');
+      var hudTime = document.getElementById('hudTime');
+      var spinner = document.getElementById('spinner');
+      var centerToast = document.getElementById('centerToast');
+      var subLayer = document.getElementById('subLayer');
+      var subBox = document.getElementById('subBox');
+      var nextOverlay = document.getElementById('nextOverlay');
+      var nextEpTitle = document.getElementById('nextEpTitle');
+      var nextEpCounter = document.getElementById('nextEpCounter');
+
+      if (receiverAddrPill) {
+        receiverAddrPill.textContent = window.location.origin + '/tv';
+      }
+
+      var hls = null;
+      var lastSeq = 0;
+      var activeSessionId = '';
+      var activeTitle = '';
+      var activeStatus = 'idle';
+      var activeQualityIndex = -1;
+      var availableLevels = [];
+      var activeAspectMode = 'contain';
+      var activeErrorMessage = '';
+      var pendingStartSec = 0;
+      var hudTimer = null;
+      var toastTimer = null;
+      var countdownTimer = null;
+      var subCues = [];
+      var subStyle = {
+        fontSize: 34,
+        color: '#FFFFFF',
+        bgOpacity: 0.45,
+        verticalOffset: 8,
+        offsetSec: 0
+      };
+      var sseConnected = false;
+
+      function pad2(n) {
+        var x = Math.floor(n);
+        return x < 10 ? '0' + x : String(x);
+      }
+
+      function fmtTime(sec) {
+        var s = Math.max(0, Math.floor(Number(sec) || 0));
+        var h = Math.floor(s / 3600);
+        var m = Math.floor((s % 3600) / 60);
+        var rem = s % 60;
+        if (h > 0) {
+          return pad2(h) + ':' + pad2(m) + ':' + pad2(rem);
+        }
+        return pad2(m) + ':' + pad2(rem);
+      }
+
+      function showHud() {
+        if (activeStatus === 'idle') return;
+        hud.classList.add('visible');
+        if (hudTimer) clearTimeout(hudTimer);
+        hudTimer = setTimeout(function () {
+          if (!video.paused) {
+            hud.classList.remove('visible');
+          }
+        }, 3000);
+      }
+
+      function showToast(msg) {
+        if (!msg) return;
+        centerToast.textContent = msg;
+        centerToast.classList.add('visible');
+        if (toastTimer) clearTimeout(toastTimer);
+        toastTimer = setTimeout(function () {
+          centerToast.classList.remove('visible');
+        }, 1700);
+      }
+
+      function setLoadingSpinner(on) {
+        if (on) spinner.classList.add('visible');
+        else spinner.classList.remove('visible');
+      }
+
+      function applySubStyle() {
+        var fSize = Math.max(18, Math.min(56, Number(subStyle.fontSize) || 34));
+        var col = subStyle.color || '#FFFFFF';
+        var bgOp = Math.max(0, Math.min(0.9, Number(subStyle.bgOpacity)));
+        if (isNaN(bgOp)) bgOp = 0.45;
+        var vOff = Math.max(3, Math.min(35, Number(subStyle.verticalOffset) || 8));
+
+        subBox.style.fontSize = fSize + 'px';
+        subBox.style.color = col;
+        subBox.style.background = 'rgba(0, 0, 0, ' + bgOp + ')';
+        subLayer.style.bottom = vOff + '%';
+        renderActiveSubtitle();
+      }
+
+      function parseTimeToSec(str) {
+        if (!str) return 0;
+        var clean = str.trim().replace(',', '.');
+        var parts = clean.split(':');
+        if (parts.length === 3) {
+          return (parseFloat(parts[0]) || 0) * 3600 + (parseFloat(parts[1]) || 0) * 60 + (parseFloat(parts[2]) || 0);
+        }
+        if (parts.length === 2) {
+          return (parseFloat(parts[0]) || 0) * 60 + (parseFloat(parts[1]) || 0);
+        }
+        return parseFloat(clean) || 0;
+      }
+
+      function parseSubtitleText(raw) {
+        if (!raw) return [];
+        var normalized = raw.replace(/\uFEFF/g, '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        var lines = normalized.split('\n');
+        var cues = [];
+        var i = 0;
+        var timeRe = /((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3})\s*-->\s*((?:\d{1,2}:)?\d{1,2}:\d{2}[.,]\d{1,3})/;
+
+        while (i < lines.length) {
+          var line = lines[i].trim();
+          var m = line.match(timeRe);
+          if (m) {
+            var start = parseTimeToSec(m[1]);
+            var end = parseTimeToSec(m[2]);
+            i++;
+            var textLines = [];
+            while (i < lines.length && lines[i].trim() !== '') {
+              var cleanLine = lines[i].replace(/<[^>]+>/g, '').trim();
+              if (cleanLine) textLines.push(cleanLine);
+              i++;
+            }
+            if (textLines.length > 0) {
+              cues.push({ start: start, end: end, text: textLines.join('\n') });
+            }
+          } else {
+            i++;
+          }
+        }
+        return cues;
+      }
+
+      function loadSubtitleUrl(subUrl) {
+        if (!subUrl) {
+          subCues = [];
+          subBox.style.display = 'none';
+          subBox.textContent = '';
+          return;
+        }
+        var sep = subUrl.indexOf('?') >= 0 ? '&' : '?';
+        var fetchUrl = subUrl + sep + '_ts=' + Date.now();
+        fetch(fetchUrl)
+          .then(function (r) { return r.ok ? r.text() : ''; })
+          .then(function (txt) {
+            subCues = parseSubtitleText(txt);
+            renderActiveSubtitle();
+          })
+          .catch(function () {});
+      }
+
+      function renderActiveSubtitle() {
+        if (!subCues || subCues.length === 0 || activeStatus === 'idle') {
+          subBox.style.display = 'none';
+          subBox.textContent = '';
+          return;
+        }
+        var t = (video.currentTime || 0) - (Number(subStyle.offsetSec) || 0);
+        var matched = [];
+        for (var i = 0; i < subCues.length; i++) {
+          var c = subCues[i];
+          if (t >= c.start && t <= c.end) {
+            matched.push(c.text);
+          }
+        }
+        if (matched.length > 0) {
+          subBox.textContent = matched.join('\n');
+          subBox.style.display = 'inline-block';
+        } else {
+          subBox.style.display = 'none';
+          subBox.textContent = '';
+        }
+      }
+
+      function destroyHls() {
+        if (hls) {
+          try { hls.destroy(); } catch (e) {}
+          hls = null;
+        }
+      }
+
+      function updateHudVisuals() {
+        var pos = Number(video.currentTime) || 0;
+        var dur = Number(video.duration) || 0;
+        if (!isFinite(dur) || dur < 0) dur = 0;
+        var pct = dur > 0 ? Math.min(100, (pos / dur) * 100) : 0;
+        hudFill.style.width = pct.toFixed(2) + '%';
+
+        var bufEnd = 0;
+        if (video.buffered && video.buffered.length > 0) {
+          bufEnd = video.buffered.end(video.buffered.length - 1);
+        }
+        var bufPct = dur > 0 ? Math.min(100, (bufEnd / dur) * 100) : 0;
+        hudBuffer.style.width = bufPct.toFixed(2) + '%';
+        hudTime.textContent = fmtTime(pos) + ' / ' + fmtTime(dur);
+        hudRate.textContent = (video.playbackRate || 1) + 'x';
+
+        var qLabel = 'AUTO';
+        if (activeQualityIndex >= 0) {
+          for (var i = 0; i < availableLevels.length; i++) {
+            if (availableLevels[i].index === activeQualityIndex) {
+              qLabel = availableLevels[i].label;
+              break;
+            }
+          }
+        }
+        hudQuality.textContent = qLabel;
+
+        if (activeStatus === 'paused') hudStateLabel.textContent = 'متوقف مؤقتاً';
+        else if (activeStatus === 'loading') hudStateLabel.textContent = 'جاري التحميل...';
+        else if (activeStatus === 'ended') hudStateLabel.textContent = 'انتهى العرض';
+        else if (activeStatus === 'error') hudStateLabel.textContent = activeErrorMessage || 'حدث خطأ في التشغيل';
+        else hudStateLabel.textContent = 'جاري التشغيل';
+      }
+
+      function reportState(immediate) {
+        var dur = isFinite(video.duration) ? video.duration : 0;
+        var bufEnd = 0;
+        if (video.buffered && video.buffered.length > 0) {
+          bufEnd = video.buffered.end(video.buffered.length - 1);
+        }
+        var payload = {
+          sessionId: activeSessionId,
+          status: activeStatus,
+          positionSec: Number(video.currentTime || 0),
+          durationSec: Number(dur || 0),
+          bufferedSec: Number(bufEnd || 0),
+          qualityIndex: activeQualityIndex,
+          levels: availableLevels,
+          playbackRate: Number(video.playbackRate || 1),
+          aspectMode: activeAspectMode,
+          volume: Math.round((video.volume || 1) * 100),
+          muted: Boolean(video.muted),
+          title: activeTitle,
+          errorMessage: activeErrorMessage,
+          updatedAtMs: Date.now()
+        };
+        try {
+          fetch('/tv/state', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          }).catch(function () {});
+        } catch (e) {}
+      }
+
+      function clearCountdown() {
+        if (countdownTimer) {
+          clearInterval(countdownTimer);
+          countdownTimer = null;
+        }
+        nextOverlay.classList.remove('visible');
+      }
+
+      function startMediaLoad(payload) {
+        if (!payload || !payload.streamUrl) return;
+        clearCountdown();
+        destroyHls();
+
+        activeSessionId = payload.sessionId || '';
+        activeTitle = payload.title || 'عرض مباشر';
+        activeErrorMessage = '';
+        activeStatus = 'loading';
+        activeQualityIndex = -1;
+        availableLevels = [];
+        pendingStartSec = Number(payload.startPositionSec) || 0;
+
+        hudTitle.textContent = activeTitle;
+        standby.classList.add('hidden');
+        setLoadingSpinner(true);
+        showHud();
+
+        loadSubtitleUrl(payload.subtitleUrl || '');
+
+        var streamUrl = payload.streamUrl;
+        var mimeType = (payload.mimeType || '').toLowerCase();
+        var isHls = mimeType.indexOf('mpegurl') >= 0 || mimeType.indexOf('m3u') >= 0 || streamUrl.toLowerCase().indexOf('.m3u8') >= 0;
+
+        if (isHls && window.Hls && window.Hls.isSupported()) {
+          hls = new window.Hls({
+            enableWorker: true,
+            lowLatencyMode: false,
+            maxBufferLength: 45,
+            maxMaxBufferLength: 90,
+            startLevel: -1
+          });
+          hls.loadSource(streamUrl);
+          hls.attachMedia(video);
+          hls.on(window.Hls.Events.MANIFEST_PARSED, function (event, data) {
+            var levels = [{ index: -1, height: 0, width: 0, bitrate: 0, label: 'Auto' }];
+            if (data && data.levels && data.levels.length > 0) {
+              var sorted = [];
+              for (var i = 0; i < data.levels.length; i++) {
+                var lv = data.levels[i];
+                var lbl = lv.height ? (lv.height + 'p') : (Math.round((lv.bitrate || 0) / 1000) + 'k');
+                sorted.push({
+                  index: i,
+                  height: lv.height || 0,
+                  width: lv.width || 0,
+                  bitrate: lv.bitrate || 0,
+                  label: lbl
+                });
+              }
+              sorted.sort(function (a, b) {
+                return (b.height - a.height) || (b.bitrate - a.bitrate);
+              });
+              levels = levels.concat(sorted);
+            }
+            availableLevels = levels;
+            if (pendingStartSec > 0) {
+              try { video.currentTime = pendingStartSec; } catch (e) {}
+              pendingStartSec = 0;
+            }
+            video.play().catch(function () {});
+            reportState(true);
+          });
+          hls.on(window.Hls.Events.LEVEL_SWITCHED, function (event, data) {
+            if (hls && hls.autoLevelEnabled) {
+              activeQualityIndex = -1;
+            } else if (data && typeof data.level === 'number') {
+              activeQualityIndex = data.level;
+            }
+            updateHudVisuals();
+            reportState(true);
+          });
+          hls.on(window.Hls.Events.ERROR, function (event, data) {
+            if (data && data.fatal) {
+              if (data.type === window.Hls.ErrorTypes.NETWORK_ERROR) {
+                hls.startLoad();
+              } else if (data.type === window.Hls.ErrorTypes.MEDIA_ERROR) {
+                hls.recoverMediaError();
+              } else {
+                activeStatus = 'error';
+                activeErrorMessage = 'تعذر تشغيل البث (HLS)';
+                setLoadingSpinner(false);
+                showHud();
+                reportState(true);
+              }
+            }
+          });
+        } else {
+          video.src = streamUrl;
+          video.load();
+          video.play().catch(function () {});
+        }
+        reportState(true);
+      }
+
+      function handleCommand(cmd) {
+        if (!cmd || !cmd.type) return;
+        var p = cmd.payload || {};
+        switch (cmd.type) {
+          case 'load':
+            startMediaLoad(p);
+            break;
+          case 'play':
+            clearCountdown();
+            video.play().catch(function () {});
+            showToast('▶ تشغيل');
+            showHud();
+            break;
+          case 'pause':
+            video.pause();
+            showToast('⏸ إيقاف مؤقت');
+            showHud();
+            break;
+          case 'toggle':
+            if (video.paused) {
+              video.play().catch(function () {});
+              showToast('▶ تشغيل');
+            } else {
+              video.pause();
+              showToast('⏸ إيقاف مؤقت');
+            }
+            showHud();
+            break;
+          case 'seek':
+            var target = Math.max(0, Number(p.positionSec) || 0);
+            if (isFinite(video.duration) && video.duration > 0) {
+              target = Math.min(video.duration - 0.5, target);
+            }
+            video.currentTime = target;
+            showToast('الانتقال إلى ' + fmtTime(target));
+            showHud();
+            reportState(true);
+            break;
+          case 'seekDelta':
+            var delta = Number(p.deltaSec) || 0;
+            var nextPos = Math.max(0, (video.currentTime || 0) + delta);
+            if (isFinite(video.duration) && video.duration > 0) {
+              nextPos = Math.min(video.duration - 0.5, nextPos);
+            }
+            video.currentTime = nextPos;
+            showToast((delta >= 0 ? '+' : '') + delta + ' ث');
+            showHud();
+            reportState(true);
+            break;
+          case 'setQuality':
+            var idx = typeof p.levelIndex === 'number' ? p.levelIndex : -1;
+            activeQualityIndex = idx;
+            if (hls) {
+              hls.currentLevel = idx;
+            }
+            updateHudVisuals();
+            showToast('الجودة: ' + hudQuality.textContent);
+            showHud();
+            reportState(true);
+            break;
+          case 'setRate':
+            var rate = Math.max(0.5, Math.min(2.0, Number(p.playbackRate) || 1));
+            video.playbackRate = rate;
+            updateHudVisuals();
+            showToast('السرعة ' + rate + 'x');
+            showHud();
+            reportState(true);
+            break;
+          case 'setAspect':
+            var mode = p.aspectMode === 'cover' ? 'cover' : 'contain';
+            activeAspectMode = mode;
+            video.style.objectFit = mode;
+            showToast(mode === 'cover' ? 'ملء الشاشة' : 'احتواء العرض');
+            showHud();
+            reportState(true);
+            break;
+          case 'setVolume':
+            var vol = Math.max(0, Math.min(100, Number(p.volume) || 100));
+            video.volume = vol / 100;
+            if (vol > 0) video.muted = false;
+            showToast('الصوت ' + Math.round(vol) + '%');
+            reportState(true);
+            break;
+          case 'setMute':
+            video.muted = Boolean(p.muted);
+            showToast(video.muted ? '🔇 كتم' : '🔊 الصوت مفعل');
+            reportState(true);
+            break;
+          case 'setSubtitleUrl':
+            loadSubtitleUrl(p.subtitleUrl || '');
+            showToast(p.subtitleUrl ? 'تم تحديث الترجمة' : 'تمت إزالة الترجمة');
+            break;
+          case 'setSubtitleStyle':
+            if (typeof p.fontSize === 'number') subStyle.fontSize = p.fontSize;
+            if (typeof p.color === 'string' && p.color) subStyle.color = p.color;
+            if (typeof p.bgOpacity === 'number') subStyle.bgOpacity = p.bgOpacity;
+            if (typeof p.verticalOffset === 'number') subStyle.verticalOffset = p.verticalOffset;
+            if (typeof p.offsetSec === 'number') subStyle.offsetSec = p.offsetSec;
+            applySubStyle();
+            break;
+          case 'showCountdown':
+            clearCountdown();
+            var secs = Math.max(1, Math.min(15, Number(p.seconds) || 5));
+            nextEpTitle.textContent = p.nextTitle || 'الحلقة التالية';
+            nextEpCounter.textContent = String(secs);
+            nextOverlay.classList.add('visible');
+            countdownTimer = setInterval(function () {
+              secs--;
+              if (secs <= 0) {
+                clearCountdown();
+              } else {
+                nextEpCounter.textContent = String(secs);
+              }
+            }, 1000);
+            break;
+          case 'cancelCountdown':
+            clearCountdown();
+            break;
+          case 'stop':
+            clearCountdown();
+            destroyHls();
+            try { video.pause(); } catch (e) {}
+            video.removeAttribute('src');
+            video.load();
+            subCues = [];
+            subBox.style.display = 'none';
+            activeSessionId = '';
+            activeStatus = 'idle';
+            activeTitle = '';
+            availableLevels = [];
+            setLoadingSpinner(false);
+            hud.classList.remove('visible');
+            standby.classList.remove('hidden');
+            reportState(true);
+            break;
+        }
+      }
+
+      function applySnapshot(snap) {
+        if (!snap) return;
+        if (snap.subtitleStyle) {
+          handleCommand({ type: 'setSubtitleStyle', payload: snap.subtitleStyle });
+        }
+        if (snap.activeLoad && snap.activeLoad.streamUrl) {
+          if (snap.activeLoad.sessionId !== activeSessionId || activeStatus === 'idle') {
+            startMediaLoad(snap.activeLoad);
+          }
+        }
+        if (typeof snap.seq === 'number' && snap.seq > lastSeq) {
+          lastSeq = snap.seq;
+        }
+      }
+
+      video.addEventListener('loadedmetadata', function () {
+        if (pendingStartSec > 0) {
+          try { video.currentTime = pendingStartSec; } catch (e) {}
+          pendingStartSec = 0;
+        }
+        updateHudVisuals();
+      });
+      video.addEventListener('waiting', function () {
+        if (activeStatus !== 'idle') {
+          activeStatus = 'loading';
+          setLoadingSpinner(true);
+          updateHudVisuals();
+        }
+      });
+      video.addEventListener('playing', function () {
+        activeStatus = 'playing';
+        setLoadingSpinner(false);
+        updateHudVisuals();
+        showHud();
+        reportState(true);
+      });
+      video.addEventListener('pause', function () {
+        if (activeStatus !== 'idle' && activeStatus !== 'ended') {
+          activeStatus = 'paused';
+          setLoadingSpinner(false);
+          updateHudVisuals();
+          hud.classList.add('visible');
+          reportState(true);
+        }
+      });
+      video.addEventListener('ended', function () {
+        activeStatus = 'ended';
+        setLoadingSpinner(false);
+        updateHudVisuals();
+        hud.classList.add('visible');
+        reportState(true);
+      });
+      video.addEventListener('error', function () {
+        if (activeStatus !== 'idle') {
+          activeStatus = 'error';
+          activeErrorMessage = 'تعذر فك تشفير أو تشغيل هذا الفيديو على المتصفح';
+          setLoadingSpinner(false);
+          updateHudVisuals();
+          hud.classList.add('visible');
+          reportState(true);
+        }
+      });
+      video.addEventListener('timeupdate', function () {
+        renderActiveSubtitle();
+        updateHudVisuals();
+      });
+
+      // تحكم أزرار ريموت التلفاز داخل متصفح سامسونج
+      document.addEventListener('keydown', function (e) {
+        if (activeStatus === 'idle') return;
+        showHud();
+        var k = e.keyCode || e.which;
+        if (k === 13 || k === 32 || k === 179 || k === 415 || k === 19) {
+          e.preventDefault();
+          handleCommand({ type: 'toggle', payload: {} });
+        } else if (k === 39 || k === 417) {
+          e.preventDefault();
+          handleCommand({ type: 'seekDelta', payload: { deltaSec: 10 } });
+        } else if (k === 37 || k === 412) {
+          e.preventDefault();
+          handleCommand({ type: 'seekDelta', payload: { deltaSec: -10 } });
+        }
+      });
+
+      document.addEventListener('mousemove', showHud);
+
+      function startPollingLoop() {
+        function pollOnce() {
+          fetch('/tv/poll?since=' + lastSeq + '&wait=1')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) {
+              if (data) {
+                if (typeof data.seq === 'number' && data.seq > lastSeq) {
+                  lastSeq = data.seq;
+                }
+                if (data.commands && data.commands.length > 0) {
+                  for (var i = 0; i < data.commands.length; i++) {
+                    handleCommand(data.commands[i]);
+                  }
+                }
+              }
+            })
+            .catch(function () {})
+            .finally(function () {
+              setTimeout(pollOnce, sseConnected ? 3000 : 350);
+            });
+        }
+        pollOnce();
+      }
+
+      function connectEvents() {
+        if (window.EventSource) {
+          try {
+            var es = new EventSource('/tv/events');
+            es.onopen = function () {
+              sseConnected = true;
+            };
+            es.addEventListener('init', function (ev) {
+              try {
+                applySnapshot(JSON.parse(ev.data));
+              } catch (e) {}
+            });
+            es.addEventListener('cmd', function (ev) {
+              try {
+                var obj = JSON.parse(ev.data);
+                if (typeof obj.seq === 'number' && obj.seq > lastSeq) {
+                  lastSeq = obj.seq;
+                }
+                handleCommand(obj);
+              } catch (e) {}
+            });
+            es.onerror = function () {
+              sseConnected = false;
+            };
+          } catch (e) {
+            sseConnected = false;
+          }
+        }
+        startPollingLoop();
+      }
+
+      // جلب اللقطة الأولية ثم الاتصال الفوري بالأحداث
+      fetch('/tv/poll?since=0&wait=0')
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (data) {
+          if (data) applySnapshot(data);
+        })
+        .catch(function () {})
+        .finally(function () {
+          connectEvents();
+        });
+
+      setInterval(function () {
+        if (activeStatus !== 'idle') {
+          reportState(false);
+        }
+      }, 1000);
+
+      applySubStyle();
+    })();
+  </script>
+</body>
+</html>

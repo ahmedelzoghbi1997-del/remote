@@ -1915,6 +1915,18 @@ class WifiControlService {
     );
   }
 
+  async launchWebReceiverOnTv(receiverUrl) {
+    const cleanUrl = String(receiverUrl || '').trim();
+    if (!cleanUrl) {
+      throw new Error('رابط مشغّل السينما المحلي غير متاح بعد.');
+    }
+    const res = await this.openUrlInTvBrowser(cleanUrl);
+    return {
+      ...res,
+      launchedReceiver: true,
+    };
+  }
+
   _normalizePipedItem(item) {
     if (!item || (item.type && item.type !== 'stream')) return null;
     const videoId = extractYoutubeVideoId(item.url || item.videoId);

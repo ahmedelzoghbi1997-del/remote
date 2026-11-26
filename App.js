@@ -27,6 +27,16 @@ import {
   MIDEA_MAX_TEMP,
   MIDEA_MIN_TEMP,
 } from './src/protocols/mideaAc';
+import CastProxyService, {
+  guessMimeTypeFromUrl,
+  inferMovieTitleFromUrl,
+  isLikelyDirectVideoUrl,
+} from './src/services/CastProxyService';
+import CinemaStorageService, {
+  DEFAULT_SUBTITLE_STYLE,
+  formatSecondsHms,
+} from './src/services/CinemaStorageService';
+import CinemaControlModal from './src/components/CinemaControlModal';
 
 const IrManagerModule = NativeModules ? NativeModules.IrManagerModule : null;
 
@@ -518,6 +528,48 @@ function MicIcon({ color = '#F1F5F9', size = 18 }) {
   );
 }
 
+function CinemaIcon({ color = '#F1F5F9', size = 18 }) {
+  const s = size / 18;
+  const frameW = Math.round(16 * s);
+  const frameH = Math.round(13 * s);
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+    >
+      <View
+        style={{
+          width: frameW,
+          height: frameH,
+          borderRadius: Math.round(3 * s),
+          borderWidth: Math.max(1.5, Math.round(1.6 * s)),
+          borderColor: color,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <View
+          style={{
+            width: 0,
+            height: 0,
+            borderTopWidth: Math.round(3.2 * s),
+            borderBottomWidth: Math.round(3.2 * s),
+            borderLeftWidth: Math.round(5.2 * s),
+            borderTopColor: 'transparent',
+            borderBottomColor: 'transparent',
+            borderLeftColor: color,
+            marginLeft: Math.round(1 * s),
+          }}
+        />
+      </View>
+    </View>
+  );
+}
+
 const DPAD_WEDGE_ROTATION = {
   UP: '0deg',
   RIGHT: '90deg',
@@ -864,6 +916,36 @@ function App() {
   });
   const [tvSleepTimer, setTvSleepTimer] = useState(null);
 
+  // حالة البث الفوري بالبروكسي المحلي والترجمة العربية (المرحلة أ + ب)
+  const [quickCastModalVisible, setQuickCastModalVisible] = useState(false);
+  const [quickCastSourceUrl, setQuickCastSourceUrl] = useState('');
+  const [quickCastTitle, setQuickCastTitle] = useState('');
+  const [quickCastHeaders, setQuickCastHeaders] = useState({});
+  const [quickCastMimeType, setQuickCastMimeType] = useState('video/mp4');
+  const [quickCastSubtitleUri, setQuickCastSubtitleUri] = useState('');
+  const [quickCastSubtitleName, setQuickCastSubtitleName] = useState('');
+  const [quickCastSubtitleOffsetMs, setQuickCastSubtitleOffsetMs] = useState(0);
+  const [quickCastTargetIp, setQuickCastTargetIp] = useState('');
+  const [quickCastSession, setQuickCastSession] = useState(null);
+  const [quickCastBusy, setQuickCastBusy] = useState(false);
+  const [quickCastStatusText, setQuickCastStatusText] = useState('');
+  const [quickCastErrorText, setQuickCastErrorText] = useState('');
+  const [quickCastResumeMatch, setQuickCastResumeMatch] = useState(null);
+  const [quickCastUseResume, setQuickCastUseResume] = useState(true);
+
+  // حالة مشغّل السينما الذكي (Web Receiver /tv) وقائمة الحلقات ومتابعة المشاهدة
+  const [cinemaModalVisible, setCinemaModalVisible] = useState(false);
+  const [cinemaTab, setCinemaTab] = useState('control');
+  const [cinemaSession, setCinemaSession] = useState(null);
+  const [receiverState, setReceiverState] = useState(null);
+  const [serverUrl, setServerUrl] = useState('');
+  const [cinemaBusyAction, setCinemaBusyAction] = useState(false);
+  const [cinemaNotice, setCinemaNotice] = useState('');
+  const [subtitleStyle, setSubtitleStyle] = useState(DEFAULT_SUBTITLE_STYLE);
+  const [cinemaQueue, setCinemaQueue] = useState([]);
+  const [resumeList, setResumeList] = useState([]);
+  const [autoNextCountdown, setAutoNextCountdown] = useState(null);
+
   const isSendingRef = useRef(false);
   const hasIrHardwareRef = useRef(null);
   const searchDebounceRef = useRef(null);
@@ -877,6 +959,8 @@ function App() {
   const voiceRequestIdRef = useRef(0);
   const voiceSessionRef = useRef(voiceSession);
   voiceSessionRef.current = voiceSession;
+  const tvIpRef = useRef(tvIp);
+  tvIpRef.current = tvIp;
   const handleTvCommandRef = useRef(null);
   const searchRequestIdRef = useRef(0);
   const searchFilterRef = useRef('all');
@@ -886,6 +970,66 @@ function App() {
   const searchListRef = useRef(null);
   const bottomSentinelRef = useRef(null);
   const loadMoreHandlerRef = useRef(null);
+
+  const cinemaSessionRef = useRef(cinemaSession);
+  cinemaSessionRef.current = cinemaSession;
+  const subtitleStyleRef = useRef(subtitleStyle);
+  subtitleStyleRef.current = subtitleStyle;
+  const cinemaQueueRef = useRef(cinemaQueue);
+  cinemaQueueRef.current = cinemaQueue;
+  const receiverStateRef = useRef(receiverState);
+  receiverStateRef.current = receiverState;
+  const lastResumeSaveMsRef = useRef(0);
+  const lastEndedSessionRef = useRef('');
+  const autoNextTimerRef = useRef(null);
+  const startWebReceiverCastRef = useRef(null);
+  const updateSubtitleStyleRef = useRef(null);
+  const playNextEpisodeRef = useRef(null);
+
+  const openQuickCastSheet = (payload) => {
+    const rawUrl = String((payload && payload.url) || '').trim();
+    if (!rawUrl) return;
+    const incomingHeaders =
+      payload && payload.headers && typeof payload.headers === 'object'
+        ? payload.headers
+        : {};
+    const inferredTitle =
+      String((payload && payload.title) || '').trim() ||
+      inferMovieTitleFromUrl(rawUrl, 'فيلم مباشر');
+    const inferredMime = guessMimeTypeFromUrl(
+      rawUrl,
+      payload && payload.mimeType ? payload.mimeType : ''
+    );
+    const incomingSub = String((payload && payload.subtitleUrl) || '').trim();
+
+    setQuickCastSourceUrl(rawUrl);
+    setQuickCastTitle(inferredTitle);
+    setQuickCastHeaders(incomingHeaders);
+    setQuickCastMimeType(inferredMime);
+    setQuickCastSubtitleUri(incomingSub);
+    setQuickCastSubtitleName(
+      incomingSub
+        ? String((payload && payload.subtitleName) || '').trim() ||
+            inferMovieTitleFromUrl(incomingSub, 'ملف ترجمة خارجي')
+        : ''
+    );
+    setQuickCastSubtitleOffsetMs(0);
+    setQuickCastTargetIp((prev) => prev || tvIpRef.current || '192.168.1.50');
+    setQuickCastErrorText('');
+    setQuickCastStatusText('');
+    setQuickCastResumeMatch(null);
+    setQuickCastUseResume(true);
+    setQuickCastModalVisible(true);
+
+    CinemaStorageService.findResumeForUrl(rawUrl)
+      .then((match) => {
+        if (match && match.positionSec >= 10) {
+          setQuickCastResumeMatch(match);
+          setQuickCastUseResume(true);
+        }
+      })
+      .catch(() => {});
+  };
 
   useEffect(() => {
     let mounted = true;
@@ -929,6 +1073,135 @@ function App() {
       if (saved.protocol) setWifiProtocol(saved.protocol);
       if (saved.port) setTvPort(String(saved.port));
       if (saved.dialPort) setDialPort(String(saved.dialPort));
+    });
+
+    CastProxyService.getPendingExternalIntent()
+      .then((payload) => {
+        if (mounted && payload && payload.url) {
+          openQuickCastSheet(payload);
+        }
+      })
+      .catch(() => {});
+
+    const unsubExternalMedia = CastProxyService.subscribeExternalMedia((payload) => {
+      if (mounted && payload && payload.url) {
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CLICK);
+        openQuickCastSheet(payload);
+      }
+    });
+
+    const unsubProxyStopped = CastProxyService.subscribeProxyStopped(() => {
+      if (mounted) {
+        setQuickCastSession(null);
+        setCinemaSession(null);
+        setQuickCastStatusText('تم إيقاف البث من شريط الإشعارات.');
+      }
+    });
+
+    CinemaStorageService.getSubtitleStyle()
+      .then((st) => {
+        if (mounted && st) setSubtitleStyle(st);
+      })
+      .catch(() => {});
+
+    CinemaStorageService.getQueue()
+      .then((q) => {
+        if (mounted && Array.isArray(q)) setCinemaQueue(q);
+      })
+      .catch(() => {});
+
+    CinemaStorageService.getResumeList()
+      .then((list) => {
+        if (mounted && Array.isArray(list)) setResumeList(list);
+      })
+      .catch(() => {});
+
+    CastProxyService.getServerInfo()
+      .then((info) => {
+        if (mounted && info && info.receiverUrl) {
+          setServerUrl(info.receiverUrl);
+        }
+      })
+      .catch(() => {});
+
+    const unsubReceiverState = CastProxyService.subscribeReceiverState((nextState) => {
+      if (!mounted || !nextState) return;
+      setReceiverState(nextState);
+
+      const activeSess = cinemaSessionRef.current;
+      if (activeSess && activeSess.sourceUrl) {
+        const pos = Number(nextState.positionSec) || 0;
+        const dur = Number(nextState.durationSec) || 0;
+        const sid = nextState.sessionId || activeSess.sessionId || '';
+
+        if (nextState.status === 'playing' && pos >= 5) {
+          const now = Date.now();
+          if (now - lastResumeSaveMsRef.current >= 5000) {
+            lastResumeSaveMsRef.current = now;
+            CinemaStorageService.savePlaybackProgress({
+              url: activeSess.sourceUrl,
+              title: activeSess.title,
+              mimeType: activeSess.mimeType,
+              headers: activeSess.headers,
+              subtitleUrl: activeSess.subtitleUri,
+              subtitleName: activeSess.subtitleName,
+              positionSec: pos,
+              durationSec: dur,
+            })
+              .then((updatedList) => {
+                if (mounted) setResumeList(updatedList);
+              })
+              .catch(() => {});
+          }
+        }
+
+        if (nextState.status === 'ended' && sid && lastEndedSessionRef.current !== sid) {
+          lastEndedSessionRef.current = sid;
+          CinemaStorageService.savePlaybackProgress({
+            url: activeSess.sourceUrl,
+            title: activeSess.title,
+            positionSec: dur || pos,
+            durationSec: dur,
+          })
+            .then((updatedList) => {
+              if (mounted) setResumeList(updatedList);
+            })
+            .catch(() => {});
+
+          const qNow = cinemaQueueRef.current;
+          if (Array.isArray(qNow) && qNow.length > 0) {
+            const upcoming = qNow[0];
+            if (autoNextTimerRef.current) {
+              clearInterval(autoNextTimerRef.current);
+              autoNextTimerRef.current = null;
+            }
+            let secs = 5;
+            setAutoNextCountdown({ seconds: secs, nextItem: upcoming });
+            CastProxyService.sendReceiverCommand('showCountdown', {
+              seconds: secs,
+              nextTitle: upcoming.title || 'الحلقة التالية',
+            }).catch(() => {});
+
+            autoNextTimerRef.current = setInterval(() => {
+              secs -= 1;
+              if (secs <= 0) {
+                if (autoNextTimerRef.current) {
+                  clearInterval(autoNextTimerRef.current);
+                  autoNextTimerRef.current = null;
+                }
+                if (mounted) {
+                  setAutoNextCountdown(null);
+                  if (playNextEpisodeRef.current) {
+                    playNextEpisodeRef.current();
+                  }
+                }
+              } else if (mounted) {
+                setAutoNextCountdown({ seconds: secs, nextItem: upcoming });
+              }
+            }, 1000);
+          }
+        }
+      }
     });
 
     if (Platform.OS === 'web') {
@@ -980,9 +1253,16 @@ function App() {
         clearTimeout(voiceDoneTimerRef.current);
         voiceDoneTimerRef.current = null;
       }
+      if (autoNextTimerRef.current) {
+        clearInterval(autoNextTimerRef.current);
+        autoNextTimerRef.current = null;
+      }
       voiceAbortRef.current = true;
       VoiceControl.cancelSession().catch(() => {});
       HapticsManager.stopHoldFeedback();
+      unsubExternalMedia();
+      unsubProxyStopped();
+      unsubReceiverState();
       unsubscribe();
       WifiControl.abortDiscovery();
       WifiControl.disconnect();
@@ -1376,24 +1656,87 @@ function App() {
         }
         await WifiControl.openUrlInTvBrowser(parsedCmd.url || 'https://www.google.com');
         HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
-      } else if (parsedCmd.type === 'TV_REPEATED_COMMAND') {
-        await sendRepeatedTvCommand(parsedCmd.commandKey, parsedCmd.count);
-        if (!voiceAbortRef.current) {
-          HapticsManager.trigger(HAPTIC_PATTERNS.NAV_REPEAT);
+      } else if (parsedCmd.type === 'CINEMA_SKIP_INTRO') {
+        if (cinemaSessionRef.current) {
+          await CastProxyService.sendReceiverCommand('seekDelta', {
+            deltaSec: Number(parsedCmd.deltaSec) || 85,
+          });
+        } else {
+          await sendRepeatedTvCommand('RIGHT', 8);
         }
-      } else if (parsedCmd.type === 'TV_COMMAND') {
-        if (tvTransport === 'wifi') {
-          const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
-          if (netCheck && !netCheck.sameNetwork) {
-            throw new Error(netCheck.message);
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'CINEMA_SUBTITLE_SIZE') {
+        const curSize = Number((subtitleStyleRef.current || {}).fontSize) || 34;
+        const nextSize = Math.max(18, Math.min(56, curSize + (Number(parsedCmd.deltaPx) || 0)));
+        if (updateSubtitleStyleRef.current) {
+          await updateSubtitleStyleRef.current({ fontSize: nextSize });
+        }
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'CINEMA_SUBTITLE_OFFSET') {
+        const curOff = Number((subtitleStyleRef.current || {}).offsetSec) || 0;
+        const nextOff = Number((curOff + (Number(parsedCmd.deltaSec) || 0)).toFixed(1));
+        if (updateSubtitleStyleRef.current) {
+          await updateSubtitleStyleRef.current({ offsetSec: nextOff });
+        }
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'CINEMA_NEXT_EPISODE') {
+        if (!cinemaQueueRef.current || cinemaQueueRef.current.length === 0) {
+          throw new Error('قائمة الحلقات فارغة حالياً.');
+        }
+        if (playNextEpisodeRef.current) {
+          await playNextEpisodeRef.current();
+        }
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else if (parsedCmd.type === 'TV_REPEATED_COMMAND') {
+        if (
+          (parsedCmd.commandKey === 'RIGHT' || parsedCmd.commandKey === 'LEFT') &&
+          typeof parsedCmd.deltaSec === 'number' &&
+          cinemaSessionRef.current
+        ) {
+          await CastProxyService.sendReceiverCommand('seekDelta', {
+            deltaSec: parsedCmd.deltaSec,
+          });
+          HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+        } else {
+          await sendRepeatedTvCommand(parsedCmd.commandKey, parsedCmd.count);
+          if (!voiceAbortRef.current) {
+            HapticsManager.trigger(HAPTIC_PATTERNS.NAV_REPEAT);
           }
         }
-        await handleTvCommandRef.current(parsedCmd.commandKey, { throwOnError: true });
-        HapticsManager.trigger(
-          parsedCmd.commandKey === 'POWER'
-            ? HAPTIC_PATTERNS.POWER_TV
-            : HAPTIC_PATTERNS.OK_CONFIRM
-        );
+      } else if (parsedCmd.type === 'TV_COMMAND') {
+        if (
+          cinemaSessionRef.current &&
+          (parsedCmd.commandKey === 'PAUSE' ||
+            parsedCmd.commandKey === 'PLAY' ||
+            parsedCmd.commandKey === 'MUTE')
+        ) {
+          if (parsedCmd.commandKey === 'PAUSE') {
+            await CastProxyService.sendReceiverCommand('pause', {});
+          } else if (parsedCmd.commandKey === 'PLAY') {
+            await CastProxyService.sendReceiverCommand('play', {});
+          } else {
+            const currentlyMuted = Boolean(
+              receiverStateRef.current && receiverStateRef.current.muted
+            );
+            await CastProxyService.sendReceiverCommand('setMute', {
+              muted: !currentlyMuted,
+            });
+          }
+          HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+        } else {
+          if (tvTransport === 'wifi') {
+            const netCheck = await refreshNetworkStatus({ verifyLanReachability: false });
+            if (netCheck && !netCheck.sameNetwork) {
+              throw new Error(netCheck.message);
+            }
+          }
+          await handleTvCommandRef.current(parsedCmd.commandKey, { throwOnError: true });
+          HapticsManager.trigger(
+            parsedCmd.commandKey === 'POWER'
+              ? HAPTIC_PATTERNS.POWER_TV
+              : HAPTIC_PATTERNS.OK_CONFIRM
+          );
+        }
       } else {
         throw new Error('لم يتم فهم الأمر الصوتي المطلوب.');
       }
@@ -2902,6 +3245,466 @@ function App() {
     );
   };
 
+  const handlePickQuickCastSubtitle = async () => {
+    setQuickCastErrorText('');
+    try {
+      const picked = await CastProxyService.pickLocalSubtitle();
+      if (!picked || !picked.uri) return;
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CLICK);
+      setQuickCastSubtitleUri(picked.uri);
+      setQuickCastSubtitleName(picked.name || inferMovieTitleFromUrl(picked.uri, 'ترجمة.srt'));
+      setQuickCastSubtitleOffsetMs(0);
+      if (quickCastSession && quickCastSession.sessionId) {
+        const updated = await CastProxyService.updateSessionSubtitle(
+          quickCastSession.sessionId,
+          picked.uri,
+          0
+        );
+        setQuickCastSession(updated);
+        setQuickCastStatusText('تم إرفاق الترجمة وحقنها في البروكسي المحلي.');
+      }
+    } catch (error) {
+      setQuickCastErrorText(
+        error && error.message ? error.message : 'تعذر اختيار ملف الترجمة.'
+      );
+    }
+  };
+
+  const handleRemoveQuickCastSubtitle = async () => {
+    setQuickCastSubtitleUri('');
+    setQuickCastSubtitleName('');
+    setQuickCastSubtitleOffsetMs(0);
+    if (quickCastSession && quickCastSession.sessionId) {
+      try {
+        const updated = await CastProxyService.updateSessionSubtitle(
+          quickCastSession.sessionId,
+          null,
+          0
+        );
+        setQuickCastSession(updated);
+        setQuickCastStatusText('تمت إزالة الترجمة من جلسة البث.');
+      } catch (_) {}
+    }
+  };
+
+  const handleShiftQuickCastSubtitleOffset = async (deltaMs) => {
+    const nextOffset = Math.max(-60000, Math.min(60000, quickCastSubtitleOffsetMs + deltaMs));
+    setQuickCastSubtitleOffsetMs(nextOffset);
+    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    if (quickCastSession && quickCastSession.sessionId && quickCastSubtitleUri) {
+      try {
+        const updated = await CastProxyService.updateSessionSubtitle(
+          quickCastSession.sessionId,
+          quickCastSubtitleUri,
+          nextOffset
+        );
+        setQuickCastSession(updated);
+      } catch (_) {}
+    }
+  };
+
+  const handleStartQuickCastToDlna = async () => {
+    if (!quickCastSourceUrl.trim()) {
+      setQuickCastErrorText('أدخل رابط الفيديو أولاً.');
+      return;
+    }
+    setQuickCastBusy(true);
+    setQuickCastErrorText('');
+    setQuickCastStatusText('جاري تشغيل خادم البروكسي المحلي وتجاوز حماية 403...');
+    try {
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CLICK);
+      let session = await CastProxyService.startProxySession(
+        quickCastSourceUrl,
+        quickCastHeaders,
+        quickCastTitle,
+        quickCastSubtitleUri || null
+      );
+      if (quickCastSubtitleUri && quickCastSubtitleOffsetMs !== 0 && session && session.sessionId) {
+        session = await CastProxyService.updateSessionSubtitle(
+          session.sessionId,
+          quickCastSubtitleUri,
+          quickCastSubtitleOffsetMs
+        );
+      }
+      setQuickCastSession(session);
+      setQuickCastStatusText('جاري إرسال الرابط المحلي إلى مشغّل سامسونج (DLNA)...');
+
+      const targetIp = (quickCastTargetIp || tvIp || '').trim();
+      const castResult = await CastProxyService.castSessionToDlna(
+        targetIp || null,
+        session.proxyStreamUrl,
+        quickCastTitle || 'فيلم مباشر',
+        session.proxySubtitleUrl || null,
+        quickCastMimeType
+      );
+      const deviceLabel =
+        (castResult && (castResult.deviceName || castResult.deviceIp)) ||
+        targetIp ||
+        'التلفاز';
+      setQuickCastStatusText(`جاري البث الآن عبر البروكسي إلى ${deviceLabel}`);
+      clearErrorBanner();
+    } catch (error) {
+      setQuickCastErrorText(
+        error && error.message
+          ? error.message
+          : 'تعذر بدء البث عبر البروكسي المحلي.'
+      );
+      setQuickCastStatusText('');
+    } finally {
+      setQuickCastBusy(false);
+    }
+  };
+
+  const handleStopQuickCast = async () => {
+    setQuickCastBusy(true);
+    setQuickCastErrorText('');
+    if (autoNextTimerRef.current) {
+      clearInterval(autoNextTimerRef.current);
+      autoNextTimerRef.current = null;
+    }
+    setAutoNextCountdown(null);
+    try {
+      await CastProxyService.sendReceiverCommand('stop', {}).catch(() => {});
+      await CastProxyService.stopProxySession();
+      setQuickCastSession(null);
+      setCinemaSession(null);
+      setQuickCastStatusText('تم إيقاف البث والخادم المحلي.');
+      HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    } catch (error) {
+      setQuickCastErrorText(
+        error && error.message ? error.message : 'تعذر إيقاف البث.'
+      );
+    } finally {
+      setQuickCastBusy(false);
+    }
+  };
+
+  const handleUpdateSubtitleStyle = async (partial) => {
+    try {
+      const updated = await CinemaStorageService.saveSubtitleStyle(partial);
+      setSubtitleStyle(updated);
+      subtitleStyleRef.current = updated;
+      await CastProxyService.sendReceiverCommand('setSubtitleStyle', updated).catch(() => {});
+      HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+    } catch (_) {}
+  };
+  updateSubtitleStyleRef.current = handleUpdateSubtitleStyle;
+
+  const startWebReceiverCast = async (
+    mediaItem,
+    { startPositionSec = 0, launchTv = true, openCinemaModal = true } = {}
+  ) => {
+    const rawUrl = String((mediaItem && mediaItem.url) || '').trim();
+    if (!rawUrl) {
+      throw new Error('أدخل رابط الفيديو أولاً.');
+    }
+    const cleanTitle =
+      String((mediaItem && mediaItem.title) || '').trim() ||
+      inferMovieTitleFromUrl(rawUrl, 'عرض سينمائي');
+    const headers =
+      mediaItem && mediaItem.headers && typeof mediaItem.headers === 'object'
+        ? mediaItem.headers
+        : {};
+    const mimeType =
+      (mediaItem && mediaItem.mimeType) || guessMimeTypeFromUrl(rawUrl);
+    const subUri = String((mediaItem && mediaItem.subtitleUrl) || '').trim();
+    const subName = String((mediaItem && mediaItem.subtitleName) || '').trim();
+
+    if (autoNextTimerRef.current) {
+      clearInterval(autoNextTimerRef.current);
+      autoNextTimerRef.current = null;
+    }
+    setAutoNextCountdown(null);
+    lastEndedSessionRef.current = '';
+    lastResumeSaveMsRef.current = 0;
+
+    let session = await CastProxyService.startProxySession(
+      rawUrl,
+      headers,
+      cleanTitle,
+      subUri || null
+    );
+    const offsetMs = Math.round((Number((subtitleStyleRef.current || {}).offsetSec) || 0) * 1000);
+    if (subUri && offsetMs !== 0 && session && session.sessionId) {
+      session = await CastProxyService.updateSessionSubtitle(
+        session.sessionId,
+        subUri,
+        offsetMs
+      );
+    }
+    const info = await CastProxyService.getServerInfo().catch(() => null);
+    const receiverUrl =
+      (info && info.receiverUrl) ||
+      (session && session.lanIp ? `http://${session.lanIp}:${session.port}/tv` : '');
+    if (receiverUrl) setServerUrl(receiverUrl);
+
+    await CastProxyService.sendReceiverCommand('load', {
+      sessionId: session.sessionId,
+      streamUrl: session.proxyStreamUrl,
+      subtitleUrl: session.proxySubtitleVttUrl || '',
+      title: cleanTitle,
+      mimeType,
+      startPositionSec: Math.max(0, Number(startPositionSec) || 0),
+    });
+    await CastProxyService.sendReceiverCommand('setSubtitleStyle', subtitleStyleRef.current || DEFAULT_SUBTITLE_STYLE);
+
+    const activeCinema = {
+      sessionId: session.sessionId,
+      title: cleanTitle,
+      sourceUrl: rawUrl,
+      mimeType,
+      headers,
+      subtitleUri: subUri,
+      subtitleName: subName || (subUri ? inferMovieTitleFromUrl(subUri, 'ترجمة') : ''),
+      proxyStreamUrl: session.proxyStreamUrl,
+      proxySubtitleVttUrl: session.proxySubtitleVttUrl || '',
+      receiverUrl,
+    };
+    setQuickCastSession(session);
+    setCinemaSession(activeCinema);
+    cinemaSessionRef.current = activeCinema;
+
+    if (launchTv) {
+      try {
+        await WifiControl.launchWebReceiverOnTv(receiverUrl);
+        setCinemaNotice('تم إرسال البث وفتح مشغّل السينما على متصفح الشاشة.');
+      } catch (_) {
+        setCinemaNotice(`افتح الرابط ${receiverUrl} على متصفح التلفاز أو اضغط "فتح على الشاشة".`);
+      }
+    } else {
+      setCinemaNotice(`جاري عرض: ${cleanTitle}`);
+    }
+
+    if (openCinemaModal) {
+      setQuickCastModalVisible(false);
+      setCinemaTab('control');
+      setCinemaModalVisible(true);
+    }
+    return activeCinema;
+  };
+  startWebReceiverCastRef.current = startWebReceiverCast;
+
+  const handleStartQuickCastToWebReceiver = async () => {
+    if (!quickCastSourceUrl.trim()) {
+      setQuickCastErrorText('أدخل رابط الفيديو أولاً.');
+      return;
+    }
+    setQuickCastBusy(true);
+    setQuickCastErrorText('');
+    setQuickCastStatusText('جاري تجهيز البروكسي ومشغّل السينما الذكي (/tv)...');
+    try {
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      const startSec =
+        quickCastResumeMatch && quickCastUseResume
+          ? Number(quickCastResumeMatch.positionSec) || 0
+          : 0;
+      await startWebReceiverCast(
+        {
+          url: quickCastSourceUrl,
+          title: quickCastTitle,
+          headers: quickCastHeaders,
+          mimeType: quickCastMimeType,
+          subtitleUrl: quickCastSubtitleUri,
+          subtitleName: quickCastSubtitleName,
+        },
+        { startPositionSec: startSec, launchTv: true, openCinemaModal: true }
+      );
+      clearErrorBanner();
+    } catch (error) {
+      setQuickCastErrorText(
+        error && error.message ? error.message : 'تعذر بدء مشغّل السينما الذكي.'
+      );
+    } finally {
+      setQuickCastBusy(false);
+    }
+  };
+
+  const handleEnqueueFromQuickCast = async () => {
+    if (!quickCastSourceUrl.trim()) {
+      setQuickCastErrorText('أدخل رابط الفيديو أولاً.');
+      return;
+    }
+    try {
+      const nextQ = await CinemaStorageService.enqueueEpisode({
+        url: quickCastSourceUrl,
+        title: quickCastTitle || inferMovieTitleFromUrl(quickCastSourceUrl, 'حلقة'),
+        mimeType: quickCastMimeType,
+        headers: quickCastHeaders,
+        subtitleUrl: quickCastSubtitleUri,
+        subtitleName: quickCastSubtitleName,
+      });
+      setCinemaQueue(nextQ);
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      setQuickCastStatusText(`تمت الإضافة لقائمة الحلقات (${nextQ.length}).`);
+    } catch (_) {}
+  };
+
+  const handlePlayNextFromQueue = async () => {
+    try {
+      const { nextItem, queue } = await CinemaStorageService.shiftQueueNext();
+      setCinemaQueue(queue);
+      cinemaQueueRef.current = queue;
+      if (!nextItem) return;
+      await startWebReceiverCast(nextItem, {
+        startPositionSec: 0,
+        launchTv: false,
+        openCinemaModal: false,
+      });
+    } catch (err) {
+      setCinemaNotice(
+        err && err.message ? err.message : 'تعذر تشغيل الحلقة التالية من القائمة.'
+      );
+    }
+  };
+  playNextEpisodeRef.current = handlePlayNextFromQueue;
+
+  const handleCancelAutoNext = () => {
+    if (autoNextTimerRef.current) {
+      clearInterval(autoNextTimerRef.current);
+      autoNextTimerRef.current = null;
+    }
+    setAutoNextCountdown(null);
+    CastProxyService.sendReceiverCommand('cancelCountdown', {}).catch(() => {});
+  };
+
+  const handleOpenSmartBrowser = async (initialUrl = '') => {
+    try {
+      HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+      const res = await CastProxyService.openSmartBrowser(initialUrl);
+      if (!res || !res.video || !res.video.url) return;
+      const vid = res.video;
+      const sub = res.subtitle && res.subtitle.url ? res.subtitle : null;
+      if (res.mode === 'queue') {
+        const nextQ = await CinemaStorageService.enqueueEpisode({
+          url: vid.url,
+          title: vid.title || inferMovieTitleFromUrl(vid.url, 'حلقة ملتقطة'),
+          mimeType: vid.mimeType || guessMimeTypeFromUrl(vid.url),
+          headers: vid.headers || {},
+          subtitleUrl: sub ? sub.url : '',
+          subtitleName: sub ? sub.title || 'ترجمة ملتقطة' : '',
+        });
+        setCinemaQueue(nextQ);
+        setCinemaNotice(`تمت إضافة "${vid.title || 'الفيديو'}" إلى قائمة الانتظار (${nextQ.length}).`);
+        setCinemaTab('queue');
+        setCinemaModalVisible(true);
+        HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      } else {
+        openQuickCastSheet({
+          url: vid.url,
+          title: vid.title,
+          mimeType: vid.mimeType,
+          headers: vid.headers || {},
+          subtitleUrl: sub ? sub.url : '',
+          subtitleName: sub ? sub.title : '',
+        });
+      }
+    } catch (error) {
+      if (error && (error.code === 'BROWSER_CANCELLED' || error.code === 'SNIFFER_CANCELLED')) {
+        return;
+      }
+      setFeedback({
+        text:
+          error && error.message
+            ? error.message
+            : 'تعذر فتح متصفح الصيد الذكي.',
+        tone: 'error',
+      });
+    }
+  };
+
+  const handleCinemaCommand = async (type, payload = {}) => {
+    try {
+      await CastProxyService.sendReceiverCommand(type, payload);
+    } catch (error) {
+      setCinemaNotice(
+        error && error.message ? error.message : 'تعذر إرسال الأمر لمشغّل السينما.'
+      );
+    }
+  };
+
+  const handlePickCinemaSubtitle = async () => {
+    try {
+      const picked = await CastProxyService.pickLocalSubtitle();
+      if (!picked || !picked.uri) return;
+      HapticsManager.trigger(HAPTIC_PATTERNS.OK_CONFIRM);
+      const subName = picked.name || inferMovieTitleFromUrl(picked.uri, 'ترجمة.srt');
+      if (cinemaSession && cinemaSession.sessionId) {
+        const offsetMs = Math.round((Number(subtitleStyle.offsetSec) || 0) * 1000);
+        const updated = await CastProxyService.updateSessionSubtitle(
+          cinemaSession.sessionId,
+          picked.uri,
+          offsetMs
+        );
+        setCinemaSession((prev) =>
+          prev
+            ? {
+                ...prev,
+                subtitleUri: picked.uri,
+                subtitleName: subName,
+                proxySubtitleVttUrl: updated.proxySubtitleVttUrl || '',
+              }
+            : prev
+        );
+        setCinemaNotice(`تم بث الترجمة العربية فوراً: ${subName}`);
+      } else {
+        setQuickCastSubtitleUri(picked.uri);
+        setQuickCastSubtitleName(subName);
+        setCinemaNotice(`تم اختيار الترجمة: ${subName}`);
+      }
+    } catch (error) {
+      setCinemaNotice(
+        error && error.message ? error.message : 'تعذر اختيار ملف الترجمة.'
+      );
+    }
+  };
+
+  const handleRemoveCinemaSubtitle = async () => {
+    if (!cinemaSession || !cinemaSession.sessionId) return;
+    try {
+      await CastProxyService.updateSessionSubtitle(cinemaSession.sessionId, null, 0);
+      setCinemaSession((prev) =>
+        prev ? { ...prev, subtitleUri: '', subtitleName: '', proxySubtitleVttUrl: '' } : prev
+      );
+      setCinemaNotice('تمت إزالة الترجمة من المشغّل.');
+    } catch (_) {}
+  };
+
+  const handleLaunchReceiverOnTv = async () => {
+    setCinemaBusyAction(true);
+    try {
+      let targetUrl = serverUrl || (cinemaSession && cinemaSession.receiverUrl) || '';
+      if (!targetUrl) {
+        const info = await CastProxyService.getServerInfo();
+        targetUrl = info && info.receiverUrl ? info.receiverUrl : '';
+        if (targetUrl) setServerUrl(targetUrl);
+      }
+      await WifiControl.launchWebReceiverOnTv(targetUrl);
+      setCinemaNotice('تم فتح صفحة مشغّل السينما (/tv) على متصفح الشاشة.');
+    } catch (error) {
+      setCinemaNotice(
+        error && error.message
+          ? error.message
+          : 'تعذر فتح متصفح الشاشة تلقائياً؛ يمكنك نسخ الرابط وفتحه يدوياً.'
+      );
+    } finally {
+      setCinemaBusyAction(false);
+    }
+  };
+
+  const handleCopyReceiverUrl = async () => {
+    try {
+      let targetUrl = serverUrl || (cinemaSession && cinemaSession.receiverUrl) || '';
+      if (!targetUrl) {
+        const info = await CastProxyService.getServerInfo();
+        targetUrl = info && info.receiverUrl ? info.receiverUrl : '';
+        if (targetUrl) setServerUrl(targetUrl);
+      }
+      if (!targetUrl) return;
+      await CastProxyService.copyToClipboard(targetUrl);
+      setCinemaNotice(`تم نسخ الرابط: ${targetUrl}`);
+    } catch (_) {}
+  };
+
   return (
     <SafeAreaView style={styles.root}>
       <StatusBar barStyle="light-content" backgroundColor="#0B0D11" />
@@ -2989,6 +3792,21 @@ function App() {
                   >
                     <SearchIcon color="#F1F5F9" size={20} />
                   </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[
+                      styles.headerSearchIconBtn,
+                      (cinemaSession || cinemaQueue.length > 0) && styles.headerHapticsActiveBtn,
+                    ]}
+                    activeOpacity={0.75}
+                    onPressIn={() => HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP)}
+                    onPress={() => setCinemaModalVisible(true)}
+                    accessibilityLabel="لوحة مشغّل السينما الذكي"
+                  >
+                    <CinemaIcon
+                      color={cinemaSession || cinemaQueue.length > 0 ? '#38BDF8' : '#F1F5F9'}
+                      size={18}
+                    />
+                  </TouchableOpacity>
                 </>
               ) : null}
               <TouchableOpacity
@@ -3070,6 +3888,36 @@ function App() {
             }}
           >
             <Text style={styles.tvSleepCancelText}>إلغاء</Text>
+          </TouchableOpacity>
+        </View>
+      ) : null}
+
+      {activeTab === 'tv' && !isSearchPageOpen && (cinemaSession || quickCastSession) ? (
+        <View style={styles.quickCastMiniBanner}>
+          <TouchableOpacity
+            style={styles.quickCastMiniInfo}
+            activeOpacity={0.8}
+            onPress={() => {
+              if (cinemaSession) {
+                setCinemaModalVisible(true);
+              } else {
+                setQuickCastModalVisible(true);
+              }
+            }}
+          >
+            <View style={styles.quickCastMiniDot} />
+            <Text dir="auto" style={styles.quickCastMiniText} numberOfLines={1}>
+              {cinemaSession
+                ? `السينما الذكية: ${cinemaSession.title || 'عرض نشط'}`
+                : `البروكسي نشط: ${quickCastTitle || 'بث مباشر'}`}
+            </Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.quickCastMiniStopBtn}
+            activeOpacity={0.75}
+            onPress={handleStopQuickCast}
+          >
+            <Text style={styles.quickCastMiniStopText}>إيقاف</Text>
           </TouchableOpacity>
         </View>
       ) : null}
@@ -3166,10 +4014,45 @@ function App() {
           ) : smartSearchInput.type === 'web_url' ? (
             <View style={styles.smartLinkWrap}>
               <View style={styles.smartLinkCard}>
-                <Text style={styles.smartLinkTitle}>تم التعرّف على رابط موقع ويب</Text>
+                <Text style={styles.smartLinkTitle}>
+                  {isLikelyDirectVideoUrl(smartSearchInput.url)
+                    ? 'تم التعرّف على رابط فيديو جاهز للبث'
+                    : 'تم التعرّف على رابط موقع ويب'}
+                </Text>
                 <Text dir="ltr" style={styles.smartLinkUrl} numberOfLines={1}>
                   {smartSearchInput.url}
                 </Text>
+                <TouchableOpacity
+                  style={styles.smartLinkProxyBtn}
+                  activeOpacity={0.8}
+                  onPress={() =>
+                    openQuickCastSheet({
+                      url: smartSearchInput.url,
+                      title: inferMovieTitleFromUrl(smartSearchInput.url, 'فيلم مباشر'),
+                      mimeType: guessMimeTypeFromUrl(smartSearchInput.url),
+                    })
+                  }
+                >
+                  <Text style={styles.smartLinkBtnText}>
+                    بث عبر البروكسي الذكي (سينما / DLNA)
+                  </Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.smartLinkQueueBtn}
+                  activeOpacity={0.8}
+                  onPress={async () => {
+                    const nextQ = await CinemaStorageService.enqueueEpisode({
+                      url: smartSearchInput.url,
+                      title: inferMovieTitleFromUrl(smartSearchInput.url, 'حلقة مباشرة'),
+                      mimeType: guessMimeTypeFromUrl(smartSearchInput.url),
+                    });
+                    setCinemaQueue(nextQ);
+                    setCinemaTab('queue');
+                    setCinemaModalVisible(true);
+                  }}
+                >
+                  <Text style={styles.smartLinkBtnText}>+ إضافة لقائمة الانتظار</Text>
+                </TouchableOpacity>
                 <TouchableOpacity
                   style={styles.smartLinkBrowserBtn}
                   activeOpacity={0.8}
@@ -3193,6 +4076,69 @@ function App() {
               keyboardShouldPersistTaps="handled"
               showsVerticalScrollIndicator={false}
             >
+              <View style={styles.cinemaToolsRow}>
+                <TouchableOpacity
+                  style={styles.cinemaToolPrimaryBtn}
+                  activeOpacity={0.82}
+                  onPress={() => handleOpenSmartBrowser('')}
+                >
+                  <Text style={styles.cinemaToolPrimaryText}>🌐 متصفح الصيد الذكي</Text>
+                  <Text style={styles.cinemaToolSubText}>صيد روابط MP4 / M3U8 والترجمة</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={styles.cinemaToolSecondaryBtn}
+                  activeOpacity={0.82}
+                  onPress={() => {
+                    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+                    setCinemaModalVisible(true);
+                  }}
+                >
+                  <Text style={styles.cinemaToolPrimaryText}>🎬 لوحة السينما</Text>
+                  <Text style={styles.cinemaToolSubText}>
+                    الحلقات ({cinemaQueue.length}) · متابعة ({resumeList.length})
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {resumeList.length > 0 ? (
+                <View style={styles.historySection}>
+                  <View style={styles.historyHeader}>
+                    <Text style={styles.historyHeaderTitle}>متابعة المشاهدة</Text>
+                    <TouchableOpacity
+                      onPress={() => {
+                        setCinemaTab('queue');
+                        setCinemaModalVisible(true);
+                      }}
+                    >
+                      <Text style={styles.historyClearAllText}>عرض الكل</Text>
+                    </TouchableOpacity>
+                  </View>
+                  <View style={styles.cinemaResumeRowWrap}>
+                    {resumeList.slice(0, 3).map((resItem) => (
+                      <TouchableOpacity
+                        key={`home-res-${resItem.id}`}
+                        style={styles.cinemaResumeChip}
+                        activeOpacity={0.8}
+                        onPress={() =>
+                          startWebReceiverCast(resItem, {
+                            startPositionSec: resItem.positionSec,
+                            launchTv: true,
+                            openCinemaModal: true,
+                          }).catch(() => {})
+                        }
+                      >
+                        <Text dir="auto" style={styles.cinemaResumeChipTitle} numberOfLines={1}>
+                          {resItem.title}
+                        </Text>
+                        <Text style={styles.cinemaResumeChipTime}>
+                          استكمال {formatSecondsHms(resItem.positionSec)}
+                        </Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+
               {searchHistory.length > 0 ? (
                 <View style={styles.historySection}>
                   <View style={styles.historyHeader}>
@@ -4348,6 +5294,280 @@ function App() {
           </View>
         </View>
       </Modal>
+
+      <Modal
+        visible={quickCastModalVisible}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setQuickCastModalVisible(false)}
+      >
+        <View style={styles.quickCastBackdrop}>
+          <View style={styles.quickCastSheet}>
+            <View style={styles.quickCastHeader}>
+              <View style={styles.quickCastHeaderTextWrap}>
+                <Text style={styles.quickCastTitle}>بث فوري للشاشة</Text>
+                <View style={styles.quickCastBadge}>
+                  <View style={styles.quickCastBadgeDot} />
+                  <Text style={styles.quickCastBadgeText}>
+                    البروكسي الذكي نشط (حماية 403)
+                  </Text>
+                </View>
+              </View>
+              <TouchableOpacity
+                style={styles.quickCastCloseBtn}
+                activeOpacity={0.75}
+                onPress={() => setQuickCastModalVisible(false)}
+                accessibilityLabel="إغلاق نافذة البث الفوري"
+              >
+                <Text style={styles.voiceCloseGlyph}>✕</Text>
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView
+              style={styles.quickCastScroll}
+              contentContainerStyle={styles.quickCastScrollContent}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.inputLabel}>اسم الفيلم / البث</Text>
+              <TextInput
+                style={styles.quickCastInput}
+                value={quickCastTitle}
+                onChangeText={setQuickCastTitle}
+                placeholder="اسم الفيلم الظاهر في الإشعار والشاشة"
+                placeholderTextColor="#64748B"
+              />
+
+              <Text style={styles.inputLabel}>رابط الفيديو المصدر</Text>
+              <Text dir="ltr" style={styles.quickCastUrlBox} numberOfLines={2}>
+                {quickCastSourceUrl || '—'}
+              </Text>
+
+              {Object.keys(quickCastHeaders || {}).length > 0 ? (
+                <View style={styles.quickCastHeadersNote}>
+                  <Text style={styles.quickCastHeadersNoteText}>
+                    تم التقاط {Object.keys(quickCastHeaders).length} ترويسة حماية تلقائياً (Referer / Cookie / User-Agent)
+                  </Text>
+                </View>
+              ) : null}
+
+              <Text style={styles.inputLabel}>عنوان IP لشاشة سامسونج (اختياري — بحث تلقائي إذا تُرك فارغاً)</Text>
+              <TextInput
+                style={[styles.quickCastInput, styles.quickCastLtrInput]}
+                value={quickCastTargetIp}
+                onChangeText={setQuickCastTargetIp}
+                placeholder="192.168.1.50"
+                placeholderTextColor="#64748B"
+                keyboardType="numeric"
+              />
+
+              <View style={styles.quickCastSubSection}>
+                <View style={styles.quickCastSubHeader}>
+                  <Text style={styles.inputLabel}>الترجمة العربية (.srt / .vtt)</Text>
+                  {quickCastSubtitleUri ? (
+                    <TouchableOpacity onPress={handleRemoveQuickCastSubtitle}>
+                      <Text style={styles.clearTokenText}>إزالة</Text>
+                    </TouchableOpacity>
+                  ) : null}
+                </View>
+
+                <TouchableOpacity
+                  style={styles.quickCastSubBtn}
+                  activeOpacity={0.8}
+                  onPress={handlePickQuickCastSubtitle}
+                >
+                  <Text style={styles.quickCastSubBtnText} numberOfLines={1}>
+                    {quickCastSubtitleUri
+                      ? `📄 ${quickCastSubtitleName || 'ملف ترجمة مرفق'} (تغيير)`
+                      : '📎 إرفاق ملف ترجمة من الهاتف (.srt / .vtt)'}
+                  </Text>
+                </TouchableOpacity>
+
+                {quickCastSubtitleUri ? (
+                  <View style={styles.quickCastOffsetRow}>
+                    <TouchableOpacity
+                      style={styles.quickCastOffsetBtn}
+                      onPress={() => handleShiftQuickCastSubtitleOffset(-500)}
+                    >
+                      <Text style={styles.quickCastOffsetBtnText}>-0.5 ث</Text>
+                    </TouchableOpacity>
+                    <Text style={styles.quickCastOffsetLabel}>
+                      مزامنة: {quickCastSubtitleOffsetMs >= 0 ? `+${(quickCastSubtitleOffsetMs / 1000).toFixed(1)}` : (quickCastSubtitleOffsetMs / 1000).toFixed(1)} ث
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.quickCastOffsetBtn}
+                      onPress={() => handleShiftQuickCastSubtitleOffset(500)}
+                    >
+                      <Text style={styles.quickCastOffsetBtnText}>+0.5 ث</Text>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
+              </View>
+
+              {quickCastResumeMatch ? (
+                <TouchableOpacity
+                  style={[
+                    styles.quickCastResumeBanner,
+                    quickCastUseResume && styles.quickCastResumeBannerActive,
+                  ]}
+                  activeOpacity={0.85}
+                  onPress={() => {
+                    HapticsManager.trigger(HAPTIC_PATTERNS.NAV_TAP);
+                    setQuickCastUseResume((prev) => !prev);
+                  }}
+                >
+                  <Text style={styles.quickCastResumeTitle}>
+                    {quickCastUseResume
+                      ? `✓ استكمال من الدقيقة ${formatSecondsHms(quickCastResumeMatch.positionSec)}`
+                      : `البدء من البداية (00:00) — اضغط للاستكمال من ${formatSecondsHms(quickCastResumeMatch.positionSec)}`}
+                  </Text>
+                </TouchableOpacity>
+              ) : null}
+
+              {quickCastSession && quickCastSession.proxyStreamUrl ? (
+                <View style={styles.quickCastSessionCard}>
+                  <Text style={styles.quickCastSessionHeading}>
+                    رابط البروكسي المحلي على الشبكة ({quickCastSession.lanIp}:{quickCastSession.port})
+                  </Text>
+                  <Text dir="ltr" style={styles.quickCastSessionUrl} numberOfLines={1}>
+                    {quickCastSession.proxyStreamUrl}
+                  </Text>
+                  {quickCastSession.proxySubtitleUrl ? (
+                    <Text dir="ltr" style={styles.quickCastSessionSubUrl} numberOfLines={1}>
+                      {quickCastSession.proxySubtitleUrl}
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
+
+              {quickCastStatusText ? (
+                <Text style={styles.quickCastStatusMsg}>{quickCastStatusText}</Text>
+              ) : null}
+
+              {quickCastErrorText ? (
+                <Text style={styles.quickCastErrorMsg}>{quickCastErrorText}</Text>
+              ) : null}
+            </ScrollView>
+
+            <View style={styles.quickCastFooterStack}>
+              <TouchableOpacity
+                style={[
+                  styles.quickCastCinemaBtn,
+                  quickCastBusy && { opacity: 0.7 },
+                ]}
+                activeOpacity={0.85}
+                disabled={quickCastBusy}
+                onPress={handleStartQuickCastToWebReceiver}
+              >
+                {quickCastBusy ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.quickCastPrimaryBtnText}>
+                    🎬 مشغّل السينما الذكي (Web Receiver)
+                  </Text>
+                )}
+              </TouchableOpacity>
+
+              <View style={styles.quickCastFooter}>
+                <TouchableOpacity
+                  style={[
+                    styles.quickCastDlnaBtn,
+                    quickCastBusy && { opacity: 0.7 },
+                  ]}
+                  activeOpacity={0.85}
+                  disabled={quickCastBusy}
+                  onPress={handleStartQuickCastToDlna}
+                >
+                  <Text style={styles.quickCastDlnaBtnText}>
+                    📺 مشغّل سامسونج الأصلي (DLNA 4K)
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.quickCastQueueActionBtn}
+                  activeOpacity={0.85}
+                  disabled={quickCastBusy}
+                  onPress={handleEnqueueFromQuickCast}
+                >
+                  <Text style={styles.quickCastQueueActionText}>+ قائمة الانتظار</Text>
+                </TouchableOpacity>
+
+                {quickCastSession ? (
+                  <TouchableOpacity
+                    style={styles.quickCastStopBtn}
+                    activeOpacity={0.85}
+                    disabled={quickCastBusy}
+                    onPress={handleStopQuickCast}
+                  >
+                    <Text style={styles.quickCastStopBtnText}>إيقاف</Text>
+                  </TouchableOpacity>
+                ) : null}
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <CinemaControlModal
+        visible={cinemaModalVisible}
+        onClose={() => setCinemaModalVisible(false)}
+        activeTab={cinemaTab}
+        onChangeTab={setCinemaTab}
+        cinemaSession={cinemaSession}
+        receiverState={receiverState}
+        serverUrl={serverUrl}
+        busyAction={cinemaBusyAction}
+        statusNotice={cinemaNotice}
+        subtitleStyle={subtitleStyle}
+        queue={cinemaQueue}
+        resumeList={resumeList}
+        autoNextCountdown={autoNextCountdown}
+        onSendCommand={handleCinemaCommand}
+        onUpdateSubtitleStyle={handleUpdateSubtitleStyle}
+        onPickSubtitle={handlePickCinemaSubtitle}
+        onRemoveSubtitle={handleRemoveCinemaSubtitle}
+        onLaunchTvBrowser={handleLaunchReceiverOnTv}
+        onCopyReceiverUrl={handleCopyReceiverUrl}
+        onOpenSmartBrowser={() => {
+          setCinemaModalVisible(false);
+          handleOpenSmartBrowser('');
+        }}
+        onStopCinema={handleStopQuickCast}
+        onPlayQueueItem={async (item) => {
+          const updated = await CinemaStorageService.removeFromQueue(item.queueId);
+          setCinemaQueue(updated);
+          await startWebReceiverCast(item, {
+            startPositionSec: 0,
+            launchTv: true,
+            openCinemaModal: true,
+          });
+        }}
+        onRemoveQueueItem={async (queueId) => {
+          const updated = await CinemaStorageService.removeFromQueue(queueId);
+          setCinemaQueue(updated);
+        }}
+        onClearQueue={async () => {
+          const updated = await CinemaStorageService.clearQueue();
+          setCinemaQueue(updated);
+        }}
+        onPlayNextNow={handlePlayNextFromQueue}
+        onCancelAutoNext={handleCancelAutoNext}
+        onPlayResumeItem={(item) =>
+          startWebReceiverCast(item, {
+            startPositionSec: item.positionSec,
+            launchTv: true,
+            openCinemaModal: true,
+          })
+        }
+        onRemoveResumeItem={async (id) => {
+          const updated = await CinemaStorageService.removeResumeItem(id);
+          setResumeList(updated);
+        }}
+        onClearResumeList={async () => {
+          const updated = await CinemaStorageService.clearResumeList();
+          setResumeList(updated);
+        }}
+      />
     </SafeAreaView>
   );
 }
@@ -5718,6 +6938,433 @@ const styles = StyleSheet.create({
     fontSize: 13,
     textAlign: 'center',
     lineHeight: 20,
+  },
+  smartLinkProxyBtn: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  quickCastMiniBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginHorizontal: 14,
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderWidth: 1,
+    borderColor: '#10B981',
+    gap: 10,
+  },
+  quickCastMiniInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  quickCastMiniDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#10B981',
+  },
+  quickCastMiniText: {
+    flex: 1,
+    color: '#D1FAE5',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  quickCastMiniStopBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 7,
+    backgroundColor: 'rgba(239, 68, 68, 0.2)',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+  },
+  quickCastMiniStopText: {
+    color: '#FCA5A5',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickCastBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.68)',
+    justifyContent: 'flex-end',
+  },
+  quickCastSheet: {
+    backgroundColor: '#131720',
+    borderTopLeftRadius: 22,
+    borderTopRightRadius: 22,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: '#252E3E',
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 18,
+    maxHeight: '86%',
+  },
+  quickCastHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+    paddingBottom: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: '#1E2532',
+  },
+  quickCastHeaderTextWrap: {
+    flex: 1,
+    gap: 6,
+    alignItems: 'flex-start',
+  },
+  quickCastTitle: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  quickCastBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+    borderWidth: 1,
+    borderColor: 'rgba(16, 185, 129, 0.45)',
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+  },
+  quickCastBadgeDot: {
+    width: 7,
+    height: 7,
+    borderRadius: 3.5,
+    backgroundColor: '#10B981',
+  },
+  quickCastBadgeText: {
+    color: '#6EE7B7',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickCastCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  quickCastScroll: {
+    flexGrow: 0,
+    marginTop: 10,
+  },
+  quickCastScrollContent: {
+    gap: 8,
+    paddingBottom: 8,
+  },
+  quickCastInput: {
+    backgroundColor: '#0B0D11',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    color: '#F8FAFC',
+    fontSize: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    textAlign: 'right',
+  },
+  quickCastLtrInput: {
+    textAlign: 'left',
+  },
+  quickCastUrlBox: {
+    backgroundColor: '#0B0D11',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    color: '#94A3B8',
+    fontSize: 11,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+    textAlign: 'left',
+  },
+  quickCastHeadersNote: {
+    backgroundColor: 'rgba(14, 165, 233, 0.12)',
+    borderRadius: 9,
+    borderWidth: 1,
+    borderColor: 'rgba(56, 189, 248, 0.35)',
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  quickCastHeadersNoteText: {
+    color: '#7DD3FC',
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  quickCastSubSection: {
+    gap: 6,
+    marginTop: 2,
+  },
+  quickCastSubHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  quickCastSubBtn: {
+    minHeight: 42,
+    borderRadius: 10,
+    backgroundColor: '#0B0D11',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+  },
+  quickCastSubBtnText: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  quickCastOffsetRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  quickCastOffsetBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+  },
+  quickCastOffsetBtnText: {
+    color: '#E2E8F0',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickCastOffsetLabel: {
+    color: '#94A3B8',
+    fontSize: 12,
+    fontWeight: '600',
+    fontVariant: ['tabular-nums'],
+  },
+  quickCastSessionCard: {
+    backgroundColor: '#0B0D11',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    padding: 10,
+    gap: 4,
+  },
+  quickCastSessionHeading: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  quickCastSessionUrl: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    textAlign: 'left',
+  },
+  quickCastSessionSubUrl: {
+    color: '#6EE7B7',
+    fontSize: 11,
+    textAlign: 'left',
+  },
+  quickCastStatusMsg: {
+    color: '#6EE7B7',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'right',
+    lineHeight: 18,
+  },
+  quickCastErrorMsg: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    fontWeight: '600',
+    textAlign: 'right',
+    lineHeight: 18,
+  },
+  quickCastFooterStack: {
+    gap: 8,
+    marginTop: 10,
+  },
+  quickCastFooter: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  quickCastCinemaBtn: {
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  quickCastDlnaBtn: {
+    flex: 1,
+    minHeight: 42,
+    borderRadius: 11,
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    borderWidth: 1,
+    borderColor: '#10B981',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 10,
+  },
+  quickCastDlnaBtnText: {
+    color: '#6EE7B7',
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  quickCastQueueActionBtn: {
+    minHeight: 42,
+    borderRadius: 11,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  quickCastQueueActionText: {
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  quickCastResumeBanner: {
+    backgroundColor: 'rgba(250, 204, 21, 0.12)',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: 'rgba(250, 204, 21, 0.45)',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  quickCastResumeBannerActive: {
+    backgroundColor: 'rgba(14, 165, 233, 0.16)',
+    borderColor: '#38BDF8',
+  },
+  quickCastResumeTitle: {
+    color: '#F8FAFC',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  smartLinkQueueBtn: {
+    minHeight: 40,
+    borderRadius: 10,
+    backgroundColor: '#1A202C',
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  cinemaToolsRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 14,
+  },
+  cinemaToolPrimaryBtn: {
+    flex: 1,
+    backgroundColor: 'rgba(14, 165, 233, 0.14)',
+    borderWidth: 1,
+    borderColor: '#0EA5E9',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 3,
+  },
+  cinemaToolSecondaryBtn: {
+    flex: 1,
+    backgroundColor: '#131720',
+    borderWidth: 1,
+    borderColor: '#252E3E',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 3,
+  },
+  cinemaToolPrimaryText: {
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '800',
+    textAlign: 'right',
+  },
+  cinemaToolSubText: {
+    color: '#94A3B8',
+    fontSize: 11,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
+  cinemaResumeRowWrap: {
+    gap: 7,
+  },
+  cinemaResumeChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#131720',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: '#1E2532',
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    gap: 8,
+  },
+  cinemaResumeChipTitle: {
+    flex: 1,
+    color: '#E2E8F0',
+    fontSize: 12,
+    fontWeight: '700',
+    textAlign: 'right',
+  },
+  cinemaResumeChipTime: {
+    color: '#38BDF8',
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  quickCastPrimaryBtn: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 12,
+    backgroundColor: '#0EA5E9',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+  },
+  quickCastPrimaryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  quickCastStopBtn: {
+    minHeight: 42,
+    borderRadius: 11,
+    backgroundColor: 'rgba(239, 68, 68, 0.16)',
+    borderWidth: 1,
+    borderColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  quickCastStopBtnText: {
+    color: '#FCA5A5',
+    fontSize: 12,
+    fontWeight: '700',
   },
 });
 

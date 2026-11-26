@@ -153,8 +153,8 @@ export function parseEgyptianDurationMinutes(normalizedText) {
   return null;
 }
 
-export function parseSeekStepCount(normalizedText) {
-  if (!normalizedText) return 2;
+export function computeSeekSeconds(normalizedText) {
+  if (!normalizedText) return 15;
 
   let seconds = 0;
 
@@ -175,7 +175,8 @@ export function parseSeekStepCount(normalizedText) {
       if (mVal && mVal > 0) {
         seconds = mVal * 60;
       }
-    } else if (/(?:^|\s)دقيقه(?=\s|$)/.test(normalizedText)) {
+    }
+    if (seconds === 0 && /(?:^|\s)دقيقه(?=\s|$)/.test(normalizedText)) {
       seconds = 60;
     }
   }
@@ -189,23 +190,30 @@ export function parseSeekStepCount(normalizedText) {
       if (sVal && sVal > 0) {
         seconds = sVal;
       }
-    } else if (/(?:^|\s)ثانيه(?=\s|$)/.test(normalizedText)) {
+    }
+    if (seconds === 0 && /(?:^|\s)ثانيه(?=\s|$)/.test(normalizedText)) {
       seconds = 10;
     }
   }
 
   if (seconds > 0) {
-    return Math.max(1, Math.min(10, Math.round(seconds / 10) || 1));
+    return Math.max(5, Math.min(600, seconds));
   }
 
   const rawNum = extractNumberFromText(normalizedText);
   if (rawNum !== null) {
-    return Math.max(1, Math.min(10, rawNum));
+    return Math.max(5, Math.min(600, rawNum * 10));
   }
   if (/(?:^|\s)(?:كتير|جامد|اوي)(?=\s|$)/.test(normalizedText)) {
-    return 5;
+    return 45;
   }
-  return 2;
+  return 15;
+}
+
+export function parseSeekStepCount(normalizedText) {
+  if (!normalizedText) return 2;
+  const seconds = computeSeekSeconds(normalizedText);
+  return Math.max(1, Math.min(10, Math.round(seconds / 10) || 1));
 }
 
 function stripPlaybackPrefixesAndFillers(rawOriginalText) {
@@ -400,27 +408,105 @@ export function parseEgyptianVoiceCommand(rawText) {
     };
   }
 
-  // 6. التقديم والترجيع داخل الفيديو (ضغطات RIGHT / LEFT متتالية بمعدل ضغطة لكل 10 ثوانٍ بحد أقصى 10)
+  // 5.5 أوامر السينما والترجمة والتخطي بالعامية المصرية (أولوية قبل البحث في يوتيوب)
+  if (
+    /(?:^|\s)(?:عدي|تخطي|فوت|نط|امشي)\s+(?:ال)?(?:مقدمه|انترو|تتر|شاره)(?=\s|$)/.test(norm)
+  ) {
+    return {
+      type: 'CINEMA_SKIP_INTRO',
+      deltaSec: 85,
+      rawText: original,
+      normalizedText: norm,
+      label: 'تخطي المقدمة (+85 ثانية)',
+      confirmDelayMs: 900,
+    };
+  }
+
+  if (
+    /(?:^|\s)(?:كبر|زود|كبير)\s+(?:ال)?(?:ترجمه|خط|خط الترجمه)(?=\s|$)/.test(norm) ||
+    /(?:^|\s)(?:الترجمه|الخط)\s+(?:صغيره|صغير)(?=\s|$)/.test(norm)
+  ) {
+    return {
+      type: 'CINEMA_SUBTITLE_SIZE',
+      deltaPx: 4,
+      rawText: original,
+      normalizedText: norm,
+      label: 'تكبير خط الترجمة (+4px)',
+      confirmDelayMs: 900,
+    };
+  }
+
+  if (/(?:^|\s)(?:صغر|قلل|نقص)\s+(?:ال)?(?:ترجمه|خط|خط الترجمه)(?=\s|$)/.test(norm)) {
+    return {
+      type: 'CINEMA_SUBTITLE_SIZE',
+      deltaPx: -4,
+      rawText: original,
+      normalizedText: norm,
+      label: 'تصغير خط الترجمة (-4px)',
+      confirmDelayMs: 900,
+    };
+  }
+
+  if (/(?:^|\s)(?:قدم|اسبق|بدر)\s+(?:ال)?(?:ترجمه)(?=\s|$)/.test(norm)) {
+    return {
+      type: 'CINEMA_SUBTITLE_OFFSET',
+      deltaSec: 0.5,
+      rawText: original,
+      normalizedText: norm,
+      label: 'تقديم توقيت الترجمة (+0.5 ث)',
+      confirmDelayMs: 900,
+    };
+  }
+
+  if (/(?:^|\s)(?:اخر|رجع|تأخير|تاخير)\s+(?:ال)?(?:ترجمه)(?=\s|$)/.test(norm)) {
+    return {
+      type: 'CINEMA_SUBTITLE_OFFSET',
+      deltaSec: -0.5,
+      rawText: original,
+      normalizedText: norm,
+      label: 'تأخير توقيت الترجمة (-0.5 ث)',
+      confirmDelayMs: 900,
+    };
+  }
+
+  if (
+    /(?:^|\s)(?:الحلقه اللي بعدها|الحلقه الجايه|الحلقه التاليه|شغل التالي|الفيديو اللي بعده|هات الحلقه اللي بعدها|التاليه)(?=\s|$)/.test(
+      norm
+    )
+  ) {
+    return {
+      type: 'CINEMA_NEXT_EPISODE',
+      rawText: original,
+      normalizedText: norm,
+      label: 'تشغيل الحلقة التالية',
+      confirmDelayMs: 1100,
+    };
+  }
+
+  // 6. التقديم والترجيع داخل الفيديو (ضغطات RIGHT / LEFT للتلفاز + deltaSec دقيقة لمشغّل السينما)
   const isSeekForward =
-    /^(?:قدم|جري|فوت|طلع قدام|امشي قدام)(?:\s+(?:الفيديو|المقطع))?(?:\s+(?:شويه|حبه|كتير|جامد|\d+.*|دقيق.*|ثاني.*|نص.*|ربع.*))?$/.test(
+    /^(?:قدم|جري|فوت|طلع قدام|امشي قدام)(?:\s+(?:الفيديو|المقطع|الفيلم|الحلقه))?(?:\s+(?:شويه|حبه|كتير|جامد|\d+.*|دقيق.*|ثاني.*|نص.*|نصف.*|ربع.*))?$/.test(
       norm
     );
   const isSeekBackward =
-    /^(?:رجع|اخر|ارجع بالفيديو|رجع الفيديو|ارجع لورا)(?:\s+(?:الفيديو|المقطع|لورا))?(?:\s+(?:شويه|حبه|كتير|جامد|\d+.*|دقيق.*|ثاني.*|نص.*|ربع.*))?$/.test(
+    /^(?:رجع|اخر|ارجع بالفيديو|رجع الفيديو|ارجع لورا|رجع الفيلم|رجع الحلقه)(?:\s+(?:الفيديو|المقطع|الفيلم|الحلقه|لورا))?(?:\s+(?:شويه|حبه|كتير|جامد|\d+.*|دقيق.*|ثاني.*|نص.*|نصف.*|ربع.*))?$/.test(
       norm
     ) && !/^(?:ارجع|رجوع)$/.test(norm);
 
   if (isSeekForward || isSeekBackward) {
-    const steps = parseSeekStepCount(norm);
+    const exactSec = computeSeekSeconds(norm);
+    const steps = Math.max(1, Math.min(10, Math.round(exactSec / 10) || 1));
+    const deltaSec = isSeekForward ? exactSec : -exactSec;
     return {
       type: 'TV_REPEATED_COMMAND',
       commandKey: isSeekForward ? 'RIGHT' : 'LEFT',
       count: steps,
+      deltaSec,
       rawText: original,
       normalizedText: norm,
       label: isSeekForward
-        ? `تقديم الفيديو (${steps * 10} ثانية)`
-        : `ترجيع الفيديو (${steps * 10} ثانية)`,
+        ? `تقديم الفيديو (+${exactSec} ثانية)`
+        : `ترجيع الفيديو (-${exactSec} ثانية)`,
       confirmDelayMs: 1200,
     };
   }

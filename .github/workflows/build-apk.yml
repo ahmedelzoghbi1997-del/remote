@@ -118,6 +118,16 @@ jobs:
               )
               manifest = manifest.replace("</application>", f"{service_xml}    </application>", 1)
 
+          if ".CastProxyForegroundService" not in manifest:
+              proxy_service_xml = (
+                  '\n      <service\n'
+                  '        android:name=".CastProxyForegroundService"\n'
+                  '        android:enabled="true"\n'
+                  '        android:exported="false"\n'
+                  '        android:foregroundServiceType="mediaPlayback" />\n'
+              )
+              manifest = manifest.replace("</application>", f"{proxy_service_xml}    </application>", 1)
+
           if ".MediaSnifferActivity" not in manifest:
               sniffer_xml = (
                   '\n      <activity\n'
@@ -229,14 +239,14 @@ jobs:
                   if re.search(r"override fun onCreate\s*\(", act):
                       act = re.sub(
                           r"(super\.onCreate\([^\)]*\))",
-                          r"\1\n    DlnaCastModule.storeInitialIntent(intent)",
+                          r"\1\n    DlnaCastModule.storeInitialIntent(intent)\n    CastProxyModule.storeInitialIntent(intent)",
                           act,
                           count=1,
                       )
                   else:
                       act = re.sub(
                           r"(class MainActivity\s*:\s*ReactActivity\(\)\s*\{)",
-                          r"\1\n  override fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n    DlnaCastModule.storeInitialIntent(intent)\n  }\n",
+                          r"\1\n  override fun onCreate(savedInstanceState: Bundle?) {\n    super.onCreate(savedInstanceState)\n    DlnaCastModule.storeInitialIntent(intent)\n    CastProxyModule.storeInitialIntent(intent)\n  }\n",
                           act,
                           count=1,
                       )
@@ -247,6 +257,7 @@ jobs:
                       "    super.onNewIntent(intent)\n"
                       "    setIntent(intent)\n"
                       "    DlnaCastModule.handleNewIntent(this, intent)\n"
+                      "    CastProxyModule.handleNewIntent(this, intent)\n"
                       "  }\n"
                   )
                   last_brace = act.rfind("}")
@@ -3406,12 +3417,15 @@ jobs:
                       "googlesyndication.com",
                       "googleadservices.com",
                       "adservice.google",
+                      "googletagmanager.com",
+                      "google-analytics.com",
                       "popads.net",
                       "popcash.net",
                       "propellerads",
                       "exoclick",
                       "juicyads",
                       "trafficjunky",
+                      "trafficstars",
                       "adsterra",
                       "mgid.com",
                       "taboola.com",
@@ -3426,7 +3440,17 @@ jobs:
                       "pubmatic.com",
                       "openx.net",
                       "criteo.com",
-                      "yandexadexchange"
+                      "yandexadexchange",
+                      "monetag",
+                      "adskeeper",
+                      "realsrv",
+                      "adtng",
+                      "doublepimp",
+                      "pushame",
+                      "mc.yandex.ru",
+                      "yadro.ru",
+                      "adclick",
+                      "popmyads"
                   )
 
                   private val SEGMENT_NOISE_REGEX = Regex(
@@ -3878,8 +3902,8 @@ jobs:
                   settings.mediaPlaybackRequiresUserGesture = false
                   settings.allowContentAccess = true
                   settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                  settings.javaScriptCanOpenWindowsAutomatically = true
-                  settings.setSupportMultipleWindows(true)
+                  settings.javaScriptCanOpenWindowsAutomatically = false
+                  settings.setSupportMultipleWindows(false)
 
                   // تنظيف User-Agent ليطابق Chrome Mobile القياسي (إزالة '; wv' و 'Version/X.X') لتجاوز حجب Cloudflare
                   defaultCleanMobileUa = cleanWebViewUserAgent(settings.userAgentString.orEmpty())
@@ -4007,74 +4031,7 @@ jobs:
                           isUserGesture: Boolean,
                           resultMsg: android.os.Message?
                       ): Boolean {
-                          if (view == null || resultMsg == null) return false
-                          if (!isUserGesture && redirectProtectionEnabled) {
-                              return false
-                          }
-                          val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                          val tempWebView = WebView(this@MediaSnifferActivity).apply {
-                              settings.javaScriptEnabled = true
-                              settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
-                              if (currentUserAgent.isNotBlank()) {
-                                  settings.userAgentString = currentUserAgent
-                              }
-                          }
-                          var delivered = false
-                          fun forwardAndDispose(tView: WebView?, rawTarget: String?) {
-                              val targetUrl = rawTarget?.trim().orEmpty()
-                              if (targetUrl.isBlank() || targetUrl.equals("about:blank", ignoreCase = true)) {
-                                  return
-                              }
-                              if (delivered) return
-                              delivered = true
-                              val parsed = try { Uri.parse(targetUrl) } catch (_: Throwable) { null }
-                              val scheme = parsed?.scheme?.lowercase(Locale.US) ?: ""
-                              val host = parsed?.host?.lowercase(Locale.US) ?: ""
-                              val currentHost = try { Uri.parse(currentPageUrl).host?.lowercase(Locale.US) ?: "" } catch (_: Throwable) { "" }
-                              val blockedAd = redirectProtectionEnabled && isBlockedAdHost(host)
-                              val sameDomainOrDirectMedia = (currentHost.isNotBlank() && sameRootDomain(currentHost, host)) ||
-                                  looksLikeDirectMediaUrl(targetUrl)
-
-                              if ((scheme == "http" || scheme == "https") && !blockedAd && sameDomainOrDirectMedia) {
-                                  redirectGraceUntilMs = System.currentTimeMillis() + REDIRECT_GRACE_MS
-                                  view.loadUrl(targetUrl)
-                              } else if (scheme == "http" || scheme == "https") {
-                                  Toast.makeText(
-                                      this@MediaSnifferActivity,
-                                      "تم منع نافذة خارجية منبثقة (${host.ifBlank { "إعلان" }})",
-                                      Toast.LENGTH_SHORT
-                                  ).show()
-                              }
-                              tView?.post {
-                                  try {
-                                      tView.stopLoading()
-                                      tView.destroy()
-                                  } catch (_: Throwable) {
-                                  }
-                              }
-                          }
-                          tempWebView.webViewClient = object : WebViewClient() {
-                              override fun shouldOverrideUrlLoading(tView: WebView?, req: WebResourceRequest?): Boolean {
-                                  forwardAndDispose(tView, req?.url?.toString())
-                                  return true
-                              }
-
-                              override fun onPageStarted(tView: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
-                                  forwardAndDispose(tView, url)
-                              }
-                          }
-                          tempWebView.postDelayed({
-                              if (!delivered) {
-                                  try {
-                                      tempWebView.stopLoading()
-                                      tempWebView.destroy()
-                                  } catch (_: Throwable) {
-                                  }
-                              }
-                          }, 5000L)
-                          transport.webView = tempWebView
-                          resultMsg.sendToTarget()
-                          return true
+                          return false
                       }
 
                       override fun onProgressChanged(view: WebView?, newProgress: Int) {
@@ -4094,6 +4051,35 @@ jobs:
                   }
 
                   webView.webViewClient = object : WebViewClient() {
+                      private fun injectPopupShield(view: WebView?) {
+                          val guardJs = """
+                              (function(){
+                                try {
+                                  if (window.__smartPopupGuard) return;
+                                  window.__smartPopupGuard = true;
+                                  var origOpen = window.open;
+                                  window.open = function(u) {
+                                    try {
+                                      if (!u || typeof u !== 'string') return null;
+                                      var trimmed = u.trim();
+                                      if (!/^https?:\/\//i.test(trimmed)) return null;
+                                      var linkUrl = new URL(trimmed, window.location.href);
+                                      var curHost = (window.location.hostname || '').toLowerCase();
+                                      var tgtHost = (linkUrl.hostname || '').toLowerCase();
+                                      var isMedia = /\.(m3u8|mp4|mkv|webm)(\?|$)/i.test(trimmed);
+                                      var sameRoot = curHost && tgtHost && curHost.split('.').slice(-2).join('.') === tgtHost.split('.').slice(-2).join('.');
+                                      if (isMedia || sameRoot) {
+                                        window.location.href = linkUrl.href;
+                                      }
+                                    } catch(e) {}
+                                    return null;
+                                  };
+                                } catch(e) {}
+                              })();
+                          """.trimIndent()
+                          view?.evaluateJavascript(guardJs, null)
+                      }
+
                       override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
                           errorBannerText.visibility = View.GONE
                           if (!url.isNullOrBlank()) {
@@ -4102,6 +4088,9 @@ jobs:
                           }
                           if (view != null) {
                               currentUserAgent = view.settings.userAgentString.orEmpty()
+                              if (redirectProtectionEnabled) {
+                                  injectPopupShield(view)
+                              }
                           }
                       }
 
@@ -4800,6 +4789,10 @@ jobs:
                       capturedMap[item.url] = item
                   }
 
+                  if (item.kind == "SUBTITLE" && selectedSubtitle == null) {
+                      selectedSubtitle = capturedMap[item.url] ?: item
+                  }
+
                   runOnUiThread {
                       updateSnifferBadgeAndList()
                   }
@@ -4820,9 +4813,9 @@ jobs:
                       .sortedWith(compareByDescending<SniffedMediaItem> { it.priorityScore }.thenByDescending { it.contentLengthBytes })
                   val subs = items.filter { it.kind == "SUBTITLE" }
                   val badgeLabel = if (subs.isNotEmpty()) {
-                      "المقاطع (${videos.size}) · ترجمة (${subs.size})"
+                      "تم رصد ${videos.size} فيديو + ${subs.size} ترجمة"
                   } else {
-                      "المقاطع الملتقطة (${videos.size})"
+                      "تم رصد ${videos.size} فيديو"
                   }
                   fabBadgeBtn.text = badgeLabel
                   if (videos.isNotEmpty()) {
@@ -4861,9 +4854,6 @@ jobs:
                           ).apply {
                               bottomMargin = dp(8)
                           }
-                          setOnClickListener {
-                              returnCapturedMedia(vid)
-                          }
                       }
                       val cleanName = vid.url.substringBefore('?').substringAfterLast('/', "video").ifBlank { "Stream" }
                       val host = try { Uri.parse(vid.url).host ?: "" } catch (_: Throwable) { "" }
@@ -4872,8 +4862,8 @@ jobs:
                       val cardTitleText: String
                       val cardSubText: String
                       if (isHls) {
-                          cardTitleText = "★ بث الفيلم الكامل (HLS .m3u8)"
-                          cardSubText = "${host.ifBlank { "Streaming Server" }} · $cleanName${if (hasAuth) " ✓" else ""}"
+                          cardTitleText = "★ HLS (.m3u8) · بث متكيف متعدد الجودات"
+                          cardSubText = "${host.ifBlank { "Streaming Server" }} · $cleanName${if (hasAuth) " ✓ يحمل الهوية والكوكيز" else ""}"
                       } else {
                           val extBadge = when {
                               vid.mimeType.contains("matroska", ignoreCase = true) -> "MKV"
@@ -4883,12 +4873,12 @@ jobs:
                           }
                           val sizeLabel = formatBytes(vid.contentLengthBytes)
                           cardTitleText = if (sizeLabel.isNotBlank()) {
-                              "فيديو كامل ($extBadge • $sizeLabel)"
+                              "$extBadge · $sizeLabel"
                           } else {
-                              "فيديو كامل ($extBadge)"
+                              "فيديو ($extBadge)"
                           }
                           val nameHint = vid.label.ifBlank { cleanName }
-                          cardSubText = "${host.ifBlank { "Direct Server" }} · $nameHint${if (hasAuth) " (يحمل ترويسات حماية ✓)" else ""}"
+                          cardSubText = "${host.ifBlank { "Direct Server" }} · $nameHint${if (hasAuth) " ✓ يحمل الهوية والكوكيز" else ""}"
                       }
 
                       val titleTv = TextView(this).apply {
@@ -4906,8 +4896,50 @@ jobs:
                           maxLines = 1
                           ellipsize = TextUtils.TruncateAt.END
                       }
+
+                      val actionsRow = LinearLayout(this).apply {
+                          orientation = LinearLayout.HORIZONTAL
+                          layoutParams = LinearLayout.LayoutParams(
+                              ViewGroup.LayoutParams.MATCH_PARENT,
+                              ViewGroup.LayoutParams.WRAP_CONTENT
+                          ).apply {
+                              topMargin = dp(8)
+                          }
+                      }
+                      val castBtn = TextView(this).apply {
+                          text = "بث للشاشة عبر البروكسي"
+                          setTextColor(Color.WHITE)
+                          textSize = 11f
+                          typeface = Typeface.DEFAULT_BOLD
+                          gravity = Gravity.CENTER
+                          background = roundedBg("#0EA5E9", "#38BDF8", 8)
+                          setPadding(dp(10), dp(8), dp(10), dp(8))
+                          layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1.3f).apply {
+                              marginEnd = dp(6)
+                          }
+                          setOnClickListener {
+                              returnCapturedMedia(vid, "cast")
+                          }
+                      }
+                      val queueBtn = TextView(this).apply {
+                          text = "+ إضافة لقائمة الانتظار"
+                          setTextColor(Color.parseColor("#E2E8F0"))
+                          textSize = 11f
+                          typeface = Typeface.DEFAULT_BOLD
+                          gravity = Gravity.CENTER
+                          background = roundedBg("#181E2A", "#334155", 8)
+                          setPadding(dp(8), dp(8), dp(8), dp(8))
+                          layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+                          setOnClickListener {
+                              returnCapturedMedia(vid, "queue")
+                          }
+                      }
+                      actionsRow.addView(castBtn)
+                      actionsRow.addView(queueBtn)
+
                       row.addView(titleTv)
                       row.addView(subTv)
+                      row.addView(actionsRow)
                       mediaListContainer.addView(row)
                   }
 
@@ -4938,7 +4970,7 @@ jobs:
                           ellipsize = TextUtils.TruncateAt.MIDDLE
                       }
                       val hintTv = TextView(this).apply {
-                          text = if (isSel) "مربوطة — اختر الفيديو بالأعلى للإرسال" else "اضغط لربط هذه الترجمة مع الفيديو"
+                          text = if (isSel) "مربوطة تلقائياً — اختر «بث» أو «إضافة للقائمة» بالأعلى" else "اضغط لربط هذه الترجمة مع الفيديو"
                           setTextColor(Color.parseColor("#94A3B8"))
                           textSize = 10f
                       }
@@ -4948,12 +4980,13 @@ jobs:
                   }
               }
 
-              private fun returnCapturedMedia(video: SniffedMediaItem) {
+              private fun returnCapturedMedia(video: SniffedMediaItem, mode: String = "cast") {
                   try {
                       CookieManager.getInstance().flush()
                   } catch (_: Throwable) {
                   }
                   val rootJson = JSONObject()
+                  rootJson.put("mode", mode)
                   val vidJson = JSONObject().apply {
                       put("url", video.url)
                       put("title", currentPageTitle)
@@ -5244,6 +5277,7 @@ jobs:
                       append("</res>")
                       if (!subtitleUrl.isNullOrBlank()) {
                           val escapedSub = xmlEscape(subtitleUrl)
+                          append("<res protocolInfo=\"http-get:*:text/srt:*\">").append(escapedSub).append("</res>")
                           append("<sec:CaptionInfo sec:type=\"srt\">").append(escapedSub).append("</sec:CaptionInfo>")
                           append("<sec:CaptionInfoEx sec:type=\"srt\">").append(escapedSub).append("</sec:CaptionInfoEx>")
                       }
@@ -6634,6 +6668,7 @@ jobs:
                           try {
                               val root = org.json.JSONObject(rawJson)
                               val out = Arguments.createMap()
+                              out.putString("mode", root.optString("mode", "cast"))
                               val vid = root.getJSONObject("video")
                               val vidMap = Arguments.createMap().apply {
                                   putString("url", vid.optString("url"))
@@ -6953,7 +6988,8 @@ jobs:
                       IrManagerModule(reactContext),
                       HapticsModule(reactContext),
                       DlnaCastModule(reactContext),
-                      VoiceModule(reactContext)
+                      VoiceModule(reactContext),
+                      CastProxyModule(reactContext)
                   ).toMutableList()
           }
           EOF

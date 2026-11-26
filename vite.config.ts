@@ -11,6 +11,14 @@ function rnJsxPlugin(): Plugin {
     __dirname,
     'src/components/TvBrowserTouchpadModal.js'
   );
+  const cinemaControlModalJs = path.resolve(
+    __dirname,
+    'src/components/CinemaControlModal.js'
+  );
+  const dlnaCastModalJs = path.resolve(
+    __dirname,
+    'src/components/DlnaCastModal.js'
+  );
 
   return {
     name: 'rn-jsx-loader',
@@ -20,7 +28,9 @@ function rnJsxPlugin(): Plugin {
       if (
         cleanId === rootAppJs ||
         cleanId === wifiServiceJs ||
-        cleanId === browserTouchpadJs
+        cleanId === browserTouchpadJs ||
+        cleanId === cinemaControlModalJs ||
+        cleanId === dlnaCastModalJs
       ) {
         const result = await esbuildTransform(code, {
           loader: 'jsx',

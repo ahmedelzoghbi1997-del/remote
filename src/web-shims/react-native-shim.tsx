@@ -226,7 +226,9 @@ type ViewProps = {
   pointerEvents?: 'auto' | 'none' | 'box-none' | 'box-only';
   onLayout?: (e: { nativeEvent: { layout: { x: number; y: number; width: number; height: number } } }) => void;
   onStartShouldSetResponder?: (e: any) => boolean;
+  onMoveShouldSetResponder?: (e: any) => boolean;
   onResponderGrant?: (e: any) => void;
+  onResponderMove?: (e: any) => void;
   onResponderRelease?: (e: any) => void;
   onResponderTerminate?: (e: any) => void;
   onResponderTerminationRequest?: (e: any) => boolean;
@@ -240,7 +242,9 @@ export const View = React.forwardRef<HTMLDivElement, ViewProps>(function View(
     pointerEvents,
     onLayout,
     onStartShouldSetResponder,
+    onMoveShouldSetResponder,
     onResponderGrant,
+    onResponderMove,
     onResponderRelease,
     onResponderTerminate,
     children,
@@ -264,7 +268,11 @@ export const View = React.forwardRef<HTMLDivElement, ViewProps>(function View(
   latestOnLayoutRef.current = onLayout;
   const activePointerRef = React.useRef<number | null>(null);
   const hasResponder = Boolean(
-    onStartShouldSetResponder || onResponderGrant || onResponderRelease
+    onStartShouldSetResponder ||
+      onMoveShouldSetResponder ||
+      onResponderGrant ||
+      onResponderMove ||
+      onResponderRelease
   );
 
   React.useEffect(() => {
@@ -323,6 +331,16 @@ export const View = React.forwardRef<HTMLDivElement, ViewProps>(function View(
                 // ignore
               }
               if (onResponderGrant) onResponderGrant(synth);
+            }
+          : undefined
+      }
+      onPointerMove={
+        hasResponder
+          ? (e) => {
+              if (activePointerRef.current !== e.pointerId) return;
+              const synth = buildNativeEvent(e);
+              if (onMoveShouldSetResponder && !onMoveShouldSetResponder(synth)) return;
+              if (onResponderMove) onResponderMove(synth);
             }
           : undefined
       }
